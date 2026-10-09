@@ -378,7 +378,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     masterIncomingPacketHandlers.Handle(helper);
     masterOutgoingPacketHandlers.Handle(helper);
 
-    // run cross-thread-queued actions (combat-stop/reset/teleport) on the bot own map thread, even for
+    // run cross-thread-queued actions (combat-stop/reset/teleport) on the map thread of the bot itself, even for
     // minimal bots, before anything else.
     if (sBotLife->RunPendingActions(this))
     {
@@ -2020,7 +2020,7 @@ void PlayerbotAI::InterruptSpell()
 
 // A creature with a short self-cast aura that deals damage to whoever hits it in melee
 // (Retaliation of the Scarlet Centurion, 115511: 5 s below 20% health). Players stop hitting for those seconds.
-// Long auras of the same type (shields that last minutes) do not count: waiting those out is no tactic.
+// Long auras of the same type (shields that last minutes) do not count: waiting those out is not a tactic.
 bool PlayerbotAI::IsStrikingBack(Unit const* target)
 {
     if (!target || !target->IsAlive() || target->GetTypeId() != TYPEID_UNIT)

@@ -16,18 +16,18 @@ Client exe files" https://mega.nz/file/xUJDkIDA#I3TMdPymMw8ISNwIUgSaXLl5oHJHYFxA
 + GCC >= 13.0, Clang >= 12.0 
 
 ## Player bots
-Playerbots is in a early stage of developpement, you may encounter bug crash and other unexpected issues.
-Its HIGHLY recommanded to disable ELUNA with bot enable.
+Playerbots is in an early stage of development; you may encounter bugs, crashes and other unexpected issues.
+It is HIGHLY recommended to disable ELUNA when bots are enabled.
 
-Few thing to get it working beside importing databases:
+A few things are needed to get it working besides importing the databases:
 + copy playerbots.conf into your build dir directory or where your executables are
-+ you MUST have enUS dbc in order to make bots functionnal
++ you MUST have enUS dbc in order to make bots functional
 + add to your worldconf the following settings
 	-> PlayerbotsDatabaseInfo = "127.0.0.1;3306;root;root;mop_playerbots"
 	-> PlayerbotsDatabase.WorkerThreads     = 1
 	-> PlayerbotsDatabase.SynchThreads     = 1
 	-> Logger.playerbots=3,Console Server
-+ the first start may take times, be patient let everything load and randomize
++ the first start may take a while; be patient and let everything load and randomize
 
 
 ## Copyright

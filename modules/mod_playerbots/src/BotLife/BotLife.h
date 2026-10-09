@@ -755,7 +755,7 @@ private:
     uint32 _dungeonFocusChance = 0;
     std::unordered_set<uint32> _dungeonFocusMaps;                           // their maps (death log)
     std::unordered_map<uint32, std::vector<BotLifeInstanceSpawn>> _gateSpawns;       // map -> kill-gate mobs, neutral ones too
-    std::unordered_map<uint32, std::vector<BotLifeInstanceSpawn>> _sealedBossSpawns; // map -> bosses that are no pull target at spawn
+    std::unordered_map<uint32, std::vector<BotLifeInstanceSpawn>> _sealedBossSpawns; // map -> bosses that are not a pull target at spawn
     std::unordered_set<uint32> _instanceSpawnIds;                           // every spawn id in _instanceSpawns
     bool HasKillGate(uint32 map) const { return _gateSpawns.count(map) > 0; }
     std::unordered_map<uint32, std::pair<uint32, uint32>> _dungeonRecord;  // dungeon -> (runs without a boss, successes), world thread

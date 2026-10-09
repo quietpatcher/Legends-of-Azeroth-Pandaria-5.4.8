@@ -99,7 +99,7 @@ namespace
                 return item->IsNotEmptyBag() || proto->ContainerSlots < 16 ? BankCategory::None : BankCategory::Supply;
             case ITEM_CLASS_WEAPON:
             case ITEM_CLASS_ARMOR:
-                // greens (uncommon) are no longer dumped in the guild bank, only
+                // uncommon (green) items are no longer put in the guild bank, only
                 // blue and higher; green goes out through the existing auction posting logic (BotLifeAuction.cpp).
                 if (proto->Quality < ITEM_QUALITY_RARE)
                     return BankCategory::None;

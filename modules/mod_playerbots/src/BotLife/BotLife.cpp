@@ -1724,7 +1724,7 @@ void BotLifeMgr::QueueCombatStop(Player* member)
         ai->life.combatStopQueued = true;
 }
 
-// Runs on the bot own map thread (from PlayerbotAI::UpdateAIInternal, before the minimal gate). Performs any queued
+// Runs on the map thread of the bot itself (from PlayerbotAI::UpdateAIInternal, before the minimal gate). Performs any queued
 // combat-stop, reset and teleport in that order. Returns true if anything was done so the caller can end the tick early.
 bool BotLifeMgr::RunPendingActions(PlayerbotAI* botAI)
 {

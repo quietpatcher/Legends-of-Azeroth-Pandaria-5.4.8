@@ -139,7 +139,7 @@ public:
         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
         {
             botAI->HandleBotOutgoingPacket(*packet);
-            // bots are no master; otherwise every bot packet walks through all random bots (O(n^2))
+            // bots are never a master; otherwise every bot packet would loop over all random bots (O(n^2))
             if (!botAI->IsRealPlayer())
                 return;
         }
