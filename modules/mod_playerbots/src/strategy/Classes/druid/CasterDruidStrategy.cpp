@@ -115,12 +115,17 @@ CasterDruidStrategy::CasterDruidStrategy(PlayerbotAI* botAI) : GenericDruidStrat
 
 NextAction** CasterDruidStrategy::getDefaultActions()
 {
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
     return NextAction::array(0,
-                             new NextAction("starfall", ACTION_HIGH + 1.0f),
-                             new NextAction("force of nature", ACTION_DEFAULT + 1.0f),
-                             new NextAction("wrath", ACTION_DEFAULT + 0.1f),
-                             // new NextAction("starfire", ACTION_NORMAL),
-                             nullptr);
+        new NextAction("starfall", ACTION_DEFAULT + 0.95f),
+        new NextAction("force of nature", ACTION_DEFAULT + 0.90f),
+        new NextAction("starsurge", ACTION_DEFAULT + 0.85f),
+        new NextAction("moonfire", ACTION_DEFAULT + 0.80f),
+        new NextAction("sunfire", ACTION_DEFAULT + 0.75f),
+        new NextAction("starfire", ACTION_DEFAULT + 0.50f),
+        new NextAction("wrath", ACTION_DEFAULT + 0.40f),
+        nullptr);
 }
 
 void CasterDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

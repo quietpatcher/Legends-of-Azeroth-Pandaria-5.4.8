@@ -8,6 +8,7 @@
 #include "GenericPriestStrategy.h"
 #include "HolyPriestStrategy.h"
 #include "NamedObjectContext.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 #include "PriestActions.h"
 #include "PriestNonCombatStrategy.h"
@@ -70,16 +71,51 @@ class PriestTriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     PriestTriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["shadow word: pain"] = &PriestTriggerFactoryInternal::tt_shadow_word__pain;
+        creators["vampiric touch"] = &PriestTriggerFactoryInternal::tt_vampiric_touch;
+        creators["devouring plague"] = &PriestTriggerFactoryInternal::tt_devouring_plague;
+        creators["holy fire"] = &PriestTriggerFactoryInternal::tt_holy_fire;
+        creators["shadow word: pain on attacker"] = &PriestTriggerFactoryInternal::tt_shadow_word__pain_on_attacker;
+        creators["vampiric touch on attacker"] = &PriestTriggerFactoryInternal::tt_vampiric_touch_on_attacker;
+        creators["inner fire"] = &PriestTriggerFactoryInternal::tt_inner_fire;
+        creators["shadowform"] = &PriestTriggerFactoryInternal::tt_shadowform;
+        creators["vampiric embrace"] = &PriestTriggerFactoryInternal::tt_vampiric_embrace;
+        creators["power infusion"] = &PriestTriggerFactoryInternal::tt_power_infusion;
+        creators["shadowfiend"] = &PriestTriggerFactoryInternal::tt_shadowfiend;
+        creators["power word: fortitude on party"] = &PriestTriggerFactoryInternal::tt_power_word__fortitude_on_party;
+        creators["silence"] = &PriestTriggerFactoryInternal::tt_silence;
+        creators["silence on enemy healer"] = &PriestTriggerFactoryInternal::tt_silence_on_enemy_healer;
+        creators["medium aoe and healer should attack"] = &PriestTriggerFactoryInternal::tt_medium_aoe_and_healer_should_attack;
     }
 
 private:
+    static Trigger* tt_shadow_word__pain(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "shadow word: pain", 1, true); }
+    static Trigger* tt_vampiric_touch(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "vampiric touch", 1, true); }
+    static Trigger* tt_devouring_plague(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "devouring plague", 1, true); }
+    static Trigger* tt_holy_fire(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "holy fire", 1, true); }
+    static Trigger* tt_shadow_word__pain_on_attacker(PlayerbotAI* botAI) { return new DebuffOnAttackerTrigger(botAI, "shadow word: pain"); }
+    static Trigger* tt_vampiric_touch_on_attacker(PlayerbotAI* botAI) { return new DebuffOnAttackerTrigger(botAI, "vampiric touch"); }
+    static Trigger* tt_inner_fire(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "inner fire"); }
+    static Trigger* tt_shadowform(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "shadowform"); }
+    static Trigger* tt_vampiric_embrace(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "vampiric embrace"); }
+    static Trigger* tt_power_infusion(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "power infusion"); }
+    static Trigger* tt_shadowfiend(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "shadowfiend"); }
+    static Trigger* tt_power_word__fortitude_on_party(PlayerbotAI* botAI) { return new BuffOnPartyTrigger(botAI, "power word: fortitude", 2); }
+    static Trigger* tt_silence(PlayerbotAI* botAI) { return new InterruptSpellTrigger(botAI, "silence"); }
+    static Trigger* tt_silence_on_enemy_healer(PlayerbotAI* botAI) { return new InterruptEnemyHealerTrigger(botAI, "silence"); }
+    static Trigger* tt_medium_aoe_and_healer_should_attack(PlayerbotAI* botAI) { return new TwoTriggers(botAI, "medium aoe", "healer should attack"); }
 };
+
+// MoP actions missing from the port (spell names must match the MoP client exactly)
+SPELL_ACTION(TTCastPenanceAction, "penance");
 
 class PriestAiObjectContextInternal : public NamedObjectContext<Action>
 {
 public:
     PriestAiObjectContextInternal()
     {
+        creators["penance"] = &PriestAiObjectContextInternal::tt_penance;
         creators["power infusion"] = &PriestAiObjectContextInternal::power_infusion;
         creators["inner focus"] = &PriestAiObjectContextInternal::inner_focus;
         creators["shadow word: pain"] = &PriestAiObjectContextInternal::shadow_word_pain;
@@ -168,6 +204,7 @@ public:
     }
 
 private:
+    static Action* tt_penance(PlayerbotAI* botAI) { return new TTCastPenanceAction(botAI); }
     static Action* shadow_protection_on_party(PlayerbotAI* botAI)
     {
         return new CastShadowProtectionOnPartyAction(botAI);

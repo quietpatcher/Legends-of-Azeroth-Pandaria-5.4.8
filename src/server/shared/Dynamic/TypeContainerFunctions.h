@@ -25,6 +25,7 @@
  */
 
 #include "Define.h"
+#include "Log.h"
 #include "Dynamic/TypeList.h"
 #include <map>
 
@@ -100,7 +101,15 @@ namespace Trinity
         }
         else
         {
-            ASSERT(i->second == obj, "Object with certain key already in but objects are different!");
+            // was ASSERT -> server crash. A stale entry for this key (a different, presumably already
+            // despawned object, e.g. a short-lived wild GameObject from Spell::EffectSummonObjectWild) was never
+            // removed before this guid got reused - seen under heavy load (thousands of bots). Overwrite the stale
+            // entry with the new object instead of crashing; callers of Insert() do not check the return value here.
+            if (i->second != obj)
+            {
+                TC_LOG_ERROR("misc", "TypeContainer::Insert: key already registered to a different object (stale entry) - overwriting instead of asserting");
+                i->second = obj;
+            }
             return false;
         }
     }

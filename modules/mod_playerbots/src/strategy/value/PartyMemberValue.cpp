@@ -13,6 +13,10 @@ Unit* PartyMemberValue::FindPartyMember(std::vector<Player*>* party, FindPlayerP
 {
     for (Player* player : *party)
     {
+        // a member on another map belongs to another thread: read nothing of it
+        if (!player || !player->IsInWorld() || player->FindMap() != bot->FindMap())
+            continue;
+
         if (predicate.Check(player) && Check(player))
             return player;
 
@@ -105,7 +109,7 @@ bool PartyMemberValue::Check(Unit* player)
     // return player && player != bot && player->GetMapId() == bot->GetMapId() && bot->IsWithinDistInMap(player,
     // sPlayerbotAIConfig->sightDistance, false);
     bool isGM = player->ToPlayer() && player->ToPlayer()->IsGameMaster();
-    return player && player->GetMapId() == bot->GetMapId() && !isGM &&
+    return player && player->FindMap() == bot->FindMap() && !isGM &&
         bot->GetDistance(player) < sPlayerbotAIConfig->spellDistance * 2 &&
         bot->IsWithinLOS(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
 }
@@ -125,6 +129,10 @@ bool PartyMemberValue::IsTargetOfSpellCast(Player* target, SpellEntryPredicate& 
     {
         Player* player = gref->GetSource();
         if (!player || player == bot)
+            continue;
+        // only inspect a group member's live Spell object on our own map thread; a member in another
+        // instance is updated by a different thread and reading its current spell would be a cross-thread data race.
+        if (player->FindMap() != bot->FindMap())
             continue;
 
         if (player->IsNonMeleeSpellCasted(true))

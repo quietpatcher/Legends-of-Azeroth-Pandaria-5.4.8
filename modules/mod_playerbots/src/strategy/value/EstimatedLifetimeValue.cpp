@@ -39,7 +39,7 @@ float EstimatedGroupDpsValue::Calculate()
             if (!member || !member->IsInWorld() || !member->IsAlive())
                 continue;
 
-            if (member->GetMapId() != bot->GetMapId())
+            if (member->FindMap() != bot->FindMap())
                 continue;
 
             if (member->GetExactDist(bot) > sPlayerbotAIConfig->sightDistance)

@@ -200,6 +200,11 @@ public:
                 if (!playerTarget)
                     return;
 
+                // bots do not trigger the alarm - hundreds of bots near an outpost made every visibility update
+                // summon guards and cast the guards mark, stalling the map update for seconds
+                if (playerTarget->GetSession() && playerTarget->GetSession()->IsBot())
+                    return;
+
                 Creature* lastSpawnedGuard = SpawnedGUID == 0 ? NULL : GetSummonedGuard();
 
                 // prevent calling Unit::GetUnit at next MoveInLineOfSight call - speedup

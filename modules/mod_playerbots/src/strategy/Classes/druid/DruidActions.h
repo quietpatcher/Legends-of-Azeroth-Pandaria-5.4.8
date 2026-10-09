@@ -21,7 +21,7 @@ public:
 class CastFaerieFireFeralAction : public CastSpellAction
 {
 public:
-    CastFaerieFireFeralAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "faerie fire (feral)") {}
+    CastFaerieFireFeralAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "faerie fire") {}
 };
 
 class CastRejuvenationAction : public CastHealingSpellAction

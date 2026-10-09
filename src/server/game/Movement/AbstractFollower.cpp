@@ -16,6 +16,7 @@
  */
 
 #include "AbstractFollower.h"
+#include "ThreadOwnerCheck.h"
 #include "Unit.h"
 
 void AbstractFollower::SetTarget(Unit* unit)
@@ -23,9 +24,17 @@ void AbstractFollower::SetTarget(Unit* unit)
     if (unit == _target)
         return;
 
+    // the follower set belongs to the target; a worker of another map may not change it (diagnostic,
+    // TT-THREADCHECK in Server.log)
     if (_target)
+    {
+        TTCheckThreadOwner(_target, "FollowerRemoved", ObjectGuid::Empty);
         _target->FollowerRemoved(this);
+    }
     _target = unit;
     if (_target)
+    {
+        TTCheckThreadOwner(_target, "FollowerAdded", ObjectGuid::Empty);
         _target->FollowerAdded(this);
+    }
 }

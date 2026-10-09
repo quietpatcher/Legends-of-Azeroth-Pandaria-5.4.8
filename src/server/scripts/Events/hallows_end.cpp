@@ -555,7 +555,8 @@ struct npc_headless_horseman_fire : public ScriptedAI
             {
                 if (me->IsSummon())
                     if (Unit* eventKeeper =  me->ToTempSummon()->GetSummoner())
-                        eventKeeper->ToCreature()->AI()->SetData(HALLOWEND_FIRE_REMOVE, id);
+                        if (eventKeeper->ToCreature() && eventKeeper->ToCreature()->AI())
+                            eventKeeper->ToCreature()->AI()->SetData(HALLOWEND_FIRE_REMOVE, id);
                 Fire = false;
             }
             return;
@@ -579,10 +580,15 @@ struct npc_headless_horseman_fire : public ScriptedAI
             if (me->HasAura(RangoFire[0]) && !Fire)
             {
                 if (!RateFire)
-                    if (Unit * Owner = me->ToTempSummon()->GetSummoner())
-                        RateFire = Owner->ToCreature()->AI()->GetData(0);
-                    else 
+                {
+                    // a fire that is a plain spawn has no summoner (crashed the server)
+                    TempSummon* summon = me->ToTempSummon();
+                    Unit* owner = summon ? summon->GetSummoner() : nullptr;
+                    if (owner && owner->ToCreature() && owner->ToCreature()->AI())
+                        RateFire = owner->ToCreature()->AI()->GetData(0);
+                    else
                         return;
+                }
                 if (!RateFire)
                     return;
                 Fire = true;

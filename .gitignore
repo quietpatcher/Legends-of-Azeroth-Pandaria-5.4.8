@@ -9,3 +9,10 @@ build/
 /bin
 bin/
 obj/
+
+# local work files (MOP_OPDRACHT 6-10-2026): build trees and the per-patch backup copies
+build-asan/
+*.pre*
+*.bak.*
+*_reverted
+*_patched

@@ -1246,6 +1246,16 @@ void Creature::UpdateDamagePhysical(WeaponAttackType attType)
     float weapon_mindamage = GetWeaponDamageRange(attType, MINDAMAGE);
     float weapon_maxdamage = GetWeaponDamageRange(attType, MAXDAMAGE);
 
+    // damage_base .. damage_exp3 of creature_classlevelstats are per second (TrinityCore/AzerothCore
+    // data; both multiply the weapon part by the attack time too). damage_exp4 holds per-hit values (old mindmg of
+    // the MoP creatures). Without this, expansion 0-3 creatures hit for 60-76% of the intended damage.
+    if (GetCreatureTemplate()->expansion < 4)
+    {
+        float const attackSpeed = GetAPMultiplier(attType, false);
+        weapon_mindamage *= attackSpeed;
+        weapon_maxdamage *= attackSpeed;
+    }
+
     /* per-creature/per-difficulty damage multiplier (from difficulty table, default 1.0)
        combined with any runtime override (e.g. world events) */
     float dmg_multiplier = GetCreatureTemplate()->dmg_multiplier;

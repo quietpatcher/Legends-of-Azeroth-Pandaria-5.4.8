@@ -35,6 +35,33 @@
 #include "World.h"
 #include "Transport.h"
 #include "DisableMgr.h"
+#include "Config.h"
+
+namespace
+{
+    // dynamic respawn of quest objects (a chest with quest loot, an object a quest uses) - the more
+    // players around one that is used, the sooner it is back; the same settings as the creatures (Respawn.Dynamic*).
+    uint32 DynamicRespawnDelay(GameObject const* go, uint32 delay)
+    {
+        static uint32 const threshold = uint32(sConfigMgr->GetIntDefault("Respawn.DynamicPlayers", 0));
+        static float const minRate = sConfigMgr->GetFloatDefault("Respawn.DynamicMinRate", 0.1f);
+        static uint32 const minSeconds = uint32(sConfigMgr->GetIntDefault("Respawn.DynamicMinSeconds", 15));
+        if (!threshold || delay <= minSeconds || delay > 15 * MINUTE || !sObjectMgr->IsGameObjectForQuests(go->GetEntry()))
+            return delay;
+        Map const* map = go->FindMap();
+        if (!map || map->Instanceable())
+            return delay;
+        uint32 players = 0;
+        for (MapReference const& ref : map->GetPlayers())
+            if (Player const* player = ref.GetSource())
+                if (player->GetExactDist2dSq(go) < 250.0f * 250.0f)
+                    ++players;
+        if (players <= threshold)
+            return delay;
+        float const rate = std::max(minRate, float(threshold) / float(players));
+        return std::max<uint32>(minSeconds, uint32(delay * rate));
+    }
+}
 #include <G3D/Box.h>
 #include <G3D/CoordinateFrame.h>
 
@@ -747,7 +774,7 @@ void GameObject::Update(uint32 diff)
                 return;
             }
 
-            m_respawnTime = time(NULL) + m_respawnDelayTime;
+            m_respawnTime = time(NULL) + DynamicRespawnDelay(this, m_respawnDelayTime);
 
             // if option not set then object will be saved at grid unload
             if (sWorld->getBoolConfig(CONFIG_SAVE_RESPAWN_TIME_IMMEDIATELY))
@@ -796,6 +823,24 @@ void GameObject::Delete()
         AddObjectToRemoveList();
 }
 
+// the grey items of each fishing loot id (filled once)
+static std::unordered_map<uint32, std::vector<uint32>> const& FishingJunk()
+{
+    static std::unordered_map<uint32, std::vector<uint32>> junk;
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        if (QueryResult result = WorldDatabase.Query("SELECT f.entry, f.item FROM fishing_loot_template f JOIN item_template i ON i.entry = f.item "
+            "WHERE i.Quality = 0 AND f.mincountOrRef > 0"))
+            do
+            {
+                Field* fields = result->Fetch();
+                junk[fields[0].GetUInt32()].push_back(fields[1].GetUInt32());
+            } while (result->NextRow());
+    });
+    return junk;
+}
+
 void GameObject::getFishLoot(Loot* fishloot, Player* loot_owner)
 {
     fishloot->clear();
@@ -807,6 +852,29 @@ void GameObject::getFishLoot(Loot* fishloot, Player* loot_owner)
     if (!fishloot->FillLoot(this, subzone, LootTemplates_Fishing, loot_owner, true, true))
         // else use zone loot (must exist in like case)
         fishloot->FillLoot(this, zone, LootTemplates_Fishing, loot_owner, true);
+
+    // too low a fishing skill for the zone - the catch is mostly junk (since Cataclysm the fish no longer
+    // gets away): junk with the old escape chance, 1 - (skill / zone skill)^2
+    int32 zoneSkill = sObjectMgr->GetFishingBaseSkillLevel(subzone);
+    if (!zoneSkill)
+        zoneSkill = sObjectMgr->GetFishingBaseSkillLevel(zone);
+    int32 const skill = loot_owner->GetSkillValue(SKILL_FISHING);
+    if (zoneSkill > 0 && skill < zoneSkill)
+    {
+        float const ratio = float(std::max(skill, 0)) / float(zoneSkill);
+        if (roll_chance_f(100.0f * (1.0f - ratio * ratio)))
+        {
+            auto const& junk = FishingJunk();
+            auto it = junk.find(subzone);
+            if (it == junk.end())
+                it = junk.find(zone);
+            if (it != junk.end() && !it->second.empty())
+            {
+                fishloot->clear();
+                fishloot->AddItem(LootStoreItem(Trinity::Containers::SelectRandomContainerElement(it->second), 0, 100.0f, LOOT_MODE_DEFAULT, 0, 1, 1), loot_owner);
+            }
+        }
+    }
 }
 
 void GameObject::SaveToDB()
@@ -1555,15 +1623,9 @@ void GameObject::Use(Unit* user)
 
                     int32 skill = player->GetSkillValue(SKILL_FISHING);
 
-                    int32 chance;
-                    if (skill < zone_skill)
-                    {
-                        chance = int32(pow((double)skill/zone_skill, 2) * 100);
-                        if (chance < 1)
-                            chance = 1;
-                    }
-                    else
-                        chance = 100;
+                    // since Cataclysm fish no longer get away for a low skill (a fisher of skill 1 levels
+                    // up in Pandaria); the old roll (chance = (skill / zone skill)^2) made every bite at skill 1 escape
+                    int32 chance = 100;
 
                     int32 roll = irand(1, 100);
 

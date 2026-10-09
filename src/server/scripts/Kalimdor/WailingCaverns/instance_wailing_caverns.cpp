@@ -46,6 +46,7 @@ public:
 
         bool yelled;
         ObjectGuid NaralexGUID;
+        ObjectGuid DiscipleGUID;   // Muyoh (Cataclysm+ he waits inside the caverns)
 
         void Initialize() override
         {
@@ -59,6 +60,8 @@ public:
         {
             if (creature->GetEntry() == DATA_NARALEX)
                 NaralexGUID = creature->GetGUID();
+            else if (creature->GetEntry() == 3678)
+                DiscipleGUID = creature->GetGUID();
         }
 
         void OnUnitDeath(Unit* unit) override
@@ -101,6 +104,15 @@ public:
                 case TYPE_MUTANUS_THE_DEVOURER: m_auiEncounter[8] = data;break;
                 case TYPE_NARALEX_YELLED:       yelled = true;      break;
             }
+            // Muyoh calls the group when the last fanglord falls (it only happened on talking to him)
+            if (data == DONE && type >= TYPE_LORD_COBRAHN && type <= TYPE_LORD_SERPENTIS && !yelled
+                && m_auiEncounter[0] == DONE && m_auiEncounter[1] == DONE && m_auiEncounter[2] == DONE && m_auiEncounter[3] == DONE)
+                if (Creature* disciple = instance->GetCreature(DiscipleGUID))
+                    if (disciple->IsAlive() && disciple->IsAIEnabled)
+                    {
+                        disciple->AI()->Talk(0);   // SAY_AT_LAST
+                        yelled = true;
+                    }
             if (data == DONE)SaveToDB();
         }
 

@@ -15,10 +15,17 @@ ShadowPriestStrategy::ShadowPriestStrategy(PlayerbotAI* botAI) : GenericPriestSt
 
 NextAction** ShadowPriestStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("mind blast", ACTION_DEFAULT + 0.3f),
-                             new NextAction("mind flay", ACTION_DEFAULT + 0.2f),
-                             new NextAction("shadow word: death", ACTION_DEFAULT + 0.1f), // cast during movement
-                             new NextAction("shoot", ACTION_DEFAULT), nullptr);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("devouring plague", ACTION_DEFAULT + 0.95f),
+        new NextAction("shadow word: death", ACTION_DEFAULT + 0.90f),
+        new NextAction("mind blast", ACTION_DEFAULT + 0.85f),
+        new NextAction("shadow word: pain", ACTION_DEFAULT + 0.80f),
+        new NextAction("vampiric touch", ACTION_DEFAULT + 0.75f),
+        new NextAction("mind flay", ACTION_DEFAULT + 0.50f),
+        new NextAction("shoot", ACTION_DEFAULT + 0.10f),
+        nullptr);
 }
 
 void ShadowPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

@@ -93,7 +93,7 @@ target_link_libraries(worldserver
     scripts
     game
     gsoap
-    jemalloc
+    $<$<NOT:$<BOOL:${NOJEM}>>:jemalloc>
     readline
     boost
     threads

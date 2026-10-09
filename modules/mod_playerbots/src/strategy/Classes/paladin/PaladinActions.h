@@ -229,7 +229,7 @@ public:
 class CastHandOfReckoningAction : public CastSpellAction
 {
 public:
-    CastHandOfReckoningAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "hand of reckoning") {}
+    CastHandOfReckoningAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "reckoning") {}
 };
 
 class CastRighteousDefenseAction : public CastSpellAction

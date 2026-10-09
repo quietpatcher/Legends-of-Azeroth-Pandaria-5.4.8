@@ -18,7 +18,37 @@
 #include "DatabaseEnv.h"
 #include "MapUpdater.h"
 #include "Map.h"
+#include "ThreadOwnerCheck.h"
+#include "Timer.h"
+#include <array>
+#include <atomic>
 #include <mutex>
+
+// the world tick is as long as its slowest map (every map is one thread). Per map id a moving average
+// (in sixteenths of a millisecond) and the peak since the last read; the instances of one id share a slot.
+namespace
+{
+    constexpr uint32 TT_MAP_SLOTS = 2048;
+    std::array<std::atomic<uint32>, TT_MAP_SLOTS> tt_mapAverage;
+    std::array<std::atomic<uint32>, TT_MAP_SLOTS> tt_mapPeak;
+}
+
+void TTRecordMapUpdateTime(unsigned int mapId, unsigned int ms)
+{
+    if (mapId >= TT_MAP_SLOTS)
+        return;
+    uint32 const average = tt_mapAverage[mapId].load(std::memory_order_relaxed);
+    tt_mapAverage[mapId].store((average * 7 + ms * 16) / 8, std::memory_order_relaxed);
+    if (ms > tt_mapPeak[mapId].load(std::memory_order_relaxed))
+        tt_mapPeak[mapId].store(ms, std::memory_order_relaxed);
+}
+
+unsigned int TTMapUpdateTime(unsigned int mapId, bool peak)
+{
+    if (mapId >= TT_MAP_SLOTS)
+        return 0;
+    return peak ? tt_mapPeak[mapId].exchange(0, std::memory_order_relaxed) : tt_mapAverage[mapId].load(std::memory_order_relaxed) / 16;
+}
 
 class MapUpdateRequest
 {
@@ -38,7 +68,11 @@ class MapUpdateRequest
         void call()
         {
             //TC_METRIC_TIMER("map_update_time_diff", TC_METRIC_TAG("map_id", std::to_string(m_map.GetId())));
+            TTCurrentUpdateMap() = &m_map;   // see ThreadOwnerCheck.h
+            uint32 const started = getMSTime();
             m_map.Update (m_diff);
+            TTRecordMapUpdateTime(m_map.GetId(), getMSTimeDiff(started, getMSTime()));
+            TTCurrentUpdateMap() = nullptr;
             m_updater.update_finished();
         }
 };

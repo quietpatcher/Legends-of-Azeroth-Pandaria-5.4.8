@@ -28,6 +28,7 @@
 #include "TransportMgr.h"
 #include "VMapManager2.h"
 #include "World.h"
+#include "ThreadOwnerCheck.h"
 
 MapInstanced::MapInstanced(uint32 id, time_t expiry) : Map(id, expiry, 0, DUNGEON_DIFFICULTY_NORMAL)
 {
@@ -263,7 +264,14 @@ bool MapInstanced::DestroyInstance(InstancedMaps::iterator &itr)
         return false;
     }
 
-    itr->second->UnloadAll();
+    {
+        // the idle instance is unloaded from the parent map worker; its objects are ours now (ThreadOwnerCheck.h)
+        Map const* prev = TTCurrentUpdateMap();
+        if (prev)
+            TTCurrentUpdateMap() = itr->second;
+        itr->second->UnloadAll();
+        TTCurrentUpdateMap() = prev;
+    }
     // should only unload VMaps if this is the last instance and grid unloading is enabled
     if (m_InstancedMaps.size() <= 1 && sWorld->getBoolConfig(CONFIG_GRID_UNLOAD))
     {

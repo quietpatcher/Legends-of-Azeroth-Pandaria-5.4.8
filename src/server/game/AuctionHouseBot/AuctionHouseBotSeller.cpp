@@ -27,6 +27,7 @@
 #include "ObjectMgr.h"
 //#include "Random.h"
 #include <sstream>
+#include <unordered_map>
 
 AuctionBotSeller::AuctionBotSeller()
 {
@@ -637,6 +638,37 @@ void AuctionBotSeller::SetPricesOfItem(ItemTemplate const* itemProto, SellerConf
     bidp = static_cast<uint32>(bidPercentage * buyp);
     if (bidp == 0)
         bidp = 1;
+
+    // only Mechano-Hogs, for 96 gold: a mount is worth what it costs to make - the vendor parts
+    // and the materials - not its vendor price times a ratio (a Sky Golem came out at 2000 gold, a panther at 40).
+    if (itemProto->GetClass() == ITEM_CLASS_MISCELLANEOUS && itemProto->GetSubClass() == ITEM_SUBCLASS_JUNK_MOUNT)
+    {
+        static std::unordered_map<uint32, uint32> const mountGold =
+        {
+            { 34060, 700 },      // Flying Machine
+            { 34061, 3500 },     // Turbo-Charged Flying Machine
+            { 41508, 16000 },    // Mechano-Hog
+            { 44413, 16000 },    // Mekgineer's Chopper
+            { 65891, 32000 },    // Vial of the Sands
+            { 83087, 26000 },    // Ruby Panther
+            { 83088, 26000 },    // Jade Panther
+            { 83089, 26000 },    // Sunstone Panther
+            { 83090, 26000 },    // Sapphire Panther
+            { 82453, 120000 },   // Jeweled Onyx Panther
+            { 87250, 15000 },    // Depleted-Kyparium Rocket
+            { 87251, 15000 },    // Geosynchronous World Spinner
+            { 95416, 50000 },    // Sky Golem
+        };
+        auto known = mountGold.find(itemProto->GetId());
+        uint32 const gold = known != mountGold.end() ? known->second
+            : itemProto->GetQuality() >= ITEM_QUALITY_EPIC ? 15000 : itemProto->GetQuality() == ITEM_QUALITY_RARE ? 4000 : 800;
+        uint32 const floorPrice = gold * GOLD;
+        if (buyp < floorPrice)
+        {
+            buyp = urand(floorPrice / 100 * 92, floorPrice / 100 * 112);
+            bidp = static_cast<uint32>(bidPercentage * buyp);
+        }
+    }
 }
 
 // Determines the stack size to use for the item

@@ -64,6 +64,20 @@ class instance_scarlet_monastery : public InstanceMapScript
             {
                 if (instance->IsChallengeDungeon())
                     SendChallengeInfo(player, SCENARIO_ID);
+
+                // creatures that loaded before the first player was in
+                if (!lfgDungeon && instance->ToInstanceMap()->IsLFGMap())
+                {
+                    lfgDungeon = sLFGMgr->GetDungeon(player->GetGroup() ? player->GetGroup()->GetGUID() : player->GetGUID());
+                    if (lfgDungeon == LFG_DUNGEON_HEADLESS_HORSEMAN)
+                    {
+                        std::vector<Creature*> loaded;
+                        for (auto const& pair : instance->GetCreatureBySpawnIdStore())
+                            loaded.push_back(pair.second);
+                        for (Creature* creature : loaded)
+                            OnCreatureCreate(creature);
+                    }
+                }
             }
 
             void OnCreatureCreate(Creature* creature) override
@@ -74,6 +88,32 @@ class instance_scarlet_monastery : public InstanceMapScript
 
                 if (instance->IsChallengeDungeon() && creature->isDead())
                     creature->Respawn();
+
+                // the Horseman's version of the dungeon has none of its normal inhabitants (retail)
+                if (lfgDungeon == LFG_DUNGEON_HEADLESS_HORSEMAN)
+                {
+                    switch (creature->GetEntry())
+                    {
+                        case 23682: // Headless Horseman
+                        case 23775: // Head of the Horseman
+                        case 23694: // Pulsing Pumpkin
+                        case 23545: // Pumpkin Fiend
+                        case 23904: // Sir Thomas
+                        case 24034: // Headless Horseman - Wisp Invis
+                        case 23758: // Headless Horseman - Earth Explosion Bunny
+                        case 23686: // Headless Horseman Flame Bunny
+                            break;
+                        default:
+                            if (!creature->IsSummon())
+                            {
+                                creature->SetVisible(false);
+                                creature->SetReactState(REACT_PASSIVE);
+                                creature->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_PACIFIED | UNIT_FLAG_IMMUNE_TO_PC);
+                                return;
+                            }
+                            break;
+                    }
+                }
 
                 switch (creature->GetEntry())
                 {

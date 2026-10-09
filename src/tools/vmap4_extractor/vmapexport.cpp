@@ -66,6 +66,7 @@ uint32 CONF_TargetBuild = 18273;              // 5.4.8.18273
 char const* CONF_mpq_list[]=
 {
     "world.MPQ",
+    "world2.MPQ", // in the 5.4.8 client, holds dungeon WMOs (Wailing Caverns, Auchindoun, ...)
     "model.MPQ", // added in 5.x.x
     "misc.MPQ", // added in 5.x.x
     "expansion1.MPQ",
@@ -393,7 +394,7 @@ bool ExtractSingleWmo(std::string& fname)
             strncpy(temp, fname.c_str(), 1024);
             temp[fname.length()-4] = 0;
 
-            WMOGroup fgroup(Trinity::StringFormat("{}_{}.wmo", temp, i));
+            WMOGroup fgroup(Trinity::StringFormat("{}_{:03}.wmo", temp, i) /* group files are _000.wmo (was %03u before the fmt port) */);
             if (!fgroup.open(&froot))
             {
                 printf("Could not open all Group file for: %s\n", plain_name);

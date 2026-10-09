@@ -43,6 +43,32 @@
 #include "VMapManager2.h"
 #include "Weather.h"
 #include "WeatherMgr.h"
+#include "Config.h"         // Map.BotCellUpdateEvery
+#include "WorldSession.h"
+#include <mutex>
+#include <atomic>
+
+namespace
+{
+    // per map, the ticks and the time since the cells only bots keep active were last updated
+    struct BotCellState { uint32 tick = 0; uint32 diff = 0; std::vector<uint32> last; };   // last: per cell, ms of its last update
+    std::mutex botCellLock;
+    std::unordered_map<Map const*, BotCellState> botCellStates;
+
+    // Map.BotCellUpdateEvery, read again every 10 seconds (follows `.reload config`)
+    uint32 BotCellUpdateEvery()
+    {
+        static std::atomic<uint32> every{ 0 };
+        static std::atomic<uint32> readAt{ 0 };
+        uint32 const now = getMSTime();
+        if (!every.load() || getMSTimeDiff(readAt.load(), now) > 10000)
+        {
+            every = uint32(std::max(1, sConfigMgr->GetIntDefault("Map.BotCellUpdateEvery", 1)));
+            readAt = now;
+        }
+        return every.load();
+    }
+}
 #include "G3D/Plane.h"
 
 u_map_magic MapMagic        = { {'M','A','P','S'} };
@@ -179,6 +205,11 @@ void Map::LoadMap(int gx, int gy, bool reload)
     {
         if (GridMaps[gx][gy])
             return;
+
+        // the instances of one map are updated on different threads and share the grid maps, vmaps and
+        // mmaps of their parent. Whatever an instance does to the parent happens under the parent's grid lock (the
+        // lock order is always instance -> parent; the parent never takes the lock of an instance).
+        std::lock_guard<std::mutex> parentGuard(m_parentMap->GridLock);
 
         // load grid map for base map
         if (!m_parentMap->GridMaps[gx][gy])
@@ -713,6 +744,18 @@ void Map::Update(const uint32 t_diff)
     // for pets
     TypeContainerVisitor<Trinity::ObjectUpdater, WorldTypeMapContainer > world_object_update(updater);
 
+    // the cells that only bots keep active are updated every Nth tick, after those of the real players
+    // and the active objects, with the time of the ticks they missed
+    uint32 const botCellEvery = BotCellUpdateEvery();
+    BotCellState* botCells;
+    {
+        std::lock_guard<std::mutex> guard(botCellLock);
+        botCells = &botCellStates[this];
+    }
+    botCells->diff += t_diff;
+    bool const botCellTick = ++botCells->tick % botCellEvery == 0;
+    bool anyBot = false;
+
     // the player iterator is stored in the map object
     // to make sure calls to Map::Remove don't invalidate it
     for (m_mapRefIter = m_mapRefManager.begin(); m_mapRefIter != m_mapRefManager.end(); ++m_mapRefIter)
@@ -724,6 +767,12 @@ void Map::Update(const uint32 t_diff)
 
         // update players at tick
         player->Update(t_diff);
+
+        if (botCellEvery > 1 && !Instanceable() && player->GetSession() && player->GetSession()->IsBot())
+        {
+            anyBot = true;
+            continue;
+        }
 
         VisitNearbyCellsOf(player, grid_object_update, world_object_update);
 
@@ -742,6 +791,87 @@ void Map::Update(const uint32 t_diff)
             continue;
 
         VisitNearbyCellsOf(obj, grid_object_update, world_object_update);
+    }
+
+    // the cells around bots on a continent that no real player or active object updated this tick: each
+    // every Nth tick, spread over the ticks (cell number + tick), with the time since its own last update
+    (void)botCellTick;
+    if (anyBot)
+    {
+        uint32 const now = getMSTime();
+        uint32 const cellCount = TOTAL_NUMBER_OF_CELLS_PER_MAP * TOTAL_NUMBER_OF_CELLS_PER_MAP;
+        if (botCells->last.size() != cellCount)
+            botCells->last.assign(cellCount, 0);
+        // the cells the real players and the active objects updated this tick
+        for (size_t id = marked_cells._Find_first(); id < marked_cells.size(); id = marked_cells._Find_next(id))
+            botCells->last[id] = now;
+        for (m_mapRefIter = m_mapRefManager.begin(); m_mapRefIter != m_mapRefManager.end(); ++m_mapRefIter)
+        {
+            Player* player = m_mapRefIter->GetSource();
+            if (!player || !player->IsInWorld() || !player->GetSession() || !player->GetSession()->IsBot() || !player->IsPositionValid())
+                continue;
+            CellArea area = Cell::CalculateCellArea(player->GetPositionX(), player->GetPositionY(), player->GetGridActivationRange());
+            for (uint32 x = area.low_bound.x_coord; x <= area.high_bound.x_coord; ++x)
+                for (uint32 y = area.low_bound.y_coord; y <= area.high_bound.y_coord; ++y)
+                {
+                    uint32 const id = y * TOTAL_NUMBER_OF_CELLS_PER_MAP + x;
+                    if (isCellMarked(id) || (id + botCells->tick) % botCellEvery)
+                        continue;
+                    markCell(id);
+                    uint32 const last = botCells->last[id];
+                    uint32 diff = last ? getMSTimeDiff(last, now) : t_diff;
+                    if (diff > t_diff * botCellEvery * 3)
+                        diff = t_diff;   // newly active: one tick, as everywhere else
+                    botCells->last[id] = now;
+                    CellCoord pair(x, y);
+                    Cell cell(pair);
+                    cell.SetNoCreate();
+                    Trinity::ObjectUpdater cellUpdater(diff);
+                    TypeContainerVisitor<Trinity::ObjectUpdater, GridTypeMapContainer> cellGrid(cellUpdater);
+                    TypeContainerVisitor<Trinity::ObjectUpdater, WorldTypeMapContainer> cellWorld(cellUpdater);
+                    Visit(cell, cellGrid);
+                    Visit(cell, cellWorld);
+                }
+        }
+    }
+
+    // An object with a custom visibility distance (object_visibility) is seen from further away than the cells a player keeps
+    // updated, so a patrol with such a distance stood still for everybody who was not right under it. A creature of that kind
+    // that moves by itself is updated here as long as a player is on the map (map wide objects) or in its zone (zone wide
+    // objects), unless its cell was visited above.
+    if (HavePlayers() && (!m_customVisibilityObjects.empty() || !m_customVisibilityObjectsByZone.empty()))
+    {
+        std::vector<Creature*> patrols;
+        auto collect = [this, &patrols](std::unordered_set<WorldObject*> const& objects)
+        {
+            for (WorldObject* object : objects)
+            {
+                Creature* creature = object->ToCreature();
+                if (!creature || !creature->IsInWorld() || !creature->IsAlive() || creature->GetDefaultMovementType() == IDLE_MOTION_TYPE)
+                    continue;
+                CellCoord coord = Trinity::ComputeCellCoord(creature->GetPositionX(), creature->GetPositionY());
+                if (!isCellMarked(coord.y_coord * TOTAL_NUMBER_OF_CELLS_PER_MAP + coord.x_coord))
+                    patrols.push_back(creature);
+            }
+        };
+        collect(m_customVisibilityObjects);
+        if (!m_customVisibilityObjectsByZone.empty())
+        {
+            std::set<uint32> zones;
+            for (MapRefManager::iterator itr = m_mapRefManager.begin(); itr != m_mapRefManager.end(); ++itr)
+                if (Player* player = itr->GetSource())
+                    if (player->IsInWorld())
+                        zones.insert(player->GetZoneId());
+            for (uint32 zone : zones)
+            {
+                auto itr = m_customVisibilityObjectsByZone.find(zone);
+                if (itr != m_customVisibilityObjectsByZone.end())
+                    collect(itr->second);
+            }
+        }
+        for (Creature* creature : patrols)
+            if (creature->IsInWorld())
+                creature->Update(t_diff);
     }
 
     for (_transportsUpdateIter = _transports.begin(); _transportsUpdateIter != _transports.end();)
@@ -813,6 +943,10 @@ void Map::RemovePlayerFromMap(Player* player, bool remove)
     sScriptMgr->OnPlayerLeaveMap(this, player);
 
     player->CombatStop();
+    // CombatStop only suppresses PvP combat; a PvP reference that survives a far teleport times out later in
+    // CombatManager::Update on the NEW map thread and then edits the other player (combat/threat/auras) on the old map
+    // (TT-THREADCHECK PurgeCombatRef map 1 vs map 0) -> end it here, while both are still on this map thread
+    player->GetCombatManager().EndAllPvPCombat();
 
     bool const inWorld = player->IsInWorld();
     player->RemoveFromWorld();
@@ -1352,6 +1486,15 @@ bool Map::CreatureCellRelocation(Creature* c, Cell new_cell)
         return true;
     }
 
+    // a far visible patrol is updated from a distance (Map::Update), the grid it flies into may not be loaded yet
+    if (c->HasCustomVisibility() && c->GetDefaultMovementType() != IDLE_MOTION_TYPE)
+    {
+        EnsureGridLoaded(new_cell);
+        c->RemoveFromGrid();
+        AddToGrid(c, new_cell);
+        return true;
+    }
+
     // in diff. loaded grid normal creature
     if (IsGridLoaded(GridCoord(new_cell.GridX(), new_cell.GridY())))
     {
@@ -1657,7 +1800,10 @@ bool Map::UnloadGrid(NGridType& ngrid, bool unloadAll)
             MMAP::MMapFactory::createOrGetMMapManager()->unloadMap(GetId(), gx, gy);
         }
         else
+        {
+            std::lock_guard<std::mutex> parentGuard(m_parentMap->GridLock);   // see Map::LoadMap
             ((MapInstanced*)m_parentMap)->RemoveGridMapReference(GridCoord(gx, gy));
+        }
 
         GridMaps[gx][gy] = NULL;
     }

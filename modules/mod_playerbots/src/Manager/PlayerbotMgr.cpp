@@ -109,7 +109,8 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
     // At login DBC locale should be what the server is set to use by default (as spells etc are hardcoded to ENUS this
     // allows channels to work as intended)
     // Créer une session WorldSession pour le bot
-    WorldSession* botSession = new WorldSession(botAccountId, "", nullptr, AccountTypes::SEC_PLAYER, Expansions::EXPANSION_MISTS_OF_PANDARIA, 0, LOCALE_frFR, 0, false, false, true);
+    WorldSession* botSession = new WorldSession(botAccountId, "", nullptr, AccountTypes::SEC_PLAYER, Expansions::EXPANSION_MISTS_OF_PANDARIA, 0, LOCALE_enUS, 0,
+        0 /*flags*/, false /*isARecruiter*/, false /*hasBoost*/, true /*isBot*/);   // args were shifted (flags param), isBot stayed false
 
     botSession->HandlePlayerLogin(holder);  // will delete lqh
     Player* bot = botSession->GetPlayer();
@@ -192,13 +193,18 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
     botLoading.erase(botGUID);
 }
 
-void PlayerbotHolder::UpdateSessions()
+void PlayerbotHolder::UpdateSessions(bool handleTeleports)
 {
     for (PlayerBotMap::const_iterator itr = GetPlayerBotsBegin(); itr != GetPlayerBotsEnd(); ++itr)
     {
         Player* const bot = itr->second;
         if (bot->IsBeingTeleported())
         {
+            // a far teleport ack removes the bot from one map and adds it to another. For the bots of a
+            // real player this ran from WorldSession::Update inside that player's MAP thread, while other map threads
+            // update the target map (races, crashes). Teleports are only handled from the world thread now.
+            if (!handleTeleports)
+                continue;
             PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
             if (botAI)
             {
@@ -384,8 +390,18 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
         else if (bot && (logout || !botWorldSessionPtr->isLogingOut()))
         {
             botAI->TellMaster("Goodbye!");
+            // LoA Discord bug-report, ptitom758: a bot still in combat at logout leaves a stale
+            // pointer in whatever it was fighting its m_attackers set, crashing later (Unit::RemoveAllAttackers,
+            // CombatStop, CanSeeOrDetect) when that unit cleans up. Clear combat before the bot object is deleted.
+            bot->CombatStop(true);
             playerBots.erase(guid);                  // deletes bot player ptr inside this WorldSession PlayerBotMap
-            botWorldSessionPtr->LogoutPlayer(true);  // this will delete the bot Player object and PlayerbotAI object
+            // nothing deleted the PlayerbotAI ("this will delete ... PlayerbotAI object" below was not true:
+            // the logout hook looks the bot up in playerBots, which was just erased), so every bot logout leaked one and left
+            // a pointer to it in the registry. It goes here, unregistered first, while the bot still exists; the hooks that
+            // run during the logout then find no AI.
+            sPlayerbotsMgr->RemovePlayerBotData(guid, true);
+            delete botAI;
+            botWorldSessionPtr->LogoutPlayer(true);  // this will delete the bot Player object
             delete botWorldSessionPtr;               // finally delete the bot's WorldSession
         }
     }
@@ -403,6 +419,7 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
         botAI->TellMaster("Goodbye!");
         bot->StopMoving();
         bot->GetMotionMaster()->Clear();
+        bot->CombatStop(true);   // LoA Discord bug-report, ptitom758: same dangling-attacker fix as LogoutPlayerBot
 
         Group* group = bot->GetGroup();
         if (group && !bot->InBattleground() && !bot->InBattlegroundQueue() && botAI->HasActivePlayerMaster())
@@ -423,6 +440,9 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 
         playerBots.erase(guid);  // deletes bot player ptr inside this WorldSession PlayerBotMap
 
+        // the registry kept the pointer, so everything that asked for this bot's AI during the rest of the
+        // logout got freed memory (crash in PacketHandlingHelper::AddPacket when an account with an online bot was deleted)
+        sPlayerbotsMgr->RemovePlayerBotData(guid, true);
         delete botAI;
     }
 }
@@ -691,7 +711,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
 
     if (!*args)
     {
-        messages.push_back("usage: list/reload/tweak/self or add/init/remove PLAYERNAME\n");
+        messages.push_back("usage: list | summon | add NAME | remove NAME/* | addclass CLASS | addspec tank/heal/dps | setspec 0/1/2 (on target)");
         messages.push_back("usage: addclass CLASSNAME");
         return messages;
     }
@@ -704,19 +724,134 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
         return messages;
     }
 
-    if (!strcmp(cmd, "addspec") && master)
+    // list/add/remove were listed in the usage but not implemented (ProcessBotCommand = "unknown command")
+    if (!strcmp(cmd, "list") && master)
     {
-        if (!charname || !strcmp(charname, "tank") || !strcmp(charname, "dps") || !strcmp(charname, "heal"))
+        if (playerBots.empty())
         {
-            messages.push_back(
-                "addclass: invalid SPECNAME(tank/heal/dps)");
+            messages.push_back("No bots.");
             return messages;
         }
-        std::map<std::string, std::vector<uint8>> clazs = {
-            {"tank", { 1, 2, 11, 6, 10 }},
-            {"heal", { 2, 5, 7, 11, 10 }},
-            {"dps", { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }}
+        for (auto const& itr : playerBots)
+        {
+            Player* bot = itr.second;
+            std::ostringstream out;
+            out << bot->GetName() << " - level " << uint32(bot->GetLevel()) << " " << ClassToString((Classes)bot->GetClass())
+                << (bot->GetGroup() && bot->GetGroup() == master->GetGroup() ? " (in group)" : "");
+            messages.push_back(out.str());
+        }
+        return messages;
+    }
+
+    // summon: all bots of this master come to the master (dead ones are revived first)
+    if (!strcmp(cmd, "summon") && master)
+    {
+        uint32 count = 0;
+        for (auto const& itr : playerBots)
+        {
+            Player* bot = itr.second;
+            if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported())
+                continue;
+            if (!bot->IsAlive())
+            {
+                bot->ResurrectPlayer(1.0f);
+                bot->SpawnCorpseBones();
+            }
+            bot->CombatStop(true);
+            float angle = frand(0.0f, 2 * float(M_PI));
+            bot->TeleportTo(master->GetMapId(), master->GetPositionX() + std::cos(angle) * 2.0f,
+                master->GetPositionY() + std::sin(angle) * 2.0f, master->GetPositionZ() + 0.5f, master->GetOrientation());
+            ++count;
+        }
+        messages.push_back("Summoned " + std::to_string(count) + " bot(s).");
+        return messages;
+    }
+
+    if (!strcmp(cmd, "remove") && master)
+    {
+        if (!charname)
+        {
+            messages.push_back("usage: remove NAME or remove *");
+            return messages;
+        }
+        std::vector<ObjectGuid> toRemove;
+        for (auto const& itr : playerBots)
+            if (!strcmp(charname, "*") || itr.second->GetName() == charname)
+                toRemove.push_back(itr.second->GetGUID());
+        if (toRemove.empty())
+        {
+            messages.push_back(std::string("No bot of yours found: ") + charname);
+            return messages;
+        }
+        for (ObjectGuid const& guid : toRemove)
+        {
+            if (Player* bot = ObjectAccessor::FindConnectedPlayer(guid))
+                messages.push_back("Removed: " + bot->GetName());
+            LogoutPlayerBot(guid);
+        }
+        return messages;
+    }
+
+    if (!strcmp(cmd, "add") && master)
+    {
+        if (!charname)
+        {
+            messages.push_back("usage: add NAME (a character on your own account)");
+            return messages;
+        }
+        std::string name = charname;
+        if (!normalizePlayerName(name))
+        {
+            messages.push_back("Invalid name.");
+            return messages;
+        }
+        ObjectGuid guid = sCharacterCache->GetCharacterGuidByName(name);
+        if (guid.IsEmpty())
+        {
+            messages.push_back("Character not found: " + name);
+            return messages;
+        }
+        if (sCharacterCache->GetCharacterAccountIdByGuid(guid) != master->GetSession()->GetAccountId())
+        {
+            messages.push_back("Only characters on your own account: " + name);
+            return messages;
+        }
+        if (guid == master->GetGUID() || ObjectAccessor::FindConnectedPlayer(guid))
+        {
+            messages.push_back("Already online: " + name);
+            return messages;
+        }
+        AddPlayerBot(guid, master->GetSession()->GetAccountId());
+        messages.push_back("Bot added: " + name);
+        return messages;
+    }
+
+    if (!strcmp(cmd, "addspec") && master)
+    {
+        // addspec did not work (inverted check, never executed). {class, spec tab}; monk added with the monk AI
+        static std::map<std::string, std::vector<std::pair<uint8, int32>>> const specs = {
+            {"tank", { {1, 2}, {2, 1}, {6, 0}, {10, 0}, {11, 2} }},
+            {"heal", { {2, 0}, {5, 0}, {5, 1}, {7, 2}, {10, 1}, {11, 3} }},
+            {"dps",  { {1, 0}, {1, 1}, {2, 2}, {3, 0}, {3, 1}, {3, 2}, {4, 0}, {4, 1}, {4, 2}, {5, 2}, {6, 1}, {6, 2},
+                       {7, 0}, {7, 1}, {8, 0}, {8, 1}, {8, 2}, {9, 0}, {9, 1}, {9, 2}, {10, 2}, {11, 0}, {11, 1} }}
         };
+        auto itr = charname ? specs.find(charname) : specs.end();
+        if (itr == specs.end())
+        {
+            messages.push_back("usage: addspec tank/heal/dps");
+            return messages;
+        }
+        std::vector<std::pair<uint8, int32>> options = itr->second;
+        std::mt19937 gen(std::chrono::system_clock::now().time_since_epoch().count());
+        std::shuffle(options.begin(), options.end(), gen);
+        for (auto const& opt : options)
+            if (AddClassBot(master, opt.first, opt.second))
+            {
+                messages.push_back("Add spec " + std::string(charname));
+                return messages;
+            }
+        messages.push_back("Add spec failed, no available characters!");
+        return messages;
     }
     if (!strcmp(cmd, "setspec") && master && master->GetTarget())
     {
@@ -744,7 +879,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
         if (!charname)
         {
             messages.push_back(
-                "addclass: invalid CLASSNAME(warrior/paladin/hunter/rogue/priest/shaman/mage/warlock/druid/dk)");
+                "addclass: invalid CLASSNAME(warrior/paladin/hunter/rogue/priest/shaman/mage/warlock/druid/dk/monk)");
             return messages;
         }
         uint8 claz;
@@ -797,40 +932,8 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             messages.push_back("Error: Invalid Class. Try again.");
             return messages;
         }
-        TeamId teamId = master->GetTeamId();
-        GuidVector guidCache = sRandomPlayerbotMgr->AddclassCache()[RandomPlayerbotMgr::GetTeamClassIdx(teamId == TEAM_ALLIANCE, claz)];
-        
-        std::mt19937 gen(std::chrono::system_clock::now().time_since_epoch().count());
-        std::shuffle(guidCache.begin(), guidCache.end(), gen);
-        for (size_t i = 0; i < guidCache.size(); i++)
+        if (AddClassBot(master, claz, -1))
         {
-            ObjectGuid guid = guidCache[i];
-            if (botLoading.find(guid) != botLoading.end())
-                continue;
-            if (ObjectAccessor::FindConnectedPlayer(guid))
-                continue;
-
-            AddPlayerBot(guid, master->GetSession()->GetAccountId());
-            // ugly
-            std::thread([this, master, guid]
-            {
-                Player* bot = nullptr;
-                int max_try = 100;
-                do
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(120));
-                    bot = ObjectAccessor::FindConnectedPlayer(guid);
-                    if (bot) break;
-                    --max_try;
-                } while (bot == nullptr && max_try > 0);
-                if (!bot) return;
-                sRandomPlayerbotMgr->SetValue(bot, "level", master->GetLevel());
-                sRandomPlayerbotMgr->Randomize(bot);
-                BotFactory factory(bot, bot->GetLevel());
-                factory.InitTalentsTree(true);
-                factory.InitEquipment(true);
-            }).detach();
-            
             messages.push_back("Add class " + std::string(charname));
             return messages;
         }
@@ -839,6 +942,63 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
     }
 
     return {};
+}
+
+// shared route for addclass/addspec; post-processing in OnBotLoginInternal (world thread)
+bool PlayerbotHolder::AddClassBot(Player* master, uint8 claz, int32 specTab)
+{
+    if (!master)
+        return false;
+
+    TeamId teamId = master->GetTeamId();
+    GuidVector guidCache = sRandomPlayerbotMgr->AddclassCache()[RandomPlayerbotMgr::GetTeamClassIdx(teamId == TEAM_ALLIANCE, claz)];
+
+    std::mt19937 gen(std::chrono::system_clock::now().time_since_epoch().count());
+    std::shuffle(guidCache.begin(), guidCache.end(), gen);
+    for (ObjectGuid const& guid : guidCache)
+    {
+        if (botLoading.find(guid) != botLoading.end())
+            continue;
+        if (ObjectAccessor::FindConnectedPlayer(guid))
+            continue;
+
+        pendingAddclass[guid] = std::make_pair(uint8(master->GetLevel()), specTab);
+        AddPlayerBot(guid, master->GetSession()->GetAccountId());
+        return true;
+    }
+    return false;
+}
+
+void PlayerbotHolder::ApplyPendingAddclass(Player* bot)
+{
+    auto itr = pendingAddclass.find(bot->GetGUID());
+    if (itr == pendingAddclass.end())
+        return;
+
+    uint8 level = itr->second.first;
+    int32 specTab = itr->second.second;
+    pendingAddclass.erase(itr);
+
+    sRandomPlayerbotMgr->SetValue(bot, "level", level);
+    sRandomPlayerbotMgr->Randomize(bot);
+
+    if (specTab >= 0)
+    {
+        WorldPacket p(CMSG_SET_PRIMARY_TALENT_TREE);
+        p << uint32(specTab);
+        bot->ResetTalents(true, true, true);
+        bot->GetSession()->HandeSetTalentSpecialization(p);
+        bot->ActivateSpec(0);
+    }
+
+    BotFactory factory(bot, bot->GetLevel());
+    factory.InitTalentsTree(specTab < 0);
+    factory.InitEquipment(true);
+    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+    {
+        botAI->ResetStrategies();
+        botAI->Reset(true);
+    }
 }
 
 uint32 PlayerbotHolder::GetAccountId(std::string const name) { return AccountMgr::GetId(name); }
@@ -1124,6 +1284,7 @@ void PlayerbotMgr::OnBotLoginInternal(Player* const bot)
     }
     botAI->SetMaster(master);
     //botAI->ResetStrategies();
+    ApplyPendingAddclass(bot);
 
     TC_LOG_INFO("playerbots", "Bot {} logged in - Active spec tab: {} Spec: {} ", bot->GetName().c_str(), (uint32)bot->GetActiveSpec(), (uint32)bot->GetSpecialization());
 }

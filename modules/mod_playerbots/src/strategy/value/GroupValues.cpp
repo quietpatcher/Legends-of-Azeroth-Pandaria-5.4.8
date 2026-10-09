@@ -76,7 +76,7 @@ uint32 GroupBoolCountValue::Calculate()
         if (!player)
             continue;
 
-        if (player->GetMapId() != bot->GetMapId())
+        if (player->FindMap() != bot->FindMap())
             continue;
 
         if (!GET_PLAYERBOT_AI(player))
@@ -98,7 +98,7 @@ bool GroupBoolANDValue::Calculate()
         if (!player)
             continue;
 
-        if (player->GetMapId() != bot->GetMapId())
+        if (player->FindMap() != bot->FindMap())
             continue;
 
         if (!GET_PLAYERBOT_AI(player))
@@ -120,7 +120,7 @@ bool GroupBoolORValue::Calculate()
         if (!player)
             continue;
 
-        if (player->GetMapId() != bot->GetMapId())
+        if (player->FindMap() != bot->FindMap())
             continue;
 
         if (!GET_PLAYERBOT_AI(player))

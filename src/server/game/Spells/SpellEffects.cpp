@@ -3194,7 +3194,8 @@ void Spell::EffectEnchantItemPerm(SpellEffIndex effIndex)
         // remove old enchanting before applying new if equipped
         item_owner->ApplyEnchantment(itemTarget, slot, false);
 
-        itemTarget->SetEnchantment(PERM_ENCHANTMENT_SLOT, enchant_id, 0, enchant->Charges, m_caster->GetGUID());
+        // after alexkulya #124: into the slot that was just cleared - a tinker replaced the enchant
+        itemTarget->SetEnchantment(slot, enchant_id, 0, enchant->Charges, m_caster->GetGUID());
 
         // add new enchanting if equipped
         item_owner->ApplyEnchantment(itemTarget, slot, true);
@@ -5735,6 +5736,20 @@ void Spell::EffectResurrectPet(SpellEffIndex /*effIndex*/)
         return;
 
     Pet* pet = player->GetPet();
+    // the pet died and its corpse is gone, or the hunter logged in with a dead pet. Revive Pet brings
+    // the stored pet back (as on retail); this handler only knew a corpse that still stood next to the hunter, so the
+    // cast did nothing and the pet stayed dead for good.
+    if (!pet)
+    {
+        Pet* stored = new Pet(player, HUNTER_PET);
+        uint32 const current = player->GetCurrentPetId();
+        if (!(current ? stored->LoadPetFromDB(PET_LOAD_BY_ID, current) : stored->LoadPetFromDB(PET_LOAD_BY_SLOT, 0)))
+        {
+            delete stored;
+            return;
+        }
+        pet = player->GetPet();
+    }
     if (!pet || pet->IsAlive())
         return;
 

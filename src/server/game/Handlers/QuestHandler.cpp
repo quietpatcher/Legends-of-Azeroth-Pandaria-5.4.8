@@ -143,7 +143,10 @@ void WorldSession::HandleQuestgiverHelloOpcode(WorldPacket& recvData)
     _player->PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
     _player->SendPreparedGossip(creature);
 
-    creature->AI()->OnGossipHello(_player);
+    // an NPC with the gossip flag also gets CMSG_GOSSIP_HELLO, whose handler calls the AI - a
+    // SmartAI quest credit on gossip hello was given twice (Loss Reduction, Bael'dun Rescue)
+    if (!creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP))
+        creature->AI()->OnGossipHello(_player);
 }
 
 void WorldSession::HandleQuestgiverAcceptQuestOpcode(WorldPacket& recvData)

@@ -505,21 +505,23 @@ void PetBattle::EndBattle(PetBattleTeam* lostTeam, bool forfeit)
                 if (auto battlePet = GetCagedPet())
                 {
                     auto &battlePetMgr = player->GetBattlePetMgr();
-                    if (!battlePetMgr.CanStoreBattlePet(battlePet->GetSpecies()))
-                        continue;
+                    // was "continue", which also skipped the end of the battle for this player
+                    if (battlePetMgr.CanStoreBattlePet(battlePet->GetSpecies()))
+                    {
+                        uint8 level = battlePet->GetLevel();
 
-                    uint8 level = battlePet->GetLevel();
+                        // level 16-20 pets lose 1 level when caught
+                        if (level >= 16 && level <= 20)
+                            level--;
+                        // level 21-25 pets lose 2 levels when caught
+                        else if (level >= 21 && level <= 25)
+                            level -= 2;
 
-                    // level 16-20 pets lose 1 level when caught
-                    if (level >= 16 && level <= 20)
-                        level--;
-                    // level 21-25 pets lose 2 levels when caught
-                    else if (level >= 21 && level <= 25)
-                        level -= 2;
-
-                    battlePetMgr.Create(battlePet->GetSpecies(), level, battlePet->GetBreed(), battlePet->GetQuality());
-                    player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_CAPTURE_BATTLE_PET, battlePet->GetSpecies(), uint32(1 << battlePet->GetFamilty()), 0, player);
-                    player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_CAPTURE_BATTLE_PET2, 1, 0, 0, player);
+                        battlePetMgr.Create(battlePet->GetSpecies(), level, battlePet->GetBreed(), battlePet->GetQuality());
+                        player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_CAPTURE_BATTLE_PET, battlePet->GetSpecies(), uint32(1 << battlePet->GetFamilty()), 0, player);
+                        player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_CAPTURE_BATTLE_PET2, 1, 0, 0, player);
+                        player->KilledMonsterCredit(65356);     // quest credit "Catch a Pet"
+                    }
                 }
             }
 
@@ -532,6 +534,17 @@ void PetBattle::EndBattle(PetBattleTeam* lostTeam, bool forfeit)
                     for (auto&& pet : Opponent()->BattlePets)
                         familyMask |= (1 << pet->GetFamilty());
                 player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_WIN_PET_BATTLE, 1, familyMask, 0, player);
+
+                // quest credits "Win a Pet Battle" and "Level 3 Pet" - nothing gave them
+                player->KilledMonsterCredit(65355);
+                for (auto&& pet : team->BattlePets)
+                {
+                    if (pet->GetLevel() >= 3)
+                    {
+                        player->KilledMonsterCredit(65876);
+                        break;
+                    }
+                }
             }
             else
                 player->ResetCriterias(CRITERIA_RESET_TYPE_LOSE_PET_BATTLE, 0);

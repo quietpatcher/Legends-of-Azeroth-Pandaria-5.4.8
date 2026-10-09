@@ -409,6 +409,9 @@ class instance_black_temple : public InstanceMapScript
 
             bool CheckRequiredBosses(uint32 bossId, Player const* player) const override
             {
+                if (_SkipCheckRequiredBosses(player))   // GMs with the permission and bots
+                    return true;
+
                 switch (bossId)
                 {
                     // no breaks intended

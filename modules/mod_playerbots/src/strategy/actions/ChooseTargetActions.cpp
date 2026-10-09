@@ -114,7 +114,7 @@ bool AttackRtiTargetAction::Execute(Event event)
 {
     Unit* rtiTarget = AI_VALUE(Unit*, "rti target");
 
-    if (rtiTarget && rtiTarget->IsInWorld() && rtiTarget->GetMapId() == bot->GetMapId())
+    if (rtiTarget && rtiTarget->IsInWorld() && rtiTarget->FindMap() == bot->FindMap())
     {
         botAI->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Set({ rtiTarget->GetGUID() });
         bool result = Attack(botAI->GetUnit(rtiTarget->GetGUID()));

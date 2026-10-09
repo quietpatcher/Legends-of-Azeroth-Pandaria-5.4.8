@@ -1,4 +1,6 @@
 #include "GrindTargetValue.h"
+#include "ObjectAccessor.h"
+#include "BotLife.h"
 
 #include "Playerbots.h"
 #include "SharedDefines.h"
@@ -27,7 +29,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     Group* group = bot->GetGroup();
     Player* master = GetMaster();
 
-    if (master && (master == bot || master->GetMapId() != bot->GetMapId() || master->IsBeingTeleported() || !GET_PLAYERBOT_AI(master)))
+    if (master && (master == bot || master->FindMap() != bot->FindMap() || master->IsBeingTeleported() || !GET_PLAYERBOT_AI(master)))
         master = nullptr;
 
     GuidVector attackers = context->GetValue<GuidVector>("attackers")->Get();
@@ -56,6 +58,10 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
             continue;
 
         if (unit->isDead()) continue;
+
+        // creatures this bot keeps dying to are left alone for a while (BotLife)
+        if (sBotLife->IsAvoidedTarget(bot, unit))
+            continue;
 
         auto& rep = bot->ToPlayer()->GetReputationMgr();
         if (unit->ToCreature() && !unit->ToCreature()->GetCreatureTemplate()->lootid &&
@@ -113,18 +119,17 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                 if (CreatureTemplate->rank > CREATURE_ELITE_NORMAL && !AI_VALUE(bool, "can fight elite"))
                     continue;
 
-        if (!bot->IsWithinLOSInMap(unit))
-        {
-            continue;
-        }
-
         if (group)
         {
+            if (!bot->IsWithinLOSInMap(unit))
+                continue;
+
             Group::MemberSlotList const& groupSlot = group->GetMemberSlots();
             for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
             {
                 Player* member = ObjectAccessor::FindPlayer(itr->guid);
-                if (!member || !member->IsAlive())
+                // same map only
+                if (!member || !member->IsInWorld() || member->FindMap() != bot->FindMap() || !member->IsAlive())
                     continue;
 
                 float d = member->GetDistance(unit);
@@ -137,12 +142,16 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         }
         else
         {
+            // quest targets first, and only pay for the LOS check when this could be the new best target
             float newdistance = bot->GetDistance(unit);
-            if (!result || (newdistance < distance))
-            {
-                distance = newdistance;
-                result = unit;
-            }
+            if (sBotLife->IsQuestTarget(bot, unit))
+                newdistance *= 0.25f;
+            if (result && newdistance >= distance)
+                continue;
+            if (!bot->IsWithinLOSInMap(unit))
+                continue;
+            distance = newdistance;
+            result = unit;
         }
     }
 
@@ -236,7 +245,8 @@ uint32 GrindTargetValue::GetTargetingPlayerCount(Unit* unit)
     for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
     {
         Player* member = ObjectAccessor::FindPlayer(itr->guid);
-        if (!member || !member->IsAlive() || member == bot)
+        // not the AI context of a member on another map (other map thread, see IsCcTarget)
+        if (!member || member == bot || !member->IsInWorld() || member->FindMap() != bot->FindMap() || !member->IsAlive())
             continue;
 
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(member);
@@ -246,4 +256,25 @@ uint32 GrindTargetValue::GetTargetingPlayerCount(Unit* unit)
     }
 
     return count;
+}
+
+// the value had checkInterval 1 (no caching) and scanned every visible creature on each Get, several times per
+// tick (trigger, attack anything, BotLife): 23% of all bot AI time at 3000 bots. Cached for a second by GUID (a raw
+// Unit* could be gone by then) and re-validated on every read.
+Unit* GrindTargetValue::Get()
+{
+    uint32 now = getMSTime();
+    if (_cachedAt && getMSTimeDiff(_cachedAt, now) < 1000)
+    {
+        if (_cachedGuid.IsEmpty())
+            return nullptr;
+        Unit* unit = ObjectAccessor::GetUnit(*bot, _cachedGuid);
+        if (unit && unit->IsInWorld() && unit->IsAlive())
+            return unit;
+    }
+    Unit* unit = Calculate();
+    _cachedAt = now;
+    _cachedGuid = unit ? unit->GetGUID() : ObjectGuid::Empty;
+    value = unit;
+    return unit;
 }

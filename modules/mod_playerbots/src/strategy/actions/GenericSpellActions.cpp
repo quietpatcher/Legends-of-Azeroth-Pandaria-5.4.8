@@ -126,7 +126,7 @@ bool CastSpellAction::isUseful()
     if (!spellTarget)
         return false;
 
-    if (!spellTarget->IsInWorld() || spellTarget->GetMapId() != bot->GetMapId())
+    if (!spellTarget->IsInWorld() || spellTarget->FindMap() != bot->FindMap())
         return false;
 
     // float combatReach = bot->GetCombatReach() + spellTarget->GetCombatReach();

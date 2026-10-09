@@ -9,6 +9,7 @@
 #include "GridObject.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "ObjectMgr.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
 #include "ServerFacade.h"
@@ -77,7 +78,7 @@ void AttackersValue::AddAttackersOf(Group* group, std::unordered_set<Unit*>& tar
     for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
     {
         Player* member = ObjectAccessor::FindPlayer(itr->guid);
-        if (!member || !member->IsAlive() || member == bot || member->GetMapId() != bot->GetMapId() ||
+        if (!member || !member->IsAlive() || member == bot || member->FindMap() != bot->FindMap() ||
             sServerFacade->GetDistance2d(bot, member) > sPlayerbotAIConfig->sightDistance)
             continue;
 
@@ -118,7 +119,7 @@ void AttackersValue::RemoveNonThreating(std::unordered_set<Unit*>& targets)
     for (std::unordered_set<Unit*>::iterator tIter = targets.begin(); tIter != targets.end();)
     {
         Unit* unit = *tIter;
-        if (bot->GetMapId() != unit->GetMapId() || !hasRealThreat(unit) || !IsValidTarget(unit, bot))
+        if (bot->FindMap() != unit->FindMap() || !hasRealThreat(unit) || !IsValidTarget(unit, bot))
         {
             std::unordered_set<Unit*>::iterator tIter2 = tIter;
             ++tIter;
@@ -140,6 +141,9 @@ bool AttackersValue::hasRealThreat(Unit* attacker)
 bool AttackersValue::IsPossibleTarget(Unit* attacker, Player* bot, float range)
 {
     Creature* c = attacker->ToCreature();
+    // a training dummy never dies: no target for a bot (Scarlet Monastery zealots train on them)
+    if (c && (c->GetName().find("Dummy") != std::string::npos || sObjectMgr->GetScriptName(c->GetCreatureTemplate()->ScriptID) == "npc_training_dummy"))
+        return false;
     bool rti = false;
     if (attacker && bot->GetGroup())
         rti = bot->GetGroup()->GetTargetIcon(7) == attacker->GetGUID();
@@ -161,7 +165,7 @@ bool AttackersValue::IsPossibleTarget(Unit* attacker, Player* bot, float range)
     // bool inCannon = botAI->IsInVehicle(false, true);
     // bool enemy = botAI->GetAiObjectContext()->GetValue<Unit*>("enemy player target")->Get();
 
-    return attacker && attacker->IsVisible() && attacker->IsInWorld() && attacker->GetMapId() == bot->GetMapId() &&
+    return attacker && attacker->IsVisible() && attacker->IsInWorld() && attacker->FindMap() == bot->FindMap() &&
         !attacker->isDead() &&
         !attacker->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2) &&
         // (inCannon || !attacker->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE)) &&

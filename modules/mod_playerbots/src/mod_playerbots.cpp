@@ -87,7 +87,12 @@ public:
     }
     void OnUpdate(uint32 diff) override
     {
-        sBracketMgr->Update(diff);
+        // the bracket manager hands out levels (and with them a full set of gear) to keep a fixed
+        // spread over the level ranges; with natural progression the bots level themselves
+        static bool const brackets = sConfigMgr->GetBoolDefault("AiPlayerbot.LevelBrackets", true)
+            && !sConfigMgr->GetBoolDefault("AiPlayerbot.NaturalProgression", false);
+        if (brackets)
+            sBracketMgr->Update(diff);
     }
 };
 
@@ -134,6 +139,9 @@ public:
         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
         {
             botAI->HandleBotOutgoingPacket(*packet);
+            // bots are no master; otherwise every bot packet walks through all random bots (O(n^2))
+            if (!botAI->IsRealPlayer())
+                return;
         }
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
         {
@@ -145,13 +153,19 @@ public:
     {
         sRandomPlayerbotMgr->UpdateAI(diff);
         sRandomPlayerbotMgr->UpdateSessions();
+        // teleports of the bots of real players, here in the world thread (maps idle)
+        for (auto const& pair : sWorld->GetAllSessions())
+            if (Player* player = pair.second ? pair.second->GetPlayer() : nullptr)
+                if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
+                    playerbotMgr->UpdateSessions(true);
     }
 
     void OnPlayerbotUpdateSessions(Player* player) override
     {
+        // called from WorldSession::Update, which also runs inside map threads: no teleports here (see UpdateSessions)
         if (player)
             if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
-                playerbotMgr->UpdateSessions();
+                playerbotMgr->UpdateSessions(false);
     }
 
     void OnPlayerbotLogout(Player* player) override
@@ -206,6 +220,8 @@ public:
         }
     }
 };
+void AddSC_bot_life();   // BotLife/BotLifeScripts.cpp: 
+
 void AddSC_mod_playerbots()
 {
     new mod_playerbots();
@@ -216,4 +232,5 @@ void AddSC_mod_playerbots()
     new PlayerbotsPlayerScript();
 
     AddSC_playerbots_commandscript();
+    AddSC_bot_life();
 }

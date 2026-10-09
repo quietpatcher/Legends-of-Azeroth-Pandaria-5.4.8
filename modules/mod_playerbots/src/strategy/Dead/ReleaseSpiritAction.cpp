@@ -7,6 +7,9 @@
 
 #include "DatabaseEnvFwd.h"
 #include "Battleground.h"
+#include "CellImpl.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Event.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
@@ -104,19 +107,22 @@ bool AutoReleaseSpiritAction::Execute(Event event)
 
     if (bot->InBattleground() && (time(NULL) - bg_gossip_time >= 15 || !bot->HasAura(SPELL_WAITING_FOR_RESURRECT)))
     {
-        GuidVector npcs = AI_VALUE(GuidVector, "nearest npcs");
+        // the "nearest npcs" value does not exist in this port (garbage vector -> crash); search the grid
+        std::list<Creature*> creatures;
+        Trinity::AnyUnitInObjectRangeCheck check(bot, 80.0f);
+        Trinity::CreatureListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(bot, creatures, check);
+        bot->VisitNearbyGridObject(80.0f, searcher);
         ObjectGuid guid;
-        Unit* unit;
-        for (GuidVector::iterator i = npcs.begin(); i != npcs.end(); i++)
+        Unit* unit = nullptr;
+        for (Creature* c : creatures)
         {
-            unit = botAI->GetUnit(*i);
-            if (unit && unit->IsSpiritService())
+            if (c && c->IsSpiritService() && (!unit || bot->GetDistance(c) < bot->GetDistance(unit)))
             {
-                guid = unit->GetGUID();
-                break;
+                unit = c;
+                guid = c->GetGUID();
             }
         }
-        if (!guid)
+        if (!unit)
         {
             return true;
         }
@@ -131,11 +137,9 @@ bool AutoReleaseSpiritAction::Execute(Event event)
         else if (!botAI->IsRealPlayer()) // below doesnt work properly on realplayer, but its also not needed
         {
             bg_gossip_time = time(NULL);
-            WorldPacket data(CMSG_GOSSIP_HELLO);
-            data << guid;
-            WorldPackets::NPC::GossipHello gossipHello(std::move(data));
-            gossipHello.Read();
-            bot->GetSession()->HandleGossipHelloOpcode(gossipHello);
+            // the faked CMSG_GOSSIP_HELLO (3.3.5 layout) crashed on MoP; join the spirit guide queue directly
+            if (Battleground* bg = bot->GetBattleground())
+                bg->AddPlayerToResurrectQueue(guid, bot->GetGUID());
         }
     }
     botAI->SetNextCheckDelay(1000);
@@ -168,7 +172,7 @@ bool AutoReleaseSpiritAction::isUseful()
     if (!botAI->HasActivePlayerMaster())
         return true;
 
-    if (botAI->HasActivePlayerMaster() && botAI->GetGroupMaster()->GetMapId() == bot->GetMapId() && bot->GetMap() &&
+    if (botAI->HasActivePlayerMaster() && botAI->GetGroupMaster()->FindMap() == bot->FindMap() && bot->GetMap() &&
         (bot->GetMap()->IsRaid() || bot->GetMap()->IsDungeon()))
         return false;
 

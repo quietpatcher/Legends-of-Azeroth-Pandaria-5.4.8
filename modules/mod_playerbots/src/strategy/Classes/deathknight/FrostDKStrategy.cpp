@@ -86,11 +86,20 @@ FrostDKStrategy::FrostDKStrategy(PlayerbotAI* botAI) : GenericDKStrategy(botAI)
 
 NextAction** FrostDKStrategy::getDefaultActions()
 {
-    return NextAction::array(
-        0, new NextAction("obliterate", ACTION_DEFAULT + 0.7f),
-        new NextAction("frost strike", ACTION_DEFAULT + 0.4f),
-        new NextAction("empower rune weapon", ACTION_DEFAULT + 0.3f),
-        new NextAction("horn of winter", ACTION_DEFAULT + 0.1f), new NextAction("melee", ACTION_DEFAULT), NULL);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("outbreak", ACTION_DEFAULT + 0.95f),
+        new NextAction("soul reaper", ACTION_DEFAULT + 0.90f),
+        new NextAction("obliterate", ACTION_DEFAULT + 0.85f),
+        new NextAction("frost strike", ACTION_DEFAULT + 0.80f),
+        new NextAction("howling blast", ACTION_DEFAULT + 0.70f),
+        new NextAction("icy touch", ACTION_DEFAULT + 0.60f),
+        new NextAction("plague strike", ACTION_DEFAULT + 0.55f),
+        new NextAction("empower rune weapon", ACTION_DEFAULT + 0.30f),
+        new NextAction("horn of winter", ACTION_DEFAULT + 0.20f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void FrostDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

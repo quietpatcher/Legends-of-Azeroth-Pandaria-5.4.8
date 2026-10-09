@@ -636,7 +636,8 @@ void WorldSession::HandleBuybackItem(WorldPacket& recvData)
     else
         _player->SendBuyError(BUY_ERR_CANT_FIND_ITEM, creature, 0, 0);
 
-    GetPlayer()->SetSaveTimer(1);
+    if (!IsBot())   // not for a bot
+        GetPlayer()->SetSaveTimer(1);
 }
 
 void WorldSession::HandleBuyItemInSlotOpcode(WorldPacket& recvData)
@@ -740,7 +741,8 @@ void WorldSession::HandleBuyItemOpcode(WorldPacket& recvData)
     else
         TC_LOG_DEBUG("network", "WORLD: received wrong itemType ({}) in HandleBuyItemOpcode", itemType);
 
-    GetPlayer()->SetSaveTimer(1);
+    if (!IsBot())   // not for a bot
+        GetPlayer()->SetSaveTimer(1);
 }
 
 void WorldSession::HandleListInventoryOpcode(WorldPackets::NPC::ListInventory& packet)

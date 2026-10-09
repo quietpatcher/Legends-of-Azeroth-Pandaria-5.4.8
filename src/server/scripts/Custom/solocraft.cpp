@@ -16,6 +16,8 @@
 * with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <mutex>
+#include <unordered_map>
 #include <map>
 #include "Config.h"
 #include "DatabaseEnv.h"
@@ -26,6 +28,7 @@
 #include "Pet.h"
 #include "Map.h"
 #include "Group.h"
+#include "WorldSession.h"
 #include "InstanceScript.h"
 #include "Chat.h"
 #include "Log.h"
@@ -470,20 +473,77 @@ public:
 
     void OnMapChanged(Player* player) override
     {
+        Recalculate(player, true);
+    }
+
+    // the buff was only computed when entering the map, so bots added to (or leaving) the group inside the
+    // instance never changed it. Re-evaluate on a group size change, in the player's own map thread, and without the
+    // full heal / full mana of the entry path (that would be a free heal in combat).
+    void OnUpdate(Player* player, uint32 diff) override
+    {
+        if (!solocraftConfig.SoloCraftEnable || !player->GetSession() || player->GetSession()->IsBot())
+            return;
+        Map* map = player->GetMap();
+        if (!map || !map->IsDungeon())
+            return;
+        int numInGroup = GetNumInGroup(player);
+        {
+            std::lock_guard<std::mutex> lock(_groupWatchLock);
+            GroupWatch& watch = _groupWatch[player->GetGUID()];
+            if (watch.timer > diff)
+            {
+                watch.timer -= diff;
+                return;
+            }
+            watch.timer = 3000;
+            if (watch.mapId != map->GetId() || watch.instanceId != map->GetInstanceId() || watch.numInGroup == numInGroup)
+                return;   // not seen entering this instance (OnMapChanged records that), or nothing changed
+            watch.numInGroup = numInGroup;
+        }
+        Recalculate(player, false);
+    }
+
+    void Recalculate(Player* player, bool entering)
+    {
         if (solocraftConfig.SoloCraftEnable)
         {
             Map* map = player->GetMap();
+            // playerbots are the party, not solo players: never buffed (no DB round trip for them either)
+            if (player->GetSession() && player->GetSession()->IsBot())
+                return;
             float difficulty = CalculateDifficulty(map, player);
             int dunLevel = CalculateDungeonLevel(map, player);
             int numInGroup = GetNumInGroup(player);
+            // the buff stands in for the missing group members: full when solo, nothing with a full group
+            // (a player queued through LFD with bots was buffed as if alone)
+            if (difficulty > 0 && map->IsDungeon() && map->ToInstanceMap())
+            {
+                uint32 maxPlayers = map->ToInstanceMap()->GetMaxPlayers();
+                if (maxPlayers > 1)
+                {
+                    uint32 missing = uint32(numInGroup) < maxPlayers ? maxPlayers - uint32(numInGroup) : 0;
+                    difficulty = roundf(difficulty * float(missing) / float(maxPlayers - 1) * 100.0f) / 100.0f;
+                }
+            }
             uint32 classBalance = GetClassBalance(player);
             TC_LOG_DEBUG("solocraft", "solocraft player guid = {}, difficulty={}, dunLevel={}, numInGroup={}, classBalance={}", player->GetGUID().GetCounter(), difficulty, dunLevel, numInGroup, classBalance);
-            ApplyBuffs(player, map, difficulty, dunLevel, numInGroup, classBalance);
+            if (entering)
+            {
+                std::lock_guard<std::mutex> lock(_groupWatchLock);
+                if (map->IsDungeon())
+                    _groupWatch[player->GetGUID()] = { map->GetId(), map->GetInstanceId(), numInGroup, 3000 };
+                else
+                    _groupWatch.erase(player->GetGUID());
+            }
+            ApplyBuffs(player, map, difficulty, dunLevel, numInGroup, classBalance, entering);
         }
     }
 
 private:
     std::map<uint32, float> _unitDifficulty;
+    struct GroupWatch { uint32 mapId = 0; uint32 instanceId = 0; int numInGroup = 0; uint32 timer = 0; };
+    std::unordered_map<ObjectGuid, GroupWatch> _groupWatch;
+    std::mutex _groupWatchLock;
 protected:
     SolocraftConfig solocraftConfig;   
     bool noXPGainFlag = false; // if noXPGainFlag before solocraft setting
@@ -576,7 +636,7 @@ protected:
             return classBalance;
     }
 
-    void ApplyBuffs(Player* player, Map* map, float difficulty, int dunLevel, int numInGroup, int classBalance)
+    void ApplyBuffs(Player* player, Map* map, float difficulty, int dunLevel, int numInGroup, int classBalance, bool entering)
     {
         if (difficulty > 0)
         {
@@ -615,12 +675,16 @@ protected:
                     player->HandleStatModifier(UnitMods(UNIT_MOD_STAT_START + i), TOTAL_VALUE, difficulty * solocraftConfig.SoloCraftStatsMult, true);
                 }
 
-                player->SetFullHealth();
-                player->CastSpell(player, 6962, true);
+                if (entering)
+                {
+                    player->SetFullHealth();
+                    player->CastSpell(player, 6962, true);
+                }
 
                 if (player->GetPowerType() == POWER_MANA || player->GetClass() == 11)
                 {
-                    player->SetPower(POWER_MANA, player->GetMaxPower(POWER_MANA));
+                    if (entering)
+                        player->SetPower(POWER_MANA, player->GetMaxPower(POWER_MANA));
 
                     if (result)
                     {
@@ -684,7 +748,7 @@ protected:
             {
                 if (itr->guid != player->GetGUID())
                 {
-                    QueryResult result = CharacterDatabase.PQuery("SELECT `guid`, `Difficulty`, `GroupSize` FROM `custom_solocraft_character_stats` WHERE `guid` = {}", itr->guid);
+                    QueryResult result = CharacterDatabase.PQuery("SELECT `guid`, `Difficulty`, `GroupSize` FROM `custom_solocraft_character_stats` WHERE `guid` = {}", itr->guid.GetCounter()); // was ObjectGuid::ToString in SQL
 
                     if (result)
                     {
@@ -732,8 +796,21 @@ protected:
     }
 };
 
+// the stat buffs live in memory only; rows left by a crash or restart would be subtracted again later
+class solocraft_system_startup_cleanup : public WorldScript
+{
+public:
+    solocraft_system_startup_cleanup() : WorldScript("solocraft_system_startup_cleanup") { }
+
+    void OnStartup() override
+    {
+        CharacterDatabase.Execute("DELETE FROM `custom_solocraft_character_stats`");
+    }
+};
+
 void AddSC_solocraft_system()
 {
+    new solocraft_system_startup_cleanup();
     new solocraft_system_announce();
     new solocraft_system_player_instance_handler();
 }

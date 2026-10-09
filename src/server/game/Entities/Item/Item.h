@@ -405,6 +405,7 @@ class Item : public Object
     protected:
         void AddToUpdate() override;
         void RemoveFromUpdate() override;
+        Map* m_updateMap = nullptr;   // the map whose update list holds this item (see Item::AddToUpdate)
 
     private:
         std::string m_text;

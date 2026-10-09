@@ -33,6 +33,12 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "SpellAuraEffects.h"
+#include "CellImpl.h"
+#include "DynamicObject.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "SpellAuras.h"
+#include "SpellMgr.h"
 #include "SpellInfo.h"
 
 #include "Timer.h"
@@ -108,6 +114,10 @@ bool MovementAction::ChaseTo(WorldObject* obj, float distance, float angle)
     {
         return false;
     }
+
+    // never chase an object of another map (follower set of the target, other map thread)
+    if (!obj || !obj->IsInWorld() || bot->FindMap() != obj->FindMap())
+        return false;
 
     if (Vehicle* vehicle = bot->GetVehicle())
     {
@@ -475,7 +485,7 @@ bool MovementAction::IsMovingAllowed(WorldObject* target)
     if (!target)
         return false;
 
-    if (bot->GetMapId() != target->GetMapId())
+    if (bot->FindMap() != target->FindMap())
         return false;
 
     return IsMovingAllowed();
@@ -522,6 +532,12 @@ bool MovementAction::Follow(Unit* target, float distance, float angle)
     UpdateMovementState();
 
     if (!target)
+        return false;
+
+    // a follow target on another map (a group master that travelled ahead, or another instance of
+    // the same map id where the raw coordinates look close) belongs to another map thread; MoveFollow would insert
+    // this bot into its follower set and the code below reads its AI context (cross-thread write, heap corruption)
+    if (!target->IsInWorld() || bot->FindMap() != target->FindMap())
         return false;
 
     if (!bot->InBattleground() && sServerFacade->IsDistanceLessOrEqualThan(sServerFacade->GetDistance2d(bot, target),
@@ -1126,6 +1142,159 @@ Position MovementAction::BestPositionForRangedToFlee(Position pos, float radius)
     return Position();
 }
 
+// AvoidAoeAction, ported from mod-playerbots
+namespace
+{
+    // a hostile area aura of a dynamic object on the bot
+    Aura* AreaDebuff(Player* bot)
+    {
+        for (auto const& pair : bot->GetAppliedAuras())
+        {
+            AuraApplication const* app = pair.second;
+            Aura* aura = app ? app->GetBase() : nullptr;
+            if (!aura || app->IsPositive() || aura->IsRemoved() || aura->IsExpired() || aura->GetType() != DYNOBJ_AURA_TYPE)
+                continue;
+            Unit* caster = aura->GetCaster();
+            if (caster && !caster->IsHostileTo(bot))
+                continue;
+            return aura;
+        }
+        return nullptr;
+    }
+
+    // a hostile, non-selectable summon of an encounter close to the bot (a bomb before it goes off)
+    Unit* SummonedHazardNear(Player* bot, float range)
+    {
+        std::list<Unit*> units;
+        Trinity::AnyUnfriendlyUnitInObjectRangeCheck check(bot, bot, range);
+        Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitAllObjects(bot, searcher, range);
+        for (Unit* unit : units)
+            if (unit->IsSummon() && unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && unit->IsAlive() && unit->GetTypeId() == TYPEID_UNIT)
+                return unit;
+        return nullptr;
+    }
+
+    struct DamageTrapCheck
+    {
+        WorldObject const* bot;
+        float range;
+        bool operator()(GameObject* go) const
+        {
+            return go->GetGoType() == GAMEOBJECT_TYPE_TRAP && go->GetGOInfo()->trap.spellId && go->GetGOInfo()->trap.type == 0
+                && bot->IsWithinDistInMap(go, range);
+        }
+    };
+}
+
+bool AvoidAoeAction::isUseful()
+{
+    if (!bot->IsInWorld() || !bot->GetMap()->Instanceable() || bot->GetMap()->IsBattlegroundOrArena())
+        return false;
+    if (getMSTime() - lastMoveTimer < moveInterval)
+        return false;
+    if (AreaDebuff(bot) || SummonedHazardNear(bot, 3.0f))
+        return true;
+    GuidVector const triggers = AI_VALUE(GuidVector, "possible triggers");
+    if (!triggers.empty())
+        return true;
+    std::list<GameObject*> traps;
+    DamageTrapCheck check{ bot, sPlayerbotAIConfig->maxAoeAvoidRadius };
+    Trinity::GameObjectListSearcher<DamageTrapCheck> searcher(bot, traps, check);
+    bot->VisitNearbyGridObject(sPlayerbotAIConfig->maxAoeAvoidRadius, searcher);
+    return !traps.empty();
+}
+
+bool AvoidAoeAction::Execute(Event /*event*/)
+{
+    // an aura with a dynamic object (Rain of Fire), a trap object with a spell (lava bomb), a trigger unit (shadow
+    // fissure, sticky bomb)
+    Unit* hazard = SummonedHazardNear(bot, 3.0f);   // (part 3: a bomb before it goes off)
+    if (AvoidAuraWithDynamicObj() || AvoidGameObjectWithDamage() || AvoidUnitWithDamageAura()
+        || (hazard && FleePosition(hazard->GetPosition(), 5.0f)))
+    {
+        lastMoveTimer = getMSTime();
+        return true;
+    }
+    return false;
+}
+
+bool AvoidAoeAction::AvoidAuraWithDynamicObj()
+{
+    Aura* aura = AreaDebuff(bot);
+    if (!aura)
+        return false;
+    SpellInfo const* spellInfo = aura->GetSpellInfo();
+    if (!spellInfo || sPlayerbotAIConfig->aoeAvoidSpellWhitelist.count(spellInfo->Id))
+        return false;
+    DynamicObject* dynOwner = aura->GetDynobjOwner();
+    if (!dynOwner || !dynOwner->IsInWorld())
+        return false;
+    float const radius = dynOwner->GetRadius();
+    if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius || bot->GetDistance(dynOwner) > radius)
+        return false;
+    return FleePosition(dynOwner->GetPosition(), radius);
+}
+
+bool AvoidAoeAction::AvoidGameObjectWithDamage()
+{
+    std::list<GameObject*> traps;
+    DamageTrapCheck check{ bot, sPlayerbotAIConfig->maxAoeAvoidRadius };
+    Trinity::GameObjectListSearcher<DamageTrapCheck> searcher(bot, traps, check);
+    bot->VisitNearbyGridObject(sPlayerbotAIConfig->maxAoeAvoidRadius, searcher);
+    for (GameObject* go : traps)
+    {
+        uint32 const spellId = go->GetGOInfo()->trap.spellId;
+        if (sPlayerbotAIConfig->aoeAvoidSpellWhitelist.count(spellId))
+            continue;
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo || spellInfo->IsPositive())
+            continue;
+        float const radius = float(go->GetGOInfo()->trap.radius) / 2.0f + go->GetObjectSize();
+        if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius || bot->GetDistance(go) > radius)
+            continue;
+        if (FleePosition(go->GetPosition(), radius))
+            return true;
+    }
+    return false;
+}
+
+bool AvoidAoeAction::AvoidUnitWithDamageAura()
+{
+    GuidVector const triggers = AI_VALUE(GuidVector, "possible triggers");
+    for (ObjectGuid const& guid : triggers)
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld() || !unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+            continue;
+        for (AuraType type : { SPELL_AURA_PERIODIC_TRIGGER_SPELL, SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE })
+            for (AuraEffect const* aurEff : unit->GetAuraEffectsByType(type))
+            {
+                SpellInfo const* spellInfo = aurEff->GetSpellInfo();
+                if (!spellInfo)
+                    continue;
+                SpellInfo const* trigger = sSpellMgr->GetSpellInfo(spellInfo->Effects[aurEff->GetEffIndex()].TriggerSpell);
+                if (!trigger || sPlayerbotAIConfig->aoeAvoidSpellWhitelist.count(trigger->Id))
+                    continue;
+                for (uint8 j = 0; j < MAX_SPELL_EFFECTS; ++j)
+                {
+                    if (trigger->Effects[j].Effect != SPELL_EFFECT_SCHOOL_DAMAGE)
+                        continue;
+                    float const radius = trigger->Effects[j].CalcRadius();
+                    if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius || bot->GetDistance(unit) > radius)
+                        continue;
+                    if (FleePosition(unit->GetPosition(), radius))
+                        return true;
+                }
+            }
+        // a bomb that explodes by script when someone comes close (Sticky Bomb: 2 yards)
+        if (bot->GetDistance(unit) < 3.0f && (!unit->GetAuraEffectsByType(SPELL_AURA_PERIODIC_TRIGGER_SPELL).empty()
+            || !unit->GetAuraEffectsByType(SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE).empty()) && FleePosition(unit->GetPosition(), 5.0f))
+            return true;
+    }
+    return false;
+}
+
 bool MovementAction::FleePosition(Position pos, float radius, uint32 minInterval)
 {
     std::list<FleeInfo>& infoList = AI_VALUE(std::list<FleeInfo>&, "recently flee info");
@@ -1303,7 +1472,7 @@ Position CombatFormationMoveAction::AverageGroupPos(float dis, bool ranged, bool
         if (ranged && !PlayerBotSpec::IsRanged(member))
             continue;
 
-        if (!member->IsAlive() || member->GetMapId() != bot->GetMapId() || member->IsCharmed() ||
+        if (!member->IsAlive() || member->FindMap() != bot->FindMap() || member->IsCharmed() ||
             sServerFacade->GetDistance2d(bot, member) > dis)
             continue;
 
@@ -1341,7 +1510,7 @@ float CombatFormationMoveAction::AverageGroupAngle(Unit* from, bool ranged, bool
         if (ranged && !PlayerBotSpec::IsRanged(member))
             continue;
 
-        if (!member->IsAlive() || member->GetMapId() != bot->GetMapId() || member->IsCharmed() ||
+        if (!member->IsAlive() || member->FindMap() != bot->FindMap() || member->IsCharmed() ||
             sServerFacade->GetDistance2d(bot, member) > sPlayerbotAIConfig->sightDistance)
             continue;
 
@@ -1383,7 +1552,7 @@ Player* CombatFormationMoveAction::NearestGroupMember(float dis)
     for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
     {
         Player* member = ObjectAccessor::FindPlayer(itr->guid);
-        if (!member || !member->IsAlive() || member == bot || member->GetMapId() != bot->GetMapId() ||
+        if (!member || !member->IsAlive() || member == bot || member->FindMap() != bot->FindMap() ||
             member->IsCharmed() || sServerFacade->GetDistance2d(bot, member) > dis)
             continue;
         if (nearestDis > bot->GetExactDist(member))

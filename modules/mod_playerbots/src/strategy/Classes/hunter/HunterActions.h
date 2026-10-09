@@ -75,6 +75,10 @@ END_SPELL_ACTION()
 BEGIN_RANGED_SPELL_ACTION(CastSteadyShotAction, "steady shot")
 END_SPELL_ACTION()
 
+// MoP focus generator for beast mastery / survival (steady shot is marksmanship only)
+BEGIN_RANGED_SPELL_ACTION(CastCobraShotAction, "cobra shot")
+END_SPELL_ACTION()
+
 BEGIN_RANGED_SPELL_ACTION(CastKillShotAction, "kill shot")
 END_SPELL_ACTION()
 
@@ -132,6 +136,8 @@ class CastCallPetAction : public CastBuffSpellAction
 {
 public:
     CastCallPetAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "call pet 1") {}
+    // Call Pet "succeeds" on a dead pet without summoning it, so the engine never fell back to Revive Pet
+    bool isUseful() override;
 };
 
 class CastMendPetAction : public CastAuraSpellAction

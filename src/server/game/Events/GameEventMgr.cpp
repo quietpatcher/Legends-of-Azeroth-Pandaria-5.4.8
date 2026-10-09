@@ -1734,7 +1734,7 @@ public:
     void Visit(std::unordered_map<ObjectGuid, GameObject*>& gameObjectMap)
     {
         for (auto const& p : gameObjectMap)
-            if (p.second->IsInWorld())
+            if (p.second->IsInWorld() && p.second->AI())   // GOs without AI crashed the startup (Brewfest, 26-9)
                 p.second->AI()->OnGameEvent(_activate, _eventId);
     }
 

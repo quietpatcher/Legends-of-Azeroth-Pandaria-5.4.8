@@ -139,7 +139,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -188,7 +188,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -239,7 +239,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -277,7 +277,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -393,7 +393,7 @@ public:
         else
             mark = atoi(pmark);
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (target == NULL)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -434,7 +434,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -482,7 +482,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -527,7 +527,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -572,7 +572,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -617,7 +617,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -902,7 +902,7 @@ public:
             return false;
         }
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -973,7 +973,7 @@ data.WriteByteSeq(guid[4]);
         if (!*args)
             return false;
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -1098,7 +1098,7 @@ data.WriteByteSeq(guid[4]);
         if (!*args)
             return false;
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_PLAYER_NOT_FOUND);
@@ -1128,7 +1128,7 @@ data.WriteByteSeq(guid[4]);
         if (drunklevel > 100)
             drunklevel = 100;
 
-        if (Player* target = handler->getSelectedPlayer())
+        if (Player* target = handler->getSelectedPlayerOrSelf())
             target->SetDrunkValue(drunklevel);
 
         return true;
@@ -1139,7 +1139,7 @@ data.WriteByteSeq(guid[4]);
         if (!*args)
             return false;
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_PLAYER_NOT_FOUND);
@@ -1311,7 +1311,7 @@ data.WriteByteSeq(guid[4]);
         if (!*args)
             return false;
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
 
         if (!target)
         {
@@ -1387,7 +1387,7 @@ data.WriteByteSeq(guid[4]);
         if (!*args)
             return false;
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
             return handler->SendError(LANG_PLAYER_NOT_FOUND);
 

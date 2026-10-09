@@ -47,7 +47,8 @@ uint8 ThreatValue::Calculate(Unit* target)
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
-        if (!player || !player->IsAlive() || player == bot)
+        // skip members updated on another map thread (cross-thread read = heap corruption)
+        if (!player || !player->IsAlive() || player == bot || player->FindMap() != bot->FindMap())
             continue;
 
         if (PlayerBotSpec::IsTank(player))

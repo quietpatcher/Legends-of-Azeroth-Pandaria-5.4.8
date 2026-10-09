@@ -16,6 +16,7 @@
 */
 
 #include "Unit.h"
+#include "Config.h"
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
@@ -327,6 +328,17 @@ void GlobalCooldownMgr::CancelGlobalCooldown(SpellInfo const* spellInfo)
 // Methods of class Unit
 Unit::~Unit()
 {
+    // safety net for a recurring crash (27-9): AttackersValue (mod_playerbots) reads
+    // GetThreatManager().GetThreatenedByMeList() on a live unit and dereferences a stale ThreatReference whose
+    // _mgr belongs to an already-destroyed attacker. Some despawn path deletes a Unit without going through
+    // CleanupBeforeRemoveFromMap() first, so its outgoing threat references (RemoveMeFromThreatLists) never get
+    // unlinked from whatever it was threatening. Doing it here too is idempotent (empty the second time) and
+    // guarantees it regardless of which path deleted this unit.
+    GetThreatManager().RemoveMeFromThreatLists();
+    GetThreatManager().ClearAllThreat();
+
+    RemoveAllFollowers(); // vangnet
+
     // set current spells as deletable
     for (uint8 i = 0; i < CURRENT_MAX_SPELL; ++i)
         if (m_currentSpells [i])
@@ -787,6 +799,10 @@ void Unit::DealDamageMods(Unit* victim, uint32 &damage, uint32* absorb)
     }
 }
 
+// spell id of the damage that is being dealt right now (0 = melee or environment);
+// read by the OnDamage hooks, which do not get the spell
+thread_local uint32 tl_damageSpellId = 0;
+
 uint32 Unit::DealDamage(Unit* victim, uint32 damage, CleanDamage const* cleanDamage, DamageEffectType damagetype, SpellSchoolMask damageSchoolMask, SpellInfo const* spellProto, bool durabilityLoss)
 {
     if (Creature* target = victim->ToCreature())
@@ -821,6 +837,7 @@ uint32 Unit::DealDamage(Unit* victim, uint32 damage, CleanDamage const* cleanDam
         GetAI()->DamageDealt(victim, damage, damagetype);
 
     // Hook for OnDamage Event
+    tl_damageSpellId = spellProto ? spellProto->Id : 0;
     sScriptMgr->OnDamage(this, victim, damage);
 
     // optimization done
@@ -1039,7 +1056,17 @@ uint32 Unit::DealDamage(Unit* victim, uint32 damage, CleanDamage const* cleanDam
             victim->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_DIRECT_DAMAGE, spellProto ? spellProto->Id : 0);
 
         if (victim->GetTypeId() != TYPEID_PLAYER)
+        {
             victim->GetThreatManager().AddThreat(this, float(damage), spellProto);
+            // diagnostic: Debug.CombatLog = 1 logs combat starts from damage on creatures (spells with travel time did not start combat)
+            static bool const combatLog = sConfigMgr->GetBoolDefault("Debug.CombatLog", false);
+            if (combatLog && GetTypeId() == TYPEID_PLAYER && victim->GetEntry() == 2956)
+                TC_LOG_INFO("server", "COMBATDIAG dmg {} type {} spell {} {} -> {} ({}) | victimCombat {} combatWithMe {} threat {} canBegin {} inWorld {}/{} samePhase {} friendly {}/{} evade {}",
+                    damage, uint32(damagetype), spellProto ? spellProto->Id : 0, GetName(), victim->GetName(), victim->GetEntry(),
+                    victim->IsInCombat(), victim->GetCombatManager().IsInCombatWith(this), uint32(victim->GetThreatManager().GetThreatListSize()),
+                    CombatManager::CanBeginCombat(victim, this), victim->IsInWorld(), IsInWorld(), victim->InSamePhase(this),
+                    victim->IsFriendlyTo(this), IsFriendlyTo(victim), victim->HasUnitState(UNIT_STATE_EVADE));
+        }
         else                                                // victim is a player
         {
             // random durability for items (HIT TAKEN)
@@ -7686,6 +7713,8 @@ bool Unit::HandleDummyAuraProc(Unit* victim, uint32 damage, AuraEffect* triggere
 // All procs should be handled like this...
 bool Unit::HandleAuraProc(Unit* victim, uint32 /*damage*/, Aura* triggeredByAura, SpellInfo const* procSpell, uint32 /*procFlag*/, uint32 procEx, uint32 cooldown, bool* handled, ProcTriggerContext const& context)
 {
+    if (!triggeredByAura)
+        return false;
     SpellInfo const* dummySpell = triggeredByAura->GetSpellInfo();
 
     switch (dummySpell->SpellFamilyName)
@@ -8869,10 +8898,16 @@ bool Unit::AttackStop()
     return true;
 }
 
+// the unit that is stopping its own combat right now; read by CreatureAI::JustExitedCombat
+thread_local Unit const* tl_combatStopper = nullptr;
+
 void Unit::CombatStop(bool includingCast)
 {
     if (includingCast && IsNonMeleeSpellCasted(false))
         InterruptNonMeleeSpells(false);
+
+    Unit const* const outerStopper = tl_combatStopper;
+    tl_combatStopper = this;
 
     AttackStop();
     RemoveAllAttackers();
@@ -8881,6 +8916,8 @@ void Unit::CombatStop(bool includingCast)
     m_CombatManager.EndAllPvECombat();
     m_CombatManager.SuppressPvPCombat();
     ClearInCombat();
+
+    tl_combatStopper = outerStopper;
 }
 
 void Unit::CombatStopWithPets(bool includingCast)
@@ -12614,7 +12651,9 @@ Unit* Creature::SelectVictim()
 
     if (CanHaveThreatList())
     {
-        if (!target && !GetThreatManager().IsThreatListEmpty())
+        // also with only offline refs - GetCurrentVictim() re-evaluates their online state first (as in TC master),
+        // otherwise a ref that went offline for a moment makes the creature evade although its attacker is valid again
+        if (!target && !GetThreatManager().IsThreatListEmpty(true))
             // No taunt aura or taunt aura caster is dead standard target selection
             target = GetThreatManager().GetCurrentVictim();
     }
@@ -12650,6 +12689,30 @@ Unit* Creature::SelectVictim()
     {
         SetInFront(target);
         return target;
+    }
+
+    // attackers that never made it onto the threat list (combat was started through the old
+    // CombatStart/SetInCombatWith path, e.g. a spell being cast at us from range) are engaged instead of
+    // evading on the spot. TrinityCore does this through EngageWithTarget / only evades once engaged.
+    if (CanHaveThreatList() && !HasReactState(REACT_PASSIVE) && GetThreatManager().IsThreatListEmpty())
+    {
+        std::vector<Unit*> attackers(m_attackers.begin(), m_attackers.end());
+        for (Unit* attacker : attackers)
+        {
+            if (!attacker || !attacker->IsAlive() || !attacker->IsInMap(this))
+                continue;
+            if (!_IsTargetAcceptable(attacker) || !CanCreatureAttack(attacker) || !CanSeeOrDetect(attacker))
+                continue;
+            GetThreatManager().AddThreat(attacker, 0.0f, nullptr, true, true);
+            if (GetThreatManager().IsThreatListEmpty())
+                continue;
+            if (Unit* victim = GetThreatManager().GetCurrentVictim())
+                if (_IsTargetAcceptable(victim) && CanCreatureAttack(victim))
+                {
+                    SetInFront(victim);
+                    return victim;
+                }
+        }
     }
 
     // last case when creature must not go to evade mode:
@@ -12691,6 +12754,35 @@ Unit* Creature::SelectVictim()
     }
 
     // enter in evade mode in other case
+    {
+        // diagnostic: log the evade reason (Debug.EvadeLog = 1), only when a player is involved
+        static bool const evadeDiagLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);
+        if (evadeDiagLog)
+        {
+            Player* pAttacker = nullptr;
+            for (Unit* a : m_attackers)
+                if (a && a->GetTypeId() == TYPEID_PLAYER)
+                {
+                    pAttacker = a->ToPlayer();
+                    break;
+                }
+            ThreatReference const* pRef = nullptr;
+            uint32 refs = 0;
+            for (ThreatReference const* ref : GetThreatManager().GetUnsortedThreatList())
+            {
+                ++refs;
+                if (!pRef && ref->GetVictim() && ref->GetVictim()->GetTypeId() == TYPEID_PLAYER)
+                    pRef = ref;
+            }
+            Unit* who = pRef ? pRef->GetVictim() : pAttacker;
+            if (who)
+                TC_LOG_INFO("server", "EVADEDIAG2 entry={} map={} home={:.1f} refs={} pRef={} refOffline={} see={} acceptable={} canAttack={} accessible={} dist={:.1f} victimHome={:.1f} victimInCombat={} playerAttacker={} react={} victimAlive={}",
+                    GetEntry(), GetMapId(), GetExactDist(&m_homePosition), refs, pRef ? 1u : 0u, pRef ? uint32(pRef->IsOffline()) : 2u,
+                    uint32(CanSeeOrDetect(who)), uint32(_IsTargetAcceptable(who)), uint32(CanCreatureAttack(who)),
+                    uint32(who->isInAccessiblePlaceFor(this)), GetExactDist(who), who->GetExactDist(&m_homePosition),
+                    uint32(who->IsInCombat()), pAttacker ? 1u : 0u, uint32(GetReactState()), uint32(who->IsAlive()));
+        }
+    }
     AI()->EnterEvadeMode();
 
     return NULL;
@@ -13718,7 +13810,8 @@ void Unit::RemoveFromWorld()
 
     if (IsInWorld())
     {
-        
+        RemoveAllFollowers();
+
         GetMotionMaster()->Clear(false);                    // Do it here, because MovementInform may provoke casts.
 
         m_duringRemoveFromWorld = true;
@@ -13794,6 +13887,7 @@ void Unit::CleanupBeforeRemoveFromMap(bool finalCleanup)
 
     m_Events.KillAllEvents(false);                      // non-delatable (currently casted spells) will not deleted now but it will deleted at call in Map::RemoveAllObjectsInRemoveList
     CombatStop(true);                                   // Because scripts in RemoveAllAuras can trigger fucking spells, need to call InterruptNonMeleeSpells another time
+    m_CombatManager.EndAllPvPCombat();                  // CombatStop onderdrukt PvP alleen; open PvP-refs gaven ASSERT in ~CombatManager (TC master: mutualPvP=true)
     ClearComboPointHolders();
     GetThreatManager().RemoveMeFromThreatLists();
     GetThreatManager().ClearAllThreat();
@@ -14516,6 +14610,14 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* target, uint32 procFlag, u
 
         bool handled = i->aura->CallScriptProcHandlers(aurApp, eventInfo);
 
+        // a proc script can remove the aura (crash seen with 84839 Vengeance, aura pointer gone)
+        if (!i->aura || i->aura->IsRemoved())
+        {
+            if (spellInfo->AttributesEx3 & SPELL_ATTR3_DISABLE_PROC)
+                SetCantProc(false);
+            continue;
+        }
+
         // "handled" is needed as long as proc can be handled in multiple places
         if (!handled && HandleAuraProc(target, damage, i->aura, procSpell, procFlag, procExtra, cooldown, &handled, context))
         {
@@ -14999,7 +15101,7 @@ void Unit::ClearComboPointHolders()
         ObjectGuid guid = *m_comboPointHolders.begin();
 
         Player* player = ObjectAccessor::FindPlayer(guid);
-        if (player && player->GetComboTarget() && player->GetComboTarget()->GetGUID() == GetGUID())     // recheck for safe
+        if (player && player->GetComboTargetGUID() == GetGUID())   // 9-10 combotarget: by GUID, the pointer may dangle     // recheck for safe
             player->ClearComboPoints();                                                                 // remove also guid from m_ComboPointHolders;
         else
             m_comboPointHolders.erase(guid);                                                            // or remove manually
@@ -18336,7 +18438,7 @@ bool Unit::CanSwim() const
     // Mirror client behavior, if this method returns false then client will not use swimming animation and for players will apply gravity as if there was no water
     if (HasUnitFlag(UNIT_FLAG_CANNOT_SWIM))
         return false;
-    if (HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED)) // is player
+    if (IsControlledByPlayer()) // is player 
         return true;
     if (HasUnitFlag2(UNIT_FLAG2_UNUSED_6))
         return false;

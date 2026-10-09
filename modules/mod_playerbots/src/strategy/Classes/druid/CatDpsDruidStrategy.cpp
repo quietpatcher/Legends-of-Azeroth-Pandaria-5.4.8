@@ -122,7 +122,15 @@ CatDpsDruidStrategy::CatDpsDruidStrategy(PlayerbotAI* botAI) : FeralDruidStrateg
 
 NextAction** CatDpsDruidStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("tiger's fury", ACTION_DEFAULT + 0.1f), nullptr);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("tiger's fury", ACTION_DEFAULT + 0.90f),
+        new NextAction("rake", ACTION_DEFAULT + 0.60f),
+        new NextAction("mangle", ACTION_DEFAULT + 0.50f),
+        new NextAction("shred", ACTION_DEFAULT + 0.40f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void CatDpsDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

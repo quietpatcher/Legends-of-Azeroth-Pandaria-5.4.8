@@ -27,7 +27,13 @@ HealPaladinStrategy::HealPaladinStrategy(PlayerbotAI* botAI) : GenericPaladinStr
 
 NextAction** HealPaladinStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("judgement of light", ACTION_DEFAULT), nullptr);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("judgment", ACTION_DEFAULT + 0.50f),
+        new NextAction("crusader strike", ACTION_DEFAULT + 0.40f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void HealPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

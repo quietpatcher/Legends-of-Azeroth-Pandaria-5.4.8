@@ -613,6 +613,23 @@ Player* ChatHandler::getSelectedPlayer()
     return ObjectAccessor::FindPlayer(selected);
 }
 
+// the selected player, or the GM himself when nothing or a non-player is selected
+Player* ChatHandler::getSelectedPlayerOrSelf()
+{
+    if (!m_session)
+        return NULL;
+
+    ObjectGuid selected = m_session->GetPlayer()->GetTarget();
+    if (!selected)
+        return m_session->GetPlayer();
+
+    Player* targetPlayer = ObjectAccessor::FindPlayer(selected);
+    if (!targetPlayer)
+        targetPlayer = m_session->GetPlayer();
+
+    return targetPlayer;
+}
+
 Unit* ChatHandler::getSelectedUnit()
 {
     if (!m_session)

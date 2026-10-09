@@ -467,6 +467,44 @@ protected:
     Trigger* rs;
 };
 
+// combo point triggers, missing from the port (rogue finishers and feral rip/bite never fired);
+// ported from mod-playerbots (7bae1b5)
+class ComboPointsAvailableTrigger : public StatAvailable
+{
+public:
+    ComboPointsAvailableTrigger(PlayerbotAI* botAI, int32 amount = 5, std::string const name = "combo points available")
+        : StatAvailable(botAI, amount, name)
+    {
+    }
+
+    bool IsActive() override;
+};
+
+class TargetWithComboPointsLowerHealTrigger : public ComboPointsAvailableTrigger
+{
+public:
+    TargetWithComboPointsLowerHealTrigger(PlayerbotAI* botAI, int32 comboPoints = 3, float lifeTime = 3.0f)
+        : ComboPointsAvailableTrigger(botAI, comboPoints, "target with combo points almost dead"), lifeTime(lifeTime)
+    {
+    }
+
+    bool IsActive() override;
+
+private:
+    float lifeTime;
+};
+
+class ComboPointsNotFullTrigger : public StatAvailable
+{
+public:
+    ComboPointsNotFullTrigger(PlayerbotAI* botAI, int32 amount = 5, std::string const name = "combo points not full")
+        : StatAvailable(botAI, amount, name)
+    {
+    }
+
+    bool IsActive() override;
+};
+
 class TwoTriggers : public Trigger
 {
 public:

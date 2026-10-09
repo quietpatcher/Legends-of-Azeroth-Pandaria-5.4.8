@@ -107,6 +107,10 @@ public:
     bool OnGossipHello(Player* player, Creature* creature) override
     {
         InstanceScript* instance = creature->GetInstanceScript();
+        // diagnostics for the Naralex event (reported: the disciple does not talk)
+        TC_LOG_INFO("scripts", "Wailing Caverns: {} talks to {} (instance {}, fanglords {} {} {} {})", player->GetName(), creature->GetName(),
+            instance ? 1 : 0, instance ? instance->GetData(TYPE_LORD_COBRAHN) : 0, instance ? instance->GetData(TYPE_LORD_PYTHAS) : 0,
+            instance ? instance->GetData(TYPE_LADY_ANACONDRA) : 0, instance ? instance->GetData(TYPE_LORD_SERPENTIS) : 0);
 
         if (instance)
         {

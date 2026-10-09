@@ -17,6 +17,7 @@
 #include "GenericDruidStrategy.h"
 #include "HealDruidStrategy.h"
 #include "MeleeDruidStrategy.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 
 class DruidStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -75,16 +76,50 @@ class DruidTriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     DruidTriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["bear form"] = &DruidTriggerFactoryInternal::tt_bear_form;
+        creators["cat form"] = &DruidTriggerFactoryInternal::tt_cat_form;
+        creators["mark of the wild"] = &DruidTriggerFactoryInternal::tt_mark_of_the_wild;
+        creators["mark of the wild on party"] = &DruidTriggerFactoryInternal::tt_mark_of_the_wild_on_party;
+        creators["moonfire"] = &DruidTriggerFactoryInternal::tt_moonfire;
+        creators["rake"] = &DruidTriggerFactoryInternal::tt_rake;
+        creators["faerie fire"] = &DruidTriggerFactoryInternal::tt_faerie_fire;
+        creators["faerie fire (feral)"] = &DruidTriggerFactoryInternal::tt_faerie_fire__feral_;
+        creators["savage roar"] = &DruidTriggerFactoryInternal::tt_savage_roar;
+        creators["berserk"] = &DruidTriggerFactoryInternal::tt_berserk;
+        // used by the balance strategy, never registered
+        creators["eclipse (solar)"] = &DruidTriggerFactoryInternal::eclipse_solar;
+        creators["eclipse (lunar)"] = &DruidTriggerFactoryInternal::eclipse_lunar;
     }
 
 private:
+    static Trigger* tt_bear_form(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "bear form"); }
+    static Trigger* tt_cat_form(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "cat form"); }
+    static Trigger* tt_mark_of_the_wild(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "mark of the wild"); }
+    static Trigger* tt_mark_of_the_wild_on_party(PlayerbotAI* botAI) { return new BuffOnPartyTrigger(botAI, "mark of the wild", 2); }
+    static Trigger* tt_moonfire(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "moonfire", 1, true); }
+    static Trigger* tt_rake(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "rake", 1, true); }
+    static Trigger* tt_faerie_fire(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "faerie fire"); }
+    static Trigger* tt_faerie_fire__feral_(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "faerie fire"); }
+    static Trigger* tt_savage_roar(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "savage roar"); }
+    static Trigger* tt_berserk(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "berserk"); }
+    static Trigger* eclipse_solar(PlayerbotAI* botAI) { return new HasAuraTrigger(botAI, "eclipse (solar)"); }
+    static Trigger* eclipse_lunar(PlayerbotAI* botAI) { return new HasAuraTrigger(botAI, "eclipse (lunar)"); }
 };
+
+// MoP actions missing from the port (spell names must match the MoP client exactly)
+MELEE_ACTION(TTCastMangleAction, "mangle");
+DEBUFF_CHECKISOWNER_ACTION(TTCastSunfireAction, "sunfire");
+SPELL_ACTION(TTCastStarsurgeAction, "starsurge");
 
 class DruidAiObjectContextInternal : public NamedObjectContext<Action>
 {
 public:
     DruidAiObjectContextInternal()
     {
+        creators["mangle"] = &DruidAiObjectContextInternal::tt_mangle;
+        creators["sunfire"] = &DruidAiObjectContextInternal::tt_sunfire;
+        creators["starsurge"] = &DruidAiObjectContextInternal::tt_starsurge;
         creators["feral charge - bear"] = &DruidAiObjectContextInternal::feral_charge_bear;
         creators["feral charge - cat"] = &DruidAiObjectContextInternal::feral_charge_cat;
         creators["swipe (bear)"] = &DruidAiObjectContextInternal::swipe_bear;
@@ -149,6 +184,8 @@ public:
         creators["revive"] = &DruidAiObjectContextInternal::revive;
         creators["barkskin"] = &DruidAiObjectContextInternal::barkskin;
         creators["lacerate"] = &DruidAiObjectContextInternal::lacerate;
+        creators["thrash (bear)"] = &DruidAiObjectContextInternal::thrash_bear;
+        creators["savage defense"] = &DruidAiObjectContextInternal::savage_defense;
         creators["hurricane"] = &DruidAiObjectContextInternal::hurricane;
         creators["innervate"] = &DruidAiObjectContextInternal::innervate;
         creators["tranquility"] = &DruidAiObjectContextInternal::tranquility;
@@ -171,6 +208,9 @@ public:
     }
 
 private:
+    static Action* tt_mangle(PlayerbotAI* botAI) { return new TTCastMangleAction(botAI); }
+    static Action* tt_sunfire(PlayerbotAI* botAI) { return new TTCastSunfireAction(botAI); }
+    static Action* tt_starsurge(PlayerbotAI* botAI) { return new TTCastStarsurgeAction(botAI); }
     static Action* natures_swiftness(PlayerbotAI* botAI) { return new CastNaturesSwiftnessAction(botAI); }
     static Action* omen_of_clarity(PlayerbotAI* botAI) { return new CastOmenOfClarityAction(botAI); }
     static Action* tranquility(PlayerbotAI* botAI) { return new CastTranquilityAction(botAI); }
@@ -237,6 +277,8 @@ private:
     static Action* revive(PlayerbotAI* botAI) { return new CastReviveAction(botAI); }
     static Action* barkskin(PlayerbotAI* botAI) { return new CastBarkskinAction(botAI); }
     static Action* lacerate(PlayerbotAI* botAI) { return new CastLacerateAction(botAI); }
+    static Action* thrash_bear(PlayerbotAI* botAI) { return new CastThrashBearAction(botAI); }
+    static Action* savage_defense(PlayerbotAI* botAI) { return new CastSavageDefenseAction(botAI); }
     static Action* hurricane(PlayerbotAI* botAI) { return new CastHurricaneAction(botAI); }
     static Action* innervate(PlayerbotAI* botAI) { return new CastInnervateAction(botAI); }
     static Action* bash_on_enemy_healer(PlayerbotAI* botAI) { return new CastBashOnEnemyHealerAction(botAI); }

@@ -119,7 +119,10 @@ void WorldSession::HandleCalendarGetCalendar(WorldPacket& /*recvData*/)
             continue;
 
         bool original = holiday->CalendarFilterType == 0 || // Fishing (Weekly)
-                        holiday->CalendarFilterType == 2;   // Call to Arms
+                        holiday->CalendarFilterType == 2 || // Call to Arms
+                        // fixed-date yearly holidays (year "any") as Blizzard defines them - the rebuilt entry
+                        // showed Hallow's End twice; movable ones carry explicit years that end in 2016-2019, so they stay rebuilt
+                        (holiday->CalendarFilterType == -1 && ((holiday->Date[0] >> 24) & 0x1F) == 0x1F);
 
         std::string holidayTexture = holiday->TextureFilename;
 

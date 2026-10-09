@@ -23,8 +23,8 @@
 
 namespace MMAP
 {
-    constexpr char MAP_FILE_NAME_FORMAT[] = "%s/mmaps/%04i.mmap";
-    constexpr char TILE_FILE_NAME_FORMAT[] = "%s/mmaps/%04i_%02i_%02i.mmtile";
+    constexpr char MAP_FILE_NAME_FORMAT[] = "{}/mmaps/{:04}.mmap";
+    constexpr char TILE_FILE_NAME_FORMAT[] = "{}/mmaps/{:04}_{:02}_{:02}.mmtile";
 
     // ######################## MMapManager ########################
     MMapManager::~MMapManager()
@@ -115,6 +115,8 @@ namespace MMAP
 
     bool MMapManager::loadMap(uint32 mapId, int32 x, int32 y)
     {
+        std::unique_lock<std::shared_mutex> guard(_lock);
+
         // make sure the mmap is loaded and ready to load tiles
         if (!loadMapData(mapId))
             return false;
@@ -199,6 +201,8 @@ namespace MMAP
 
     bool MMapManager::unloadMap(uint32 mapId, int32 x, int32 y)
     {
+        std::unique_lock<std::shared_mutex> guard(_lock);
+
         // check if we have this map loaded
         MMapDataSet::const_iterator itr = GetMMapData(mapId);
         if (itr == loadedMMaps.end())
@@ -243,6 +247,8 @@ namespace MMAP
 
     bool MMapManager::unloadMap(uint32 mapId)
     {
+        std::unique_lock<std::shared_mutex> guard(_lock);
+
         MMapDataSet::iterator itr = loadedMMaps.find(mapId);
         if (itr == loadedMMaps.end() || !itr->second)
         {
@@ -275,6 +281,8 @@ namespace MMAP
 
     bool MMapManager::unloadMapInstance(uint32 mapId, uint32 instanceId)
     {
+        std::unique_lock<std::shared_mutex> guard(_lock);
+
         // check if we have this map loaded
         MMapDataSet::const_iterator itr = GetMMapData(mapId);
         if (itr == loadedMMaps.end())
@@ -302,6 +310,8 @@ namespace MMAP
 
     dtNavMesh const* MMapManager::GetNavMesh(uint32 mapId)
     {
+        std::shared_lock<std::shared_mutex> guard(_lock);
+
         MMapDataSet::const_iterator itr = GetMMapData(mapId);
         if (itr == loadedMMaps.end())
             return nullptr;
@@ -311,6 +321,21 @@ namespace MMAP
 
     dtNavMeshQuery const* MMapManager::GetNavMeshQuery(uint32 mapId, uint32 instanceId)
     {
+        // this is called for every path on every map-updater thread. The query of an instance is
+        // created on its first use; that insert (and the erase in unloadMapInstance) raced between the instances of
+        // one map id. The common case - the query exists - only takes the shared lock.
+        {
+            std::shared_lock<std::shared_mutex> sharedGuard(_lock);
+            MMapDataSet::const_iterator known = GetMMapData(mapId);
+            if (known == loadedMMaps.end())
+                return nullptr;
+
+            NavMeshQuerySet::const_iterator query = known->second->navMeshQueries.find(instanceId);
+            if (query != known->second->navMeshQueries.end())
+                return query->second;
+        }
+
+        std::unique_lock<std::shared_mutex> guard(_lock);
         MMapDataSet::const_iterator itr = GetMMapData(mapId);
         if (itr == loadedMMaps.end())
             return nullptr;

@@ -60,12 +60,19 @@ TankPaladinStrategy::TankPaladinStrategy(PlayerbotAI* botAI) : GenericPaladinStr
 
 NextAction** TankPaladinStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("shield of righteousness", ACTION_DEFAULT + 0.6f),
-                             new NextAction("hammer of the righteous", ACTION_DEFAULT + 0.5f),
-                             new NextAction("judgement of wisdom", ACTION_DEFAULT + 0.4f),
-                             // new NextAction("avenger's shield", ACTION_NORMAL + 3),
-                             // new NextAction("consecration", ACTION_NORMAL + 2),
-                             new NextAction("melee", ACTION_DEFAULT), NULL);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("shield of the righteous", ACTION_DEFAULT + 0.90f),
+        new NextAction("avenger's shield", ACTION_DEFAULT + 0.85f),
+        new NextAction("crusader strike", ACTION_DEFAULT + 0.80f),
+        new NextAction("judgment", ACTION_DEFAULT + 0.75f),
+        new NextAction("hammer of wrath", ACTION_DEFAULT + 0.70f),
+        new NextAction("holy wrath", ACTION_DEFAULT + 0.60f),
+        new NextAction("consecration", ACTION_DEFAULT + 0.50f),
+        new NextAction("hammer of the righteous", ACTION_DEFAULT + 0.40f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void TankPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

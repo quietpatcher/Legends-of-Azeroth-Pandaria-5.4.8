@@ -81,7 +81,10 @@ InstanceScript::InstanceScript(Map* map) : instance(map), completedEncounters(0)
 
 bool InstanceScript::_SkipCheckRequiredBosses(Player const* player) const
 {
-    return player && player->GetSession()->HasPermission(rbac::RBAC_PERM_SKIP_CHECK_INSTANCE_REQUIRED_BOSSES);
+    // bots skip the "earlier bosses must be dead" gate: bot raids at level do not do full clears, and the gated
+    // bosses evaded (and reset) on every pull - with Assembly of Iron that became an endless engage/evade recursion
+    return player && player->GetSession() && (player->GetSession()->IsBot()
+        || player->GetSession()->HasPermission(rbac::RBAC_PERM_SKIP_CHECK_INSTANCE_REQUIRED_BOSSES));
 }
 
 void InstanceScript::SaveToDB()

@@ -280,6 +280,19 @@ int32 Quest::GetRewOrReqMoney(Player const* player) const
     if (_rewardMoney < 0)
         return _rewardMoney;
 
+    // the Angler's dailies pay with the level - level^2 x 20 copper (20 silver at 10, 16 gold at 90)
+    if (_id >= 99101 && _id <= 99103 && player)
+        return int32(player->GetLevel() * player->GetLevel() * 20 * sWorld->getRate(RATE_DROP_MONEY));
+
+    // quests that take the player's level carry the money sniffed at one level (mostly 90: 11g40s).
+    // Scale it like retail, ~level^2: base 114000 (or the stored amount if larger) x level^2 / 8100.
+    if (_questLevel == -1 && _rewardMoney > 0 && player)
+    {
+        uint32 level = std::min<uint32>(player->GetLevel(), 90);
+        double base = std::max<int32>(_rewardMoney, 114000);
+        return std::max<int32>(1, int32(base * level * level / 8100.0 * sWorld->getRate(RATE_DROP_MONEY)));
+    }
+
     // RewardMoney: the positive amount
     if (!player || !player->IsMaxLevel())
         return int32(_rewardMoney * sWorld->getRate(RATE_DROP_MONEY));

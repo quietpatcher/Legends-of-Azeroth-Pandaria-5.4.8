@@ -76,7 +76,7 @@ public:
         if (!achievementEntry)
             return false;
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
             return handler->SendError(LANG_NO_CHAR_SELECTED);
 
@@ -97,7 +97,7 @@ public:
         if (!achievement)
             return false;
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
             return handler->SendError(LANG_NO_CHAR_SELECTED);
 

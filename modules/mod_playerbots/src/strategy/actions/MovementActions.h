@@ -73,6 +73,23 @@ private:
     const Movement::PointsArray SearchForBestPath(float x, float y, float z, float& modified_z, int maxSearchCount = 5, bool normal_only = false, float step = 8.0f);
 };
 
+// out of fires, traps and bombs (ported from mod-playerbots; dungeons and raids only)
+class AvoidAoeAction : public MovementAction
+{
+public:
+    AvoidAoeAction(PlayerbotAI* botAI, uint32 moveInterval = 1000) : MovementAction(botAI, "avoid aoe"), moveInterval(moveInterval) {}
+
+    bool isUseful() override;
+    bool Execute(Event event) override;
+
+protected:
+    bool AvoidAuraWithDynamicObj();
+    bool AvoidGameObjectWithDamage();
+    bool AvoidUnitWithDamageAura();
+    uint32 lastMoveTimer = 0;
+    uint32 moveInterval;
+};
+
 class MoveRandomAction : public MovementAction
 {
 public:

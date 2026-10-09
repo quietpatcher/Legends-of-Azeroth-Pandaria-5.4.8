@@ -87,7 +87,9 @@ void ArrowFormation::FillSlotsExceptMaster()
     while (gref)
     {
         Player* member = gref->GetSource();
-        if (botAI->IsSafe(member))
+        // only read a member updated on our own map thread (while-loop increments at the tail, so guard
+        // via the condition instead of continue) - cross-thread read = heap corruption
+        if (botAI->IsSafe(member) && (member == bot || (member->IsInWorld() && member->FindMap() == bot->FindMap())))
         {
             if (member == bot)
                 FindSlot(member)->AddLast(botUnit = new FormationUnit(index, false));
@@ -108,7 +110,8 @@ void ArrowFormation::AddMasterToSlot()
     {
         Player* member = gref->GetSource();
 
-        if (member == botAI->GetMaster())
+        // only read the master if updated on our own map thread (cross-thread read = heap corruption)
+        if (member && member == botAI->GetMaster() && member->IsInWorld() && member->FindMap() == bot->FindMap())
         {
             FindSlot(member)->InsertAtCenter(masterUnit = new FormationUnit(index, true));
             break;

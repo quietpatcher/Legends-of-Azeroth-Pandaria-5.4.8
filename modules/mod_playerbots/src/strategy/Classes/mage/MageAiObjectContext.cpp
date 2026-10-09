@@ -12,6 +12,7 @@
 #include "MageActions.h"
 #include "MageTriggers.h"
 #include "NamedObjectContext.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 
 /*
@@ -82,6 +83,11 @@ class MageTriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     MageTriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["arcane blast stack"] = &MageTriggerFactoryInternal::tt_arcane_blast_stack;
+        creators["combustion"] = &MageTriggerFactoryInternal::tt_combustion;
+        creators["mirror image"] = &MageTriggerFactoryInternal::tt_mirror_image;
+        creators["counterspell on enemy healer"] = &MageTriggerFactoryInternal::tt_counterspell_on_enemy_healer;
         creators["arcane brilliance"] = &MageTriggerFactoryInternal::arcane_brilliance;
         creators["rune of power"] = &MageTriggerFactoryInternal::rune_of_power;
         creators["mage armor"] = &MageTriggerFactoryInternal::mage_armor;
@@ -115,6 +121,10 @@ public:
     }
 
 private:
+    static Trigger* tt_arcane_blast_stack(PlayerbotAI* botAI) { return new HasAuraStackTrigger(botAI, "arcane charge", 4); }
+    static Trigger* tt_combustion(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "combustion"); }
+    static Trigger* tt_mirror_image(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "mirror image"); }
+    static Trigger* tt_counterspell_on_enemy_healer(PlayerbotAI* botAI) { return new InterruptEnemyHealerTrigger(botAI, "counterspell"); }
     static Trigger* presence_of_mind(PlayerbotAI* botAI) { return new PresenceOfMindTrigger(botAI); }
     static Trigger* arcane_brilliance(PlayerbotAI* botAI) { return new ArcaneBrillianceTrigger(botAI); }
     static Trigger* rune_of_power(PlayerbotAI* botAI) { return new RuneOfPowerTrigger(botAI); }
@@ -147,11 +157,17 @@ private:
     static Trigger* nether_tempest(PlayerbotAI* botAI) { return new NetherTempestTrigger(botAI); }
 };
 
+// MoP actions missing from the port (spell names must match the MoP client exactly)
+SPELL_ACTION(TTCastCombustionAction, "combustion");
+BUFF_ACTION(TTCastMirrorImageAction, "mirror image");
+
 class MageAiObjectContextInternal : public NamedObjectContext<Action>
 {
 public:
     MageAiObjectContextInternal()
     {
+        creators["combustion"] = &MageAiObjectContextInternal::tt_combustion;
+        creators["mirror image"] = &MageAiObjectContextInternal::tt_mirror_image;
         // -- generic needs actions
         creators["molten armor"] = &MageAiObjectContextInternal::molten_armor;
         creators["mage armor"] = &MageAiObjectContextInternal::mage_armor;
@@ -209,6 +225,8 @@ public:
     }
 
 private:
+    static Action* tt_combustion(PlayerbotAI* botAI) { return new TTCastCombustionAction(botAI); }
+    static Action* tt_mirror_image(PlayerbotAI* botAI) { return new TTCastMirrorImageAction(botAI); }
     static Action* molten_armor(PlayerbotAI* botAI) { return new CastMoltenArmorAction(botAI); }
     static Action* mage_armor(PlayerbotAI* botAI) { return new CastMageArmorAction(botAI); }
     static Action* frost_armor(PlayerbotAI* botAI) { return new CastFrostArmorAction(botAI); }

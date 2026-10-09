@@ -508,6 +508,7 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
         Pet* GetPet(ObjectGuid const& guid);
 
         MapStoredObjectTypesContainer& GetObjectsStore() { return _objectsStore; }
+        size_t GetActiveNonPlayersCount() const { return m_activeNonPlayers.size(); }   // .botlife mapstats
 
         typedef std::unordered_multimap<ObjectGuid::LowType, Creature*> CreatureBySpawnIdContainer;
         CreatureBySpawnIdContainer& GetCreatureBySpawnIdStore() { return _creatureBySpawnIdStore; }

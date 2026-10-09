@@ -56,7 +56,8 @@ Unit* CastRejuvenationOnNotFullAction::GetTarget()
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
-        if (!player)
+        // only heal a member updated on our own map thread (cross-thread heal/aura write = heap corruption)
+        if (!player || !player->IsInWorld() || player->FindMap() != bot->FindMap())
             continue;
         if (player->isDead() || player->IsFullHealth())
         {

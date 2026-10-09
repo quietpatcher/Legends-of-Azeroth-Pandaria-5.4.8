@@ -9,6 +9,7 @@
 #include "DpsRogueStrategy.h"
 #include "GenericRogueNonCombatStrategy.h"
 #include "NamedObjectContext.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 #include "RogueActions.h"
 #include "RogueComboActions.h"
@@ -59,18 +60,41 @@ class RogueTriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     RogueTriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["slice and dice"] = &RogueTriggerFactoryInternal::tt_slice_and_dice;
+        creators["adrenaline rush"] = &RogueTriggerFactoryInternal::tt_adrenaline_rush;
+        creators["kick"] = &RogueTriggerFactoryInternal::tt_kick;
+        creators["kick on enemy healer"] = &RogueTriggerFactoryInternal::tt_kick_on_enemy_healer;
 
     }
 
 private:
+    static Trigger* tt_slice_and_dice(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "slice and dice"); }
+    static Trigger* tt_adrenaline_rush(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "adrenaline rush"); }
+    static Trigger* tt_kick(PlayerbotAI* botAI) { return new InterruptSpellTrigger(botAI, "kick"); }
+    static Trigger* tt_kick_on_enemy_healer(PlayerbotAI* botAI) { return new InterruptEnemyHealerTrigger(botAI, "kick"); }
 
 };
+
+// MoP actions missing from the port (spell names must match the MoP client exactly)
+class TTCastRevealingStrikeAction : public CastMeleeDebuffSpellAction
+{
+public:
+    TTCastRevealingStrikeAction(PlayerbotAI* botAI) : CastMeleeDebuffSpellAction(botAI, "revealing strike", true) {}
+};
+MELEE_ACTION(TTCastHemorrhageAction, "hemorrhage");
+MELEE_ACTION(TTCastDispatchAction, "dispatch");
+SPELL_ACTION(TTCastVendettaAction, "vendetta");
 
 class RogueAiObjectContextInternal : public NamedObjectContext<Action>
 {
 public:
     RogueAiObjectContextInternal()
     {
+        creators["revealing strike"] = &RogueAiObjectContextInternal::tt_revealing_strike;
+        creators["hemorrhage"] = &RogueAiObjectContextInternal::tt_hemorrhage;
+        creators["dispatch"] = &RogueAiObjectContextInternal::tt_dispatch;
+        creators["vendetta"] = &RogueAiObjectContextInternal::tt_vendetta;
         creators["riposte"] = &RogueAiObjectContextInternal::riposte;
         creators["mutilate"] = &RogueAiObjectContextInternal::mutilate;
         creators["sinister strike"] = &RogueAiObjectContextInternal::sinister_strike;
@@ -106,6 +130,10 @@ public:
     }
 
 private:
+    static Action* tt_revealing_strike(PlayerbotAI* botAI) { return new TTCastRevealingStrikeAction(botAI); }
+    static Action* tt_hemorrhage(PlayerbotAI* botAI) { return new TTCastHemorrhageAction(botAI); }
+    static Action* tt_dispatch(PlayerbotAI* botAI) { return new TTCastDispatchAction(botAI); }
+    static Action* tt_vendetta(PlayerbotAI* botAI) { return new TTCastVendettaAction(botAI); }
     static Action* adrenaline_rush(PlayerbotAI* botAI) { return new CastAdrenalineRushAction(botAI); }
     static Action* blade_flurry(PlayerbotAI* botAI) { return new CastBladeFlurryAction(botAI); }
     static Action* riposte(PlayerbotAI* botAI) { return new CastRiposteAction(botAI); }

@@ -51,10 +51,18 @@ MeleeShamanStrategy::MeleeShamanStrategy(PlayerbotAI* botAI) : GenericShamanStra
 
 NextAction** MeleeShamanStrategy::getDefaultActions()
 {
-    return NextAction::array(
-        0, new NextAction("stormstrike", ACTION_DEFAULT + 0.5f), new NextAction("earth shock", ACTION_DEFAULT + 0.4f),
-        new NextAction("feral spirit", ACTION_DEFAULT + 0.3f), new NextAction("fire nova", ACTION_DEFAULT + 0.2f),
-        new NextAction("lava lash", ACTION_DEFAULT + 0.1f), new NextAction("melee", ACTION_DEFAULT), NULL);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("stormstrike", ACTION_DEFAULT + 0.90f),
+        new NextAction("lava lash", ACTION_DEFAULT + 0.85f),
+        new NextAction("unleash elements", ACTION_DEFAULT + 0.80f),
+        new NextAction("flame shock", ACTION_DEFAULT + 0.75f),
+        new NextAction("earth shock", ACTION_DEFAULT + 0.70f),
+        new NextAction("feral spirit", ACTION_DEFAULT + 0.65f),
+        new NextAction("fire nova", ACTION_DEFAULT + 0.30f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void MeleeShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

@@ -12,6 +12,7 @@
 #include "PaladinActions.h"
 #include "PaladinBuffStrategies.h"
 #include "PaladinTriggers.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 #include "TankPaladinStrategy.h"
 
@@ -94,17 +95,44 @@ class PaladinTriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     PaladinTriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["avenging wrath"] = &PaladinTriggerFactoryInternal::tt_avenging_wrath;
+        creators["righteous fury"] = &PaladinTriggerFactoryInternal::tt_righteous_fury;
+        creators["hammer of justice interrupt"] = &PaladinTriggerFactoryInternal::tt_hammer_of_justice_interrupt;
+        creators["hammer of justice on enemy healer"] = &PaladinTriggerFactoryInternal::tt_hammer_of_justice_on_enemy_healer;
+        creators["hammer of justice on snare target"] = &PaladinTriggerFactoryInternal::tt_hammer_of_justice_on_snare_target;
         creators["seal"] = &PaladinTriggerFactoryInternal::seal;
     }
 private:
+    static Trigger* tt_avenging_wrath(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "avenging wrath"); }
+    static Trigger* tt_righteous_fury(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "righteous fury"); }
+    static Trigger* tt_hammer_of_justice_interrupt(PlayerbotAI* botAI) { return new InterruptSpellTrigger(botAI, "hammer of justice"); }
+    static Trigger* tt_hammer_of_justice_on_enemy_healer(PlayerbotAI* botAI) { return new InterruptEnemyHealerTrigger(botAI, "hammer of justice"); }
+    static Trigger* tt_hammer_of_justice_on_snare_target(PlayerbotAI* botAI) { return new SnareTargetTrigger(botAI, "hammer of justice"); }
     static Trigger* seal(PlayerbotAI* botAI) { return new SealTrigger(botAI); }
 };
+
+// MoP actions missing from the port (spell names must match the MoP client exactly)
+MELEE_ACTION(TTCastTemplarsVerdictAction, "templar's verdict");
+SPELL_ACTION(TTCastJudgmentAction, "judgment");
+MELEE_ACTION(TTCastShieldOfTheRighteousAction, "shield of the righteous");
+BUFF_ACTION(TTCastInquisitionAction, "inquisition");
+BUFF_ACTION(TTCastSealOfTruthAction, "seal of truth");
+BUFF_ACTION(TTCastSealOfInsightAction, "seal of insight");
+SPELL_ACTION(TTCastExecutionSentenceAction, "execution sentence");
 
 class PaladinAiObjectContextInternal : public NamedObjectContext<Action>
 {
 public:
     PaladinAiObjectContextInternal()
     {
+        creators["templar's verdict"] = &PaladinAiObjectContextInternal::tt_templar_s_verdict;
+        creators["judgment"] = &PaladinAiObjectContextInternal::tt_judgment;
+        creators["shield of the righteous"] = &PaladinAiObjectContextInternal::tt_shield_of_the_righteous;
+        creators["inquisition"] = &PaladinAiObjectContextInternal::tt_inquisition;
+        creators["seal of truth"] = &PaladinAiObjectContextInternal::tt_seal_of_truth;
+        creators["seal of insight"] = &PaladinAiObjectContextInternal::tt_seal_of_insight;
+        creators["execution sentence"] = &PaladinAiObjectContextInternal::tt_execution_sentence;
         creators["seal of command"] = &PaladinAiObjectContextInternal::seal_of_command;
         creators["seal of insight"] = &PaladinAiObjectContextInternal::seal_of_insight;
         creators["seal of righteousness"] = &PaladinAiObjectContextInternal::seal_of_righteousness;
@@ -174,6 +202,13 @@ public:
     }
 
 private:
+    static Action* tt_templar_s_verdict(PlayerbotAI* botAI) { return new TTCastTemplarsVerdictAction(botAI); }
+    static Action* tt_judgment(PlayerbotAI* botAI) { return new TTCastJudgmentAction(botAI); }
+    static Action* tt_shield_of_the_righteous(PlayerbotAI* botAI) { return new TTCastShieldOfTheRighteousAction(botAI); }
+    static Action* tt_inquisition(PlayerbotAI* botAI) { return new TTCastInquisitionAction(botAI); }
+    static Action* tt_seal_of_truth(PlayerbotAI* botAI) { return new TTCastSealOfTruthAction(botAI); }
+    static Action* tt_seal_of_insight(PlayerbotAI* botAI) { return new TTCastSealOfInsightAction(botAI); }
+    static Action* tt_execution_sentence(PlayerbotAI* botAI) { return new TTCastExecutionSentenceAction(botAI); }
     static Action* seal_of_command(PlayerbotAI* botAI) { return new CastSealOfCommandAction(botAI); }
     static Action* seal_of_righteousness(PlayerbotAI* botAI) { return new CastSealOfRighteousnessAction(botAI); }
     static Action* seal_of_insight(PlayerbotAI* botAI) { return new CastSealOfInsightAction(botAI); }

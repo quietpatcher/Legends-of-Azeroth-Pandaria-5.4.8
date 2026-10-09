@@ -244,7 +244,7 @@ public:
 class CastHandOfGuldanAction : public CastSpellAction
 {
 public:
-    CastHandOfGuldanAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "hand of guldan") {}
+    CastHandOfGuldanAction(PlayerbotAI* botAI) : CastSpellAction(botAI, "hand of gul'dan") {}
     bool Execute(Event event) override;
 };
 SPELL_ACTION(CastSoulFireAction, "soul fire");

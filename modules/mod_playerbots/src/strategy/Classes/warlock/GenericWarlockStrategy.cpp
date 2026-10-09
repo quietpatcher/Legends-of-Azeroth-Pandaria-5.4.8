@@ -101,8 +101,9 @@ void GenericWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("low health", NextAction::array(0, new NextAction("sacrificial pact", ACTION_INTERRUPT), new NextAction("unending resolve", ACTION_INTERRUPT), nullptr)));
     triggers.push_back(new TriggerNode("critical health", NextAction::array(0, new NextAction("dark regeneration", ACTION_INTERRUPT), new NextAction("drain life", ACTION_INTERRUPT), nullptr)));
 
+    // no Fear on the mob in melee: DoTs break it at once in MoP and the fleeing mob pulls packs (242 fears
+    // in 90 s while questing); the talent stuns/horrifies below cover it
     triggers.push_back(new TriggerNode("enemy is close", NextAction::array(0,
-        new NextAction("fear", 25.0f),
         new NextAction("blood horror", 25.0f),
         new NextAction("demonic breath", 50.0f),
         new NextAction("mortal coil", 50.0f),

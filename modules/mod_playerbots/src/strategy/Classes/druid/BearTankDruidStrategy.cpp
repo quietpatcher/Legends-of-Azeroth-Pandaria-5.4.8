@@ -142,9 +142,12 @@ BearTankDruidStrategy::BearTankDruidStrategy(PlayerbotAI* botAI) : FeralDruidStr
 NextAction** BearTankDruidStrategy::getDefaultActions()
 {
     return NextAction::array(
-        0, new NextAction("mangle (bear)", ACTION_DEFAULT + 0.5f),
-        new NextAction("faerie fire (feral)", ACTION_DEFAULT + 0.4f), new NextAction("lacerate", ACTION_DEFAULT + 0.3f),
+        // Mangle, Thrash and Savage Defense first, Faerie Fire last
+        0, new NextAction("mangle (bear)", ACTION_DEFAULT + 0.6f),
+        new NextAction("thrash (bear)", ACTION_DEFAULT + 0.5f), new NextAction("savage defense", ACTION_DEFAULT + 0.45f),
+        new NextAction("lacerate", ACTION_DEFAULT + 0.3f),
         new NextAction("maul", ACTION_DEFAULT + 0.2f), new NextAction("enrage", ACTION_DEFAULT + 0.1f),
+        new NextAction("faerie fire (feral)", ACTION_DEFAULT + 0.05f),
         new NextAction("melee", ACTION_DEFAULT), nullptr);
 }
 
@@ -167,7 +170,8 @@ void BearTankDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode("medium aoe", NextAction::array(0, new NextAction("demoralizing roar", ACTION_HIGH + 6),
                                                         new NextAction("swipe (bear)", ACTION_HIGH + 6), nullptr)));
     triggers.push_back(
-        new TriggerNode("light aoe", NextAction::array(0, new NextAction("swipe (bear)", ACTION_HIGH + 5), nullptr)));
+        new TriggerNode("light aoe", NextAction::array(0, new NextAction("thrash (bear)", ACTION_HIGH + 5),
+                                                       new NextAction("swipe (bear)", ACTION_HIGH + 5), nullptr)));
     triggers.push_back(
         new TriggerNode("bash", NextAction::array(0, new NextAction("bash", ACTION_INTERRUPT + 2), nullptr)));
     triggers.push_back(

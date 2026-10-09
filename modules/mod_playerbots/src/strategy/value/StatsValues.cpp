@@ -37,12 +37,14 @@ bool PetIsDeadValue::Calculate()
 {
     if (!bot->GetPet())
     {
+        // a stored pet only counts as dead when its health is 0 (a dismissed live pet is called, not
+        // revived); the first slot is the one Call Pet 1 summons
         uint32 ownerid = bot->GetGUID().GetCounter();
-        QueryResult result = CharacterDatabase.PQuery("SELECT id FROM character_pet WHERE owner = %u", ownerid);
+        QueryResult result = CharacterDatabase.PQuery("SELECT curhealth FROM character_pet WHERE owner = {} ORDER BY slot LIMIT 1", ownerid);
         if (!result)
             return false;
 
-        return true;
+        return (*result)[0].GetUInt32() == 0;
     }
 
     if (bot->GetPetGUID() && !bot->GetPet())
@@ -164,7 +166,8 @@ bool IsInCombatValue::Calculate()
             for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
             {
                 Player* member = ObjectAccessor::FindPlayer(itr->guid);
-                if (!member || member == bot)
+                // same map only (raw coordinates of another map mean nothing)
+                if (!member || member == bot || !member->IsInWorld() || member->FindMap() != bot->FindMap())
                     continue;
 
                 if (member->IsInCombat() &&

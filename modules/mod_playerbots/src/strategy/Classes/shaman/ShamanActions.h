@@ -15,14 +15,15 @@ class PlayerbotAI;
 class CastLesserHealingWaveAction : public CastHealingSpellAction
 {
 public:
-    CastLesserHealingWaveAction(PlayerbotAI* botAI) : CastHealingSpellAction(botAI, "lesser healing wave") {}
+    // Lesser Healing Wave is gone since Cataclysm - Healing Surge
+    CastLesserHealingWaveAction(PlayerbotAI* botAI) : CastHealingSpellAction(botAI, "healing surge") {}
 };
 
 class CastLesserHealingWaveOnPartyAction : public HealPartyMemberAction
 {
 public:
     CastLesserHealingWaveOnPartyAction(PlayerbotAI* botAI)
-        : HealPartyMemberAction(botAI, "lesser healing wave", 25.0f, HealingManaEfficiency::LOW)
+        : HealPartyMemberAction(botAI, "healing surge", 25.0f, HealingManaEfficiency::LOW)
     {
     }
 };

@@ -8,6 +8,7 @@
 
 #include <list>
 #include <set>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -94,10 +95,21 @@ public:
 
     T* create(std::string const name, PlayerbotAI* botAI)
     {
-        if (created.find(name) == created.end())
+        // a shared context (SharedValueContext) is ONE object for all bots, asked from every map thread
+        // at once - and it caches every unknown name (all class values are looked up here first). Unlocked, the
+        // concurrent inserts / rehashes corrupted the heap (random crashes with MapUpdate.Threads > 1).
+        if (shared)
+        {
+            std::lock_guard<std::mutex> guard(sharedLock);
+            auto it = created.find(name);
+            if (it != created.end())
+                return it->second;
             return created[name] = NamedObjectFactory<T>::create(name, botAI);
-
-        return created[name];
+        }
+        auto it = created.find(name);
+        if (it != created.end())
+            return it->second;
+        return created[name] = NamedObjectFactory<T>::create(name, botAI);
     }
 
     void Clear()
@@ -143,6 +155,7 @@ public:
 
 protected:
     std::unordered_map<std::string, T*> created;
+    std::mutex sharedLock;   // only used when shared
     bool shared;
     bool supportsSiblings;
 };

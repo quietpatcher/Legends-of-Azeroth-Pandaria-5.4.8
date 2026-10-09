@@ -63,13 +63,13 @@ public:
 class CastMangleCatAction : public CastMeleeSpellAction
 {
 public:
-    CastMangleCatAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "mangle (cat)") {}
+    CastMangleCatAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "mangle") {}
 };
 
 class CastSwipeCatAction : public CastMeleeSpellAction
 {
 public:
-    CastSwipeCatAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "swipe (cat)") {}
+    CastSwipeCatAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "swipe") {}
 };
 
 class CastFerociousBiteAction : public CastMeleeSpellAction

@@ -77,13 +77,20 @@ UnholyDKStrategy::UnholyDKStrategy(PlayerbotAI* botAI) : GenericDKStrategy(botAI
 
 NextAction** UnholyDKStrategy::getDefaultActions()
 {
-    return NextAction::array(
-        0, new NextAction("death and decay", ACTION_HIGH + 5),
-        new NextAction("summon gargoyle", ACTION_DEFAULT + 0.4f),
-        // new NextAction("empower rune weapon", ACTION_DEFAULT + 0.3f),
-        new NextAction("horn of winter", ACTION_DEFAULT + 0.2f),
-        new NextAction("death coil", ACTION_DEFAULT + 0.1f),
-        new NextAction("melee", ACTION_DEFAULT), nullptr);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("summon gargoyle", ACTION_DEFAULT + 0.97f),
+        new NextAction("outbreak", ACTION_DEFAULT + 0.95f),
+        new NextAction("soul reaper", ACTION_DEFAULT + 0.90f),
+        new NextAction("festering strike", ACTION_DEFAULT + 0.80f),
+        new NextAction("scourge strike", ACTION_DEFAULT + 0.75f),
+        new NextAction("death coil", ACTION_DEFAULT + 0.70f),
+        new NextAction("icy touch", ACTION_DEFAULT + 0.60f),
+        new NextAction("plague strike", ACTION_DEFAULT + 0.55f),
+        new NextAction("horn of winter", ACTION_DEFAULT + 0.20f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void UnholyDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

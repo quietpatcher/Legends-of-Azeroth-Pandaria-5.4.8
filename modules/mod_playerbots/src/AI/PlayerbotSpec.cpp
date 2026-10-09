@@ -180,6 +180,9 @@ uint32 PlayerBotSpec::GetGroupTankNum(Player* player)
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
+        // IsTank reads the strategies of the member's AI; not for a member on another map (other thread)
+        if (!member || !member->IsInWorld() || member->FindMap() != player->FindMap())
+            continue;
         if (IsTank(member) && member->IsAlive())
         {
             result++;
@@ -212,6 +215,8 @@ bool PlayerBotSpec::IsMainTank(Player* player)
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
+        if (!member || !member->IsInWorld() || member->FindMap() != player->FindMap())
+            continue;
         if (IsTank(member) && member->IsAlive())
         {
             return player->GetGUID() == member->GetGUID();
@@ -233,6 +238,8 @@ bool PlayerBotSpec::IsAssistTankOfIndex(Player* bot, Player* player, int index)
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
+        if (!member || !member->IsInWorld() || member->FindMap() != bot->FindMap())
+            continue;
         if (group->IsAssistant(member->GetGUID()) && IsAssistTank(member))
         {
             if (index == counter)
@@ -246,6 +253,8 @@ bool PlayerBotSpec::IsAssistTankOfIndex(Player* bot, Player* player, int index)
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
+        if (!member || !member->IsInWorld() || member->FindMap() != bot->FindMap())
+            continue;
         if (!group->IsAssistant(member->GetGUID()) && IsAssistTank(member))
         {
             if (index == counter)

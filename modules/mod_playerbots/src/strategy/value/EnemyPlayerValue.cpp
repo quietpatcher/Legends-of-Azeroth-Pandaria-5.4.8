@@ -123,6 +123,10 @@ Unit* EnemyPlayerValue::Calculate()
                 if (pMember == bot)
                     continue;
 
+                // skip members updated on another map thread (cross-thread read = heap corruption)
+                if (!pMember->IsInWorld() || pMember->FindMap() != bot->FindMap())
+                    continue;
+
                 if (sServerFacade->GetDistance2d(bot, pMember) > 30.0f)
                     continue;
 

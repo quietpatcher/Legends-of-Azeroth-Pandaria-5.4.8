@@ -40,7 +40,7 @@ public:
     PlayerBotMap::const_iterator GetPlayerBotsEnd() const { return playerBots.end(); }
 
     void UpdateAIInternal([[maybe_unused]] uint32 elapsed, [[maybe_unused]] bool minimal = false) override {};
-    void UpdateSessions();
+    void UpdateSessions(bool handleTeleports = true);
     void HandleBotPackets(WorldSession* session);
 
     void LogoutAllBots();
@@ -56,11 +56,16 @@ public:
     uint32 GetPlayerbotsCount() { return playerBots.size(); }
     uint32 GetPlayerbotsCountByClass(uint32 cls);
 
+    bool AddClassBot(Player* master, uint8 claz, int32 specTab);
+    void ApplyPendingAddclass(Player* bot);
+
 protected:
     virtual void OnBotLoginInternal(Player* const bot) = 0;
 
     PlayerBotMap playerBots;
     std::unordered_set<ObjectGuid> botLoading;
+    // addclass/addspec post-processing on the world thread (level, -1 = do not change the spec)
+    std::unordered_map<ObjectGuid, std::pair<uint8, int32>> pendingAddclass;
 };
 
 class PlayerbotMgr : public PlayerbotHolder

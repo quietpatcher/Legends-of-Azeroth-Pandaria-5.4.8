@@ -10,6 +10,7 @@
 #include "HealShamanStrategy.h"
 #include "MeleeShamanStrategy.h"
 #include "NamedObjectContext.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 #include "ShamanActions.h"
 #include "ShamanNonCombatStrategy.h"
@@ -74,16 +75,43 @@ class ShamanATriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     ShamanATriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["flame shock"] = &ShamanATriggerFactoryInternal::tt_flame_shock;
+        creators["lightning shield"] = &ShamanATriggerFactoryInternal::tt_lightning_shield;
+        creators["water shield"] = &ShamanATriggerFactoryInternal::tt_water_shield;
+        creators["wind shear"] = &ShamanATriggerFactoryInternal::tt_wind_shear;
+        creators["wind shear on enemy healer"] = &ShamanATriggerFactoryInternal::tt_wind_shear_on_enemy_healer;
+        creators["bloodlust"] = &ShamanATriggerFactoryInternal::tt_bloodlust;
+        creators["heroism"] = &ShamanATriggerFactoryInternal::tt_heroism;
+        creators["elemental mastery"] = &ShamanATriggerFactoryInternal::tt_elemental_mastery;
+        creators["fire elemental totem"] = &ShamanATriggerFactoryInternal::tt_fire_elemental_totem;
+        creators["maelstrom weapon 4"] = &ShamanATriggerFactoryInternal::tt_maelstrom_weapon_4;
+        creators["medium aoe and healer should attack"] = &ShamanATriggerFactoryInternal::tt_medium_aoe_and_healer_should_attack;
     }
 
 private:
+    static Trigger* tt_flame_shock(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "flame shock", 1, true); }
+    static Trigger* tt_lightning_shield(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "lightning shield"); }
+    static Trigger* tt_water_shield(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "water shield"); }
+    static Trigger* tt_wind_shear(PlayerbotAI* botAI) { return new InterruptSpellTrigger(botAI, "wind shear"); }
+    static Trigger* tt_wind_shear_on_enemy_healer(PlayerbotAI* botAI) { return new InterruptEnemyHealerTrigger(botAI, "wind shear"); }
+    static Trigger* tt_bloodlust(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "bloodlust"); }
+    static Trigger* tt_heroism(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "heroism"); }
+    static Trigger* tt_elemental_mastery(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "elemental mastery"); }
+    static Trigger* tt_fire_elemental_totem(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "fire elemental totem"); }
+    static Trigger* tt_maelstrom_weapon_4(PlayerbotAI* botAI) { return new HasAuraStackTrigger(botAI, "maelstrom weapon", 4); }
+    static Trigger* tt_medium_aoe_and_healer_should_attack(PlayerbotAI* botAI) { return new TwoTriggers(botAI, "medium aoe", "healer should attack"); }
 };
+
+// MoP actions missing from the port (spell names must match the MoP client exactly)
+SPELL_ACTION(TTCastUnleashElementsAction, "unleash elements");
 
 class ShamanAiObjectContextInternal : public NamedObjectContext<Action>
 {
 public:
     ShamanAiObjectContextInternal()
     {
+        creators["unleash elements"] = &ShamanAiObjectContextInternal::tt_unleash_elements;
         creators["water shield"] = &ShamanAiObjectContextInternal::water_shield;
         creators["lightning shield"] = &ShamanAiObjectContextInternal::lightning_shield;
         creators["strength of earth totem"] = &ShamanAiObjectContextInternal::strength_of_earth_totem;
@@ -149,6 +177,7 @@ public:
     }
 
 private:
+    static Action* tt_unleash_elements(PlayerbotAI* botAI) { return new TTCastUnleashElementsAction(botAI); }
     static Action* heroism(PlayerbotAI* botAI) { return new CastHeroismAction(botAI); }
     static Action* bloodlust(PlayerbotAI* botAI) { return new CastBloodlustAction(botAI); }
     static Action* elemental_mastery(PlayerbotAI* botAI) { return new CastElementalMasteryAction(botAI); }

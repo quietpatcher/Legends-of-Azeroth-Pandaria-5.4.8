@@ -35,6 +35,7 @@
 #include "SkillExtraItems.h"
 #include "SkillDiscovery.h"
 #include "World.h"
+#include "ThreadOwnerCheck.h"
 #include "AccountMgr.h"
 #include "RBAC.h"
 #include "AchievementMgr.h"
@@ -2718,6 +2719,8 @@ void World::Update(uint32 diff)
     /// <li> Handle all other objects
     ///- Update objects when the timer has passed (maps, transport, creatures, ...)
     sMapMgr->Update(diff);
+    TTFlushPendingGuildXP();   // guild XP from the map threads (Guild.cpp)
+    TTFlushPendingGuildCriteria();   // guild achievement criteria from the map threads (Guild.cpp)
 
     if (sWorld->getBoolConfig(CONFIG_AUTOBROADCAST))
     {

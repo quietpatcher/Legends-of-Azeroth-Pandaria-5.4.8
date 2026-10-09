@@ -17,6 +17,9 @@
 
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
+#include "SpellScript.h"
+#include "TemporarySummon.h"
+#include "ObjectAccessor.h"
 #include "Object.h"
 #include "Player.h"
 #include "Random.h"
@@ -708,12 +711,15 @@ struct npc_darnell : public ScriptedAI
         m_timer = urand(30, 45) * TimeConstants::IN_MILLISECONDS;
         m_phase = TirisfalGlades::DARNELL_PHASE_00;
         m_method = TirisfalGlades::DARNELL_METHOD_00;
+        m_player = nullptr; // nooit ongeinitialiseerd/dangling
+        m_playerGUID = ObjectGuid::Empty;
 
         if (Unit* npc = me->GetCharmerOrOwner())
         {
             m_player = npc->ToPlayer();
             if (m_player)
             {
+                m_playerGUID = m_player->GetGUID();
                 if (m_player->GetQuestStatus(TirisfalGlades::QUEST_THE_SHADOW_GRAVE) == QuestStatus::QUEST_STATUS_INCOMPLETE)
                 {
                     m_method = TirisfalGlades::DARNELL_METHOD_01;
@@ -743,7 +749,11 @@ struct npc_darnell : public ScriptedAI
 
     void MoveInLineOfSight(Unit* who) override
     {
-        if (who->GetGUID() != m_player->GetGUID())
+        // the player (bot) may have logged out -> m_player dangles; look it up again by GUID
+        if (!m_playerGUID || who->GetGUID() != m_playerGUID)
+            return;
+        m_player = who->ToPlayer();
+        if (!m_player)
             return;
 
         m_player_pos = who->GetPositionAlternate();
@@ -966,7 +976,8 @@ struct npc_darnell : public ScriptedAI
 
     bool CheckPlayerValid()
     {
-        if (!m_player->IsInWorld() ||
+        m_player = m_playerGUID ? ObjectAccessor::GetPlayer(*me, m_playerGUID) : nullptr;
+        if (!m_player || !m_player->IsInWorld() ||
             m_player->isDead() ||
             m_player->GetQuestStatus(TirisfalGlades::QUEST_THE_SHADOW_GRAVE) != QuestStatus::QUEST_STATUS_INCOMPLETE ||
             (m_player->GetAreaId() != TirisfalGlades::AREA_THE_DEATHKNELL_GRAVES && m_player->GetAreaId() != TirisfalGlades::AREA_SHADOW_GRAVE))
@@ -1023,6 +1034,7 @@ private:
     uint32 m_timer;
     uint32 m_phase;
     Player* m_player;
+    ObjectGuid m_playerGUID;
     bool m_FoundGround;
     bool m_ItemsFound;
 };
@@ -1053,6 +1065,7 @@ public:
         uint32 m_timer;
         uint32 m_phase;
         Player* m_player;
+        ObjectGuid m_playerGUID;
 
         void Reset() override
         {
@@ -1060,6 +1073,7 @@ public:
             m_timer = 0;
             m_phase = TirisfalGlades::MARSHAL_REDPATH_PHASE_00;
             m_player = NULL;
+            m_playerGUID.Clear();
         }
 
         void StartAnimation(Player* player)
@@ -1068,6 +1082,7 @@ public:
             {
                 me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_QUESTGIVER);
                 m_player = player;
+                m_playerGUID = player->GetGUID();
                 m_phase = TirisfalGlades::MARSHAL_REDPATH_PHASE_01;
                 m_timer = 100;
             }
@@ -1085,6 +1100,16 @@ public:
 
         void StartVisual()
         {
+            // the player may have logged out -> look it up by GUID, otherwise abort the animation
+            if (m_playerGUID)
+            {
+                m_player = ObjectAccessor::GetPlayer(*me, m_playerGUID);
+                if (!m_player)
+                {
+                    Reset();
+                    return;
+                }
+            }
             switch (m_phase)
             {
                 case TirisfalGlades::MARSHAL_REDPATH_PHASE_01:
@@ -1146,6 +1171,7 @@ public:
         uint32 m_timer;
         uint32 m_phase;
         Player* m_player;
+        ObjectGuid m_playerGUID;
 
         void Reset() override
         {
@@ -1153,6 +1179,7 @@ public:
             m_timer = 0;
             m_phase = TirisfalGlades::LILIAN_VOSS_PHASE_00;
             m_player = NULL;
+            m_playerGUID.Clear();
         }
 
         void StartAnimation(Player* player)
@@ -1161,6 +1188,7 @@ public:
             {
                 me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_QUESTGIVER);
                 m_player = player;
+                m_playerGUID = player->GetGUID();
                 m_phase = TirisfalGlades::LILIAN_VOSS_PHASE_01;
                 m_timer = 100;
             }
@@ -1178,6 +1206,16 @@ public:
 
         void StartVisual()
         {
+            // the player may have logged out -> look it up by GUID, otherwise abort the animation
+            if (m_playerGUID)
+            {
+                m_player = ObjectAccessor::GetPlayer(*me, m_playerGUID);
+                if (!m_player)
+                {
+                    Reset();
+                    return;
+                }
+            }
             switch (m_phase)
             {
                 case TirisfalGlades::LILIAN_VOSS_PHASE_01:
@@ -1244,6 +1282,7 @@ public:
         uint32 m_timer;
         uint32 m_phase;
         Player* m_player;
+        ObjectGuid m_playerGUID;
 
         void Reset() override
         {
@@ -1251,6 +1290,7 @@ public:
             m_timer = 0;
             m_phase = TirisfalGlades::VALDRED_MORAY_PHASE_00;
             m_player = NULL;
+            m_playerGUID.Clear();
         }
 
         void StartAnimation(Player* player)
@@ -1260,6 +1300,7 @@ public:
                 me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_QUESTGIVER);
                 me->SetStandState(UNIT_STAND_STATE_STAND);
                 m_player = player;
+                m_playerGUID = player->GetGUID();
                 m_phase = TirisfalGlades::VALDRED_MORAY_PHASE_01;
                 m_timer = 100;
             }
@@ -1277,6 +1318,16 @@ public:
 
         void StartVisual()
         {
+            // the player may have logged out -> look it up by GUID, otherwise abort the animation
+            if (m_playerGUID)
+            {
+                m_player = ObjectAccessor::GetPlayer(*me, m_playerGUID);
+                if (!m_player)
+                {
+                    Reset();
+                    return;
+                }
+            }
             switch (m_phase)
             {
                 case TirisfalGlades::VALDRED_MORAY_PHASE_01:
@@ -1584,6 +1635,147 @@ struct npc_sedrick_calston : public ScriptedAI
     }
 };
 
+/*######
+## Quest 26800: Recruitment 
+##
+## Darnell (49337) carries the Scarlet Corpses for the player. He comes when the quest is accepted and comes back
+## after a relog. A click on a corpse (91942) sends him to it; the SmartAI of the corpse puts it on his back and
+## gives the credit.
+######*/
+
+namespace Recruitment
+{
+    enum
+    {
+        QUEST_RECRUITMENT               = 26800,
+        NPC_DARNELL_CARRIER             = 49337,
+        SPELL_SUMMON_DARNELL            = 91938,
+        MAP_EASTERN_KINGDOMS            = 0,
+        POINT_CORPSE                    = 1,
+        BACK_TO_FOLLOW_MS               = 7000
+    };
+
+    // Deathknell, around the Scarlet camp
+    Position const QuestArea = { 1880.0f, 1600.0f, 90.0f, 0.0f };
+
+    bool OnQuest(Player* player)
+    {
+        QuestStatus status = player->GetQuestStatus(QUEST_RECRUITMENT);
+        return status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE;
+    }
+
+    Creature* FindDarnell(Player* player)
+    {
+        std::list<Creature*> candidates;
+        player->GetCreatureListWithEntryInGrid(candidates, NPC_DARNELL_CARRIER, 150.0f);
+        for (Creature* candidate : candidates)
+            if (candidate->IsAlive())
+                if (TempSummon* summon = candidate->ToTempSummon())
+                    if (summon->GetSummonerGUID() == player->GetGUID())
+                        return candidate;
+        return nullptr;
+    }
+
+    void EnsureDarnell(Player* player)
+    {
+        if (!player->IsInWorld() || !player->IsAlive() || !OnQuest(player))
+            return;
+        if (player->GetMapId() != MAP_EASTERN_KINGDOMS || player->GetExactDist2d(&QuestArea) > 800.0f)
+            return;
+        if (FindDarnell(player))
+            return;
+
+        TC_LOG_INFO("playerbots", "DARNELLDIAG {}: no Darnell near, summoning", player->GetName());
+        player->RemoveAurasDueToSpell(SPELL_SUMMON_DARNELL);
+        player->CastSpell(player, SPELL_SUMMON_DARNELL, true);
+        player->m_Events.AddLambdaEventAtOffset([player]
+        {
+            TC_LOG_INFO("playerbots", "DARNELLDIAG {}: Darnell {} 1.5 s after the summon", player->GetName(), FindDarnell(player) ? "present" : "MISSING");
+        }, 1500);
+    }
+
+    void DismissDarnell(Player* player)
+    {
+        player->RemoveAurasDueToSpell(SPELL_SUMMON_DARNELL);
+        if (Creature* darnell = FindDarnell(player))
+            darnell->DespawnOrUnsummon();
+    }
+}
+
+// 91942 Select Scarlet Corpse
+class spell_recruitment_select_scarlet_corpse : public SpellScript
+{
+    PrepareSpellScript(spell_recruitment_select_scarlet_corpse);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        Creature* corpse = GetHitCreature();
+        if (!player || !corpse)
+            return;
+
+        Recruitment::EnsureDarnell(player);
+        Creature* darnell = Recruitment::FindDarnell(player);
+        if (!darnell)
+            return;
+
+        darnell->SetWalk(false);
+        darnell->GetMotionMaster()->MovePoint(Recruitment::POINT_CORPSE, corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ());
+
+        // with the corpse on his back (or without, when somebody else took it) he follows the player again
+        ObjectGuid playerGuid = player->GetGUID();
+        darnell->m_Events.AddLambdaEventAtOffset([darnell, playerGuid]
+        {
+            if (Player* owner = ObjectAccessor::GetPlayer(*darnell, playerGuid))
+                darnell->GetMotionMaster()->MoveFollow(owner, 2.0f, float(M_PI / 2));
+        }, Recruitment::BACK_TO_FOLLOW_MS);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_recruitment_select_scarlet_corpse::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+class quest_recruitment : public QuestScript
+{
+public:
+    quest_recruitment() : QuestScript("quest_recruitment") { }
+
+    void OnQuestStatusChange(Player* player, Quest const* /*quest*/, QuestStatus /*oldStatus*/, QuestStatus newStatus) override
+    {
+        if (newStatus == QUEST_STATUS_INCOMPLETE)
+            Recruitment::EnsureDarnell(player);
+        else if (newStatus == QUEST_STATUS_NONE || newStatus == QUEST_STATUS_REWARDED)
+            Recruitment::DismissDarnell(player);
+    }
+};
+
+// Darnell is a summon: he is gone after a relog and stays behind when the player travels
+class player_recruitment_darnell : public PlayerScript
+{
+public:
+    player_recruitment_darnell() : PlayerScript("player_recruitment_darnell") { }
+
+    void OnLogin(Player* player) override
+    {
+        Later(player);
+    }
+
+    void OnUpdateZone(Player* player, uint32 /*newZone*/, uint32 /*newArea*/) override
+    {
+        Later(player);
+    }
+
+private:
+    // the player is not on the map yet when these hooks run
+    static void Later(Player* player)
+    {
+        if (Recruitment::OnQuest(player))
+            player->m_Events.AddLambdaEventAtOffset([player] { Recruitment::EnsureDarnell(player); }, 3000);
+    }
+};
+
 void AddSC_tirisfal_glades()
 {
     new creature_script<npc_aradne>("npc_aradne");
@@ -1601,4 +1793,7 @@ void AddSC_tirisfal_glades()
     new creature_script<npc_captured_vile_fin_puddlejumper>("npc_captured_vile_fin_puddlejumper");
     new creature_script<npc_captured_vile_fin_minor_oracle>("npc_captured_vile_fin_minor_oracle");
     new creature_script<npc_sedrick_calston>("npc_sedrick_calston");
+    new spell_script<spell_recruitment_select_scarlet_corpse>("spell_recruitment_select_scarlet_corpse");
+    new quest_recruitment();
+    new player_recruitment_darnell();
 }

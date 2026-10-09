@@ -32,15 +32,22 @@ FuryWarriorStrategy::FuryWarriorStrategy(PlayerbotAI* botAI) : GenericWarriorStr
 
 NextAction** FuryWarriorStrategy::getDefaultActions()
 {
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
     return NextAction::array(0,
-        new NextAction("skull banner", ACTION_DEFAULT + 0.8f),
-        new NextAction("recklessness", ACTION_DEFAULT + 0.7f),
-        new NextAction("bloodbath", ACTION_DEFAULT + 0.6f),
-        new NextAction("bloodthirst", ACTION_DEFAULT + 0.5f),
-        new NextAction("whirlwind", ACTION_DEFAULT + 0.4f),
-        new NextAction("sunder armor", ACTION_DEFAULT + 0.3f),
-        new NextAction("execute", ACTION_DEFAULT + 0.2f),
-        new NextAction("melee", ACTION_DEFAULT), NULL);
+        new NextAction("recklessness", ACTION_DEFAULT + 0.97f),
+        new NextAction("bloodbath", ACTION_DEFAULT + 0.95f),
+        new NextAction("colossus smash", ACTION_DEFAULT + 0.90f),
+        new NextAction("execute", ACTION_DEFAULT + 0.85f),
+        new NextAction("bloodthirst", ACTION_DEFAULT + 0.80f),
+        new NextAction("raging blow", ACTION_DEFAULT + 0.75f),
+        new NextAction("dragon roar", ACTION_DEFAULT + 0.65f),
+        new NextAction("storm bolt", ACTION_DEFAULT + 0.60f),
+        new NextAction("wild strike", ACTION_DEFAULT + 0.50f),
+        new NextAction("heroic strike", ACTION_DEFAULT + 0.30f),
+        new NextAction("battle shout", ACTION_DEFAULT + 0.20f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void FuryWarriorStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

@@ -13,7 +13,10 @@
 bool CastStealthAction::isPossible()
 {
     // do not use with WSG flag or EYE flag
-    return !botAI->HasAura(23333, bot) && !botAI->HasAura(23335, bot) && !botAI->HasAura(34976, bot);
+    // the override skipped CanCastSpell, so rogues tried Stealth in combat and on cooldown every tick
+    // (2600 failed casts in 90 s)
+    return !bot->IsInCombat() && CastBuffSpellAction::isPossible() && !botAI->HasAura(23333, bot) && !botAI->HasAura(23335, bot)
+        && !botAI->HasAura(34976, bot);
 }
 
 bool UnstealthAction::Execute(Event event)

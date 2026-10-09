@@ -39,6 +39,27 @@ public:
     bool CanEquipArmor(Player* bot, ItemTemplate const* proto);
     bool CanEquipWeapon(Player* bot, ItemTemplate const* proto);
     bool CanEquipSubArmor(Player* bot, ItemTemplate const* proto);
+    // MoP rules shared with BotLife (bag upgrades, quest rewards, auction buys)
+    static uint32 PrimaryStat(Player* bot);                              // ITEM_MOD_STRENGTH / AGILITY / INTELLECT
+    static bool HasWrongPrimaryStat(Player* bot, ItemTemplate const* proto);
+    bool FitsBot(Player* bot, ItemTemplate const* proto);               // armor type + primary stat (+ weapon type)
+    // the highest item level a character of this level can sensibly wear. Thousands of items have no
+    // required level in the database although their item level belongs to level 85-90 (or is plain nonsense: 813).
+    static uint32 MaxItemLevelForLevel(uint32 level)
+    {
+        if (level >= 90)
+            return 100000;
+        if (level > 85)
+            return 372 + (level - 85) * 16;      // Pandaria questing: 384 ... 437
+        if (level > 80)
+            return 285 + (level - 80) * 15;      // Cataclysm: 300 ... 360
+        if (level > 70)
+            return 130 + (level - 70) * 9;       // Northrend: 139 ... 220
+        if (level > 60)
+            return 85 + (level - 60) * 4;        // Outland: 89 ... 125
+        return level + 15;                       // classic: item level is about the level plus five
+    }
+    static bool ItemLevelFits(uint32 level, ItemTemplate const* proto);
 private:
     void AddItemStats(uint32 mod, uint8& sp, uint8& ap, uint8& tank);
     bool CanEquipItem(EquipmentSlots slot, ItemTemplate const* proto);

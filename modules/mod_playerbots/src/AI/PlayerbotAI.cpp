@@ -15,7 +15,11 @@
 * with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "Config.h"
+#include "BotLife.h"
 #include "PlayerbotAI.h"
+#include "ThreadOwnerCheck.h"
+#include <atomic>
 
 #include <cmath>
 #include <mutex>
@@ -244,6 +248,15 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!CanUpdateAI())
         return;
 
+    // stop a running melee swing on a target that strikes back
+    if (Unit* victim = bot->GetVictim())
+        if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) && IsStrikingBack(victim))
+        {
+            TC_LOG_INFO("playerbots", "BotLife: {} holds the melee swing, {} ({}) strikes back", bot->GetName(),
+                victim->GetName(), victim->GetEntry());
+            bot->AttackStop();
+        }
+
     // Handle the current spell
     Spell* currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
     if (!currentSpell)
@@ -309,7 +322,15 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // Update internal AI
     UpdateAIInternal(elapsed, minimal);
-    YieldThread();
+    // a random bot that is not fighting, not in an instance or battleground and not with a real player
+    // thinks every AiPlayerbot.IdleThinkDelay ms instead of every world tick (the bot AI was a third of the map update
+    // time, and two thirds of the bots are travelling, questing or fishing at any moment)
+    static uint32 const idleThinkDelay = uint32(std::max(100, sConfigMgr->GetIntDefault("AiPlayerbot.IdleThinkDelay", 750)));
+    if (idleThinkDelay > 100 && bot && bot->IsInWorld() && !bot->IsInCombat() && _currentState != BOT_STATE_COMBAT
+        && !IsRealPlayer() && !HasRealPlayerMaster() && !bot->InBattleground() && !bot->GetMap()->Instanceable())
+        YieldThread(idleThinkDelay);
+    else
+        YieldThread();
 }
 
 void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal)
@@ -356,6 +377,23 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     botOutgoingPacketHandlers.Handle(helper);
     masterIncomingPacketHandlers.Handle(helper);
     masterOutgoingPacketHandlers.Handle(helper);
+
+    // run cross-thread-queued actions (combat-stop/reset/teleport) on the bot own map thread, even for
+    // minimal bots, before anything else.
+    if (sBotLife->RunPendingActions(this))
+    {
+        if (pmo)
+            pmo->finish();
+        return;
+    }
+
+    // bot life (travel, quests, loot, rest, social) for random bots without a real master
+    if (!minimal && sBotLife->UpdateBot(this, elapsed))
+    {
+        if (pmo)
+            pmo->finish();
+        return;
+    }
 
     DoNextAction(minimal);
 
@@ -454,7 +492,7 @@ bool PlayerbotAI::AllowActive(ActivityType activityType)
 
         for (Player* player : sRandomPlayerbotMgr->GetPlayers())
         {
-            if (player->GetMapId() != bot->GetMapId())
+            if (player->FindMap() != bot->FindMap())
                 continue;
 
             if (player->IsGameMaster() && !player->IsVisible())
@@ -565,7 +603,7 @@ bool PlayerbotAI::AllowActive(ActivityType activityType)
         for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
         {
             Player* member = gref->GetSource();
-            if (!member || !member->IsInWorld() && member->GetMapId() != bot->GetMapId())
+            if (!member || !member->IsInWorld() || member->FindMap() != bot->FindMap())
             {
                 continue;
             }
@@ -774,6 +812,40 @@ void PlayerbotAI::ReInitCurrentEngine()
     _currentEngine->Init();
 }
 
+// a healer whose group fights - itself, or a member within 40 yards on its map in combat
+static bool HealerInGroupFight(Player* bot)
+{
+    if (!bot || !PlayerBotSpec::IsHeal(bot, true))
+        return false;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+    if (bot->IsInCombat())
+        return true;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            if (member != bot && member->IsInWorld() && member->GetMap() == bot->GetMap() && member->IsAlive() && member->IsInCombat()
+                && bot->GetExactDist(member) < 40.0f)
+                return true;
+    return false;
+}
+
+// a tank whose party fights - a member within 40 yards on its map is attacked - while it is not hit itself
+static bool TankInGroupFight(Player* bot)
+{
+    if (!bot || bot->IsInCombat() || !PlayerBotSpec::IsTank(bot, true))
+        return false;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            if (member != bot && member->IsInWorld() && member->GetMap() == bot->GetMap() && member->IsAlive() && member->IsInCombat()
+                && !member->getAttackers().empty() && bot->GetExactDist(member) < 40.0f)
+                return true;
+    return false;
+}
+
 void PlayerbotAI::ChangeEngine(BotState type)
 {
     Engine* engine = _engines[type];
@@ -873,13 +945,38 @@ void PlayerbotAI::DoNextAction(bool min)
         return;
     }
 
+    // a healer whose group fights heals on the combat engine - it has no victim of its own
+    if (_currentEngine == _engines[BOT_STATE_NON_COMBAT] && HealerInGroupFight(bot))
+        ChangeEngine(BOT_STATE_COMBAT);
+
+    // a tank whose party fights takes on a mob that attacks the party, on the combat engine
+    if (_currentEngine == _engines[BOT_STATE_NON_COMBAT] && TankInGroupFight(bot))
+        if (Unit* target = GetAiObjectContext()->GetValue<Unit*>("tank target")->Get())
+        {
+            GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
+            ChangeEngine(BOT_STATE_COMBAT);
+        }
+
     // Clear targets if in combat but sticking with old data
     if (_currentEngine == _engines[BOT_STATE_NON_COMBAT] && bot->IsInCombat())
     {
-        Unit* currentTarget = _aiObjectContext->GetValue<Unit*>("current target")->Get();
-        if (currentTarget != nullptr)
+        // only AttackAction switched to the combat engine. BotLife (questing, grinding, dungeon and
+        // battleground pulls) attacks directly, so those bots fought on the non-combat engine: no rotation at all
+        // (casters stood idle, melee only auto-attacked) and the target was cleared here every tick. A bot that is
+        // fighting a live victim gets it as current target and the combat engine.
+        Unit* victim = bot->GetVictim();
+        if (victim && victim->IsAlive() && victim->IsInWorld() && bot->IsValidAttackTarget(victim))
         {
-            _aiObjectContext->GetValue<Unit*>("current target")->Set(nullptr);
+            _aiObjectContext->GetValue<Unit*>("current target")->Set(victim);
+            ChangeEngine(BOT_STATE_COMBAT);
+        }
+        else
+        {
+            Unit* currentTarget = _aiObjectContext->GetValue<Unit*>("current target")->Get();
+            if (currentTarget != nullptr)
+            {
+                _aiObjectContext->GetValue<Unit*>("current target")->Set(nullptr);
+            }
         }
     }
 
@@ -1155,7 +1252,7 @@ bool PlayerbotAI::HasPlayerNearby(WorldPosition* pos, float range)
     {
         if (!player->IsGameMaster() || player->isGMVisible())
         {
-            if (player->GetMapId() != bot->GetMapId())
+            if (player->FindMap() != bot->FindMap())
                 continue;
 
             if (pos->sqDistance(WorldPosition(player)) < sqRange)
@@ -1292,6 +1389,14 @@ Unit* PlayerbotAI::GetUnit(ObjectGuid guid)
     return ObjectAccessor::GetUnit(*bot, guid);
 }
 
+// diagnostic - the AI context of a bot may only be used on the thread that updates the bot's map
+// (its value / action maps are not locked); TT-THREADCHECK in Server.log names the caller
+AiObjectContext* PlayerbotAI::GetAiObjectContext()
+{
+    TTCheckThreadOwner(bot, "AiObjectContext", ObjectGuid::Empty);
+    return _aiObjectContext;
+}
+
 Player* PlayerbotAI::GetPlayer(ObjectGuid guid)
 {
     Unit* unit = GetUnit(guid);
@@ -1303,14 +1408,20 @@ Player* PlayerbotAI::GetGroupMaster()
     if (!bot->InBattleground())
         if (Group* group = bot->GetGroup())
             if (Player* player = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+            {
+                // the group leader that follows someone else (BotLife: the tank bot of a dungeon
+                // finder group) aims at that one, not at itself
+                if (player == bot && master && master != bot)
+                    return master;
                 return player;
+            }
 
     return master;
 }
 
 uint32 GetCreatureIdForCreatureTemplateId(uint32 creatureTemplateId)
 {
-    QueryResult results = WorldDatabase.PQuery("SELECT guid FROM `creature` WHERE id = %u LIMIT 1;", creatureTemplateId);
+    QueryResult results = WorldDatabase.PQuery("SELECT guid FROM `creature` WHERE id = {} LIMIT 1;", creatureTemplateId);
     if (results)
     {
         Field* fields = results->Fetch();
@@ -1454,7 +1565,7 @@ bool PlayerbotAI::TellMaster(std::string const text)
     if (!master || !TellMasterNoFacing(text))
         return false;
 
-    if (!bot->isMoving() && !bot->IsInCombat() && bot->GetMapId() == master->GetMapId() &&
+    if (!bot->isMoving() && !bot->IsInCombat() && bot->FindMap() == master->FindMap() &&
         !bot->HasUnitState(UNIT_STATE_IN_FLIGHT) && !bot->IsFlying())
     {
         if (!bot->HasInArc(EMOTE_ANGLE_IN_FRONT, master, sPlayerbotAIConfig->sightDistance))
@@ -1532,7 +1643,7 @@ int32 PlayerbotAI::GetNearGroupMemberCount(float dis)
             if (!member || !member->IsInWorld())
                 continue;
 
-            if (member->GetMapId() != bot->GetMapId())
+            if (member->FindMap() != bot->FindMap())
                 continue;
 
             if (member->GetExactDist(bot) > dis)
@@ -1907,6 +2018,27 @@ void PlayerbotAI::InterruptSpell()
     }
 }
 
+// A creature with a short self-cast aura that deals damage to whoever hits it in melee
+// (Retaliation of the Scarlet Centurion, 115511: 5 s below 20% health). Players stop hitting for those seconds.
+// Long auras of the same type (shields that last minutes) do not count: waiting those out is no tactic.
+bool PlayerbotAI::IsStrikingBack(Unit const* target)
+{
+    if (!target || !target->IsAlive() || target->GetTypeId() != TYPEID_UNIT)
+        return false;
+
+    for (AuraEffect const* effect : target->GetAuraEffectsByType(SPELL_AURA_PROC_TRIGGER_DAMAGE))
+    {
+        Aura const* aura = effect->GetBase();
+        if (aura->GetCasterGUID() != target->GetGUID() || aura->GetMaxDuration() <= 0 || aura->GetMaxDuration() > 15000)
+            continue;
+
+        if (aura->GetSpellInfo()->ProcFlags & (PROC_FLAG_TAKEN_MELEE_AUTO_ATTACK | PROC_FLAG_TAKEN_SPELL_MELEE_DMG_CLASS))
+            return true;
+    }
+
+    return false;
+}
+
 bool PlayerbotAI::CanCastSpell(std::string const name, Unit* target, Item* itemTarget)
 {
     return CanCastSpell(_aiObjectContext->GetValue<uint32>("spell id", name)->Get(), target, true, itemTarget);
@@ -1914,6 +2046,16 @@ bool PlayerbotAI::CanCastSpell(std::string const name, Unit* target, Item* itemT
 
 bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell, Item* itemTarget, Item* castItem)
 {
+    if (!_spellRetryBlock.empty())   // , see CastSpell
+    {
+        auto blocked = _spellRetryBlock.find(spellid);
+        if (blocked != _spellRetryBlock.end())
+        {
+            if (getMSTimeDiff(getMSTime(), blocked->second) < 60000)   // still in the future
+                return false;
+            _spellRetryBlock.erase(blocked);
+        }
+    }
     if (!spellid)
     {
         //if (!sPlayerbotAIConfig->logInGroupOnly || (bot->GetGroup() && HasRealPlayerMaster()))
@@ -1934,6 +2076,12 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
 
     if (!target)
         target = bot;
+
+    // no melee-class spell on a target that strikes back
+    if (target != bot && IsStrikingBack(target))
+        if (SpellInfo const* strikeInfo = sSpellMgr->GetSpellInfo(spellid))
+            if (strikeInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE)
+                return false;
 
     // if (!sPlayerbotAIConfig->logInGroupOnly || (bot->GetGroup() && HasRealPlayerMaster()))
     //TC_LOG_DEBUG("playerbots", "Can cast spell? - target name: {}, spellid: {}, bot name: {}", target->GetName().c_str(), spellid, bot->GetName().c_str());
@@ -1981,7 +2129,11 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
 
     uint32 CastingTime = !spellInfo->IsChanneled() ? spellInfo->CalcCastTime(bot->GetLevel()) : spellInfo->GetDuration();
     // bool interruptOnMove = spellInfo->InterruptFlags & SPELL_INTERRUPT_FLAG_MOVEMENT;
-    if ((CastingTime || spellInfo->IsAutoRepeatRangedSpell()) && bot->isMoving())
+    // in combat bots are nearly always moving a little (chase, formation, reach), so casters only ever got
+    // their instants out (pmon: 0 frostbolt/fireball/wrath/smite/lightning bolt in 90 s). In combat a cast-time spell
+    // on a target in range is allowed; CastSpell stops the movement first, like a player standing still to cast.
+    if ((CastingTime || spellInfo->IsAutoRepeatRangedSpell()) && bot->isMoving()
+        && !(bot->IsInCombat() && target != bot && bot->IsWithinDistInMap(target, spellInfo->GetMaxRange(spellInfo->IsPositive(), bot))))
     {
         //if (!sPlayerbotAIConfig->logInGroupOnly || (bot->GetGroup() && HasRealPlayerMaster()))
         {
@@ -2057,6 +2209,26 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
     }
     spell->m_targets.SetItemTarget(itemTarget);
     SpellCastResult result = spell->CheckCast(true);
+
+    // the check above ignores power; without this bots keep "casting" spells they cannot pay for
+    // (death coil without runic power, charge spam) and never fall back to other abilities
+    if (!castItem && (result == SPELL_CAST_OK || result == SPELL_FAILED_OUT_OF_RANGE || result == SPELL_FAILED_NOT_INFRONT
+        || result == SPELL_FAILED_UNIT_NOT_INFRONT))
+    {
+        int32 powerIndex = -1;
+        Powers powerType = spellInfo->GetPowerType(bot, &powerIndex);
+        if (powerType == POWER_RUNES)
+        {
+            if (spell->CheckRuneCost(spellInfo->RuneCostID) != SPELL_CAST_OK)
+                result = SPELL_FAILED_NO_POWER;
+        }
+        else if (powerType < MAX_POWERS && powerType != POWER_HEALTH)
+        {
+            int32 cost = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask(), powerIndex);
+            if (cost > 0 && int32(bot->GetPower(powerType)) < cost)
+                result = SPELL_FAILED_NO_POWER;
+        }
+    }
     delete spell;
 
     if (oldSel)
@@ -2070,9 +2242,16 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
     case SPELL_FAILED_MOVING:
     case SPELL_FAILED_TRY_AGAIN:
     case SPELL_CAST_OK:
-    case SPELL_FAILED_NOT_SHAPESHIFT:
-    case SPELL_FAILED_OUT_OF_RANGE:
         return true;
+    // lets druids pick a spell and shift for it; for others it only meant a failed cast (shadow priests
+    // tried Smite in Shadowform 370 times in 90 s)
+    case SPELL_FAILED_NOT_SHAPESHIFT:
+        return bot->GetClass() == CLASS_DRUID;
+    // OUT_OF_RANGE used to pass because upstream pushes a "reach" prerequisite first; this port has none
+    // (CastSpellAction::getPrerequisites returns nullptr), so every such cast failed the strict check in CastSpell
+    // (about half of all CastSpell calls). Moving into range is done by the "enemy out of spell/melee" triggers.
+    case SPELL_FAILED_OUT_OF_RANGE:
+        return false;
     default:
         //if (!sPlayerbotAIConfig->logInGroupOnly || (bot->GetGroup() && HasRealPlayerMaster()))
         //{
@@ -2273,6 +2452,27 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         return false;
     }
 
+    sBotLife->Count(BLC_CAST_CALL);   // cast statistics (.botlife)
+    // strict check before casting. CanCastSpell lets range / shapeshift / standing failures pass (the action
+    // is meant to fix them), but then prepare fails, sets no cooldown, and the same spell is tried every tick (charge,
+    // tiger's fury, garrote, stealth spam). Same safe check as CanCastSpell (a fresh Spell, power ignored); on failure
+    // the spell is left alone for a second so the engine picks something else. Facing was fixed just above.
+    {
+        Spell* test = new Spell(bot, spellInfo, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+        test->m_targets.SetUnitTarget(target);
+        SpellCastResult strict = test->CheckCast(true);
+        delete test;
+        if (strict != SPELL_CAST_OK && strict != SPELL_FAILED_NOT_INFRONT && strict != SPELL_FAILED_UNIT_NOT_INFRONT)
+        {
+            _spellRetryBlock[spellId] = getMSTime() + 1000;
+            sBotLife->Count(BLC_CAST_STRICT_FAIL);
+            sBotLife->CountStrictFail(spellId, uint32(strict));
+            if (oldSel)
+                bot->SetSelection(oldSel);
+            return false;
+        }
+    }
+
     Spell* spell = new Spell(bot, spellInfo, TRIGGERED_NONE);
     spell->m_cast_count += 1;
     SpellCastTargets targets;
@@ -2325,24 +2525,34 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
         }*/
     }
 
-    if (bot->isMoving() && spell->GetCastTime())
+    // spell->GetCastTime() is only set by prepare, so this check never fired and moving bots started casts
+    // that the movement broke off at once. Stand still for cast-time and channeled spells (see CanCastSpell).
+    if (bot->isMoving() && (spellInfo->CalcCastTime(bot->GetLevel()) || spellInfo->IsChanneled() || spellInfo->IsAutoRepeatRangedSpell()))
     {
-        // bot->StopMoving();
-        SetNextCheckDelay(sPlayerbotAIConfig->reactDelay);
-        spell->cancel();
-        delete spell;
-        return false;
+        if (!bot->IsInCombat())
+        {
+            sBotLife->Count(BLC_CAST_MOVING);
+            SetNextCheckDelay(sPlayerbotAIConfig->reactDelay);
+            spell->cancel();
+            delete spell;
+            if (oldSel)
+                bot->SetSelection(oldSel);
+            return false;
+        }
+        bot->GetMotionMaster()->Clear();
+        bot->StopMoving();
     }
 
+    // the port called CheckCast AFTER prepare: prepare has already started the cast and set the cooldown, so
+    // every cast with a cooldown or cast time came back "not ready / in progress", counted as failed, and the engine went
+    // on with alternatives in the same tick (interrupting casts) and retried the spell endlessly. The action already
+    // checked CanCastSpell (a CheckCast without prepare), and prepare checks again itself. A CheckCast before prepare
+    // is no option either: the power data is only set up by prepare (garbage power types, server hang on 26-9).
     spell->prepare(&targets);
-    SpellCastResult result = spell->CheckCast(false);
-    if (result != SPELL_CAST_OK)
-    {
-        // if (!sPlayerbotAIConfig->logInGroupOnly || (bot->GetGroup() && HasRealPlayerMaster())) {
-        TC_LOG_DEBUG("playerbots", "Spell cast failed. - target name: {}, spellid: {}, bot name: {}, result: {}", target->GetName().c_str(), spellId, bot->GetName().c_str(), result);
-        // }
-        return false;
-    }
+    sBotLife->Count(BLC_CAST_PREPARED);
+    sBotLife->CountCast(spellId);
+    if (spellInfo->CalcCastTime(bot->GetLevel()) || spellInfo->IsChanneled())
+        sBotLife->Count(BLC_CAST_TIMED);
     
     _aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().Set(spellId, target->GetGUID(), time(nullptr));
     _aiObjectContext->GetValue<PositionMap&>("position")->Get()["random"].Reset();
@@ -2441,8 +2651,8 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
         return false;
     }
 
-    spell->prepare(&targets);
-
+    // the moving check must come before prepare: a prepared spell belongs to its SpellEvent, deleting it here
+    // was a use-after-free
     if (bot->isMoving() && spell->GetCastTime())
     {
         // bot->StopMoving();
@@ -2451,6 +2661,8 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
         delete spell;
         return false;
     }
+
+    spell->prepare(&targets);
 
     if (spellInfo->Effects[0].Effect == SPELL_EFFECT_OPEN_LOCK || spellInfo->Effects[0].Effect == SPELL_EFFECT_SKINNING)
     {
@@ -2606,12 +2818,12 @@ void PlayerbotAI::_fillGearScoreData(Player* player, Item* item, std::vector<uin
 
 bool PlayerbotAI::IsSafe(Player* player)
 {
-    return player && player->GetMapId() == bot->GetMapId() && player->GetInstanceId() == bot->GetInstanceId() &&
+    return player && player->FindMap() == bot->FindMap() && player->GetInstanceId() == bot->GetInstanceId() &&
         !player->IsBeingTeleported();
 }
 bool PlayerbotAI::IsSafe(WorldObject* obj)
 {
-    return obj && obj->GetMapId() == bot->GetMapId() && obj->GetInstanceId() == bot->GetInstanceId() &&
+    return obj && obj->FindMap() == bot->FindMap() && obj->GetInstanceId() == bot->GetInstanceId() &&
         (!obj->IsPlayer() || !((Player*)obj)->IsBeingTeleported());
 }
 

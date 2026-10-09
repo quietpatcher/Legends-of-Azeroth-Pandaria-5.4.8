@@ -20,6 +20,8 @@ bool Formation::IsNullLocation(WorldLocation const& loc) { return IsSameLocation
 WorldLocation MoveAheadFormation::GetLocation()
 {
     Player* master = GetMaster();
+    if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+        master = nullptr;
     if (!master || master == bot)
         return WorldLocation();
 
@@ -58,6 +60,8 @@ public:
     WorldLocation GetLocationInternal() override
     {
         Player* master = GetMaster();
+        if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+            master = nullptr;
         if (!master)
             return WorldLocation();
         float range = sPlayerbotAIConfig->followDistance;
@@ -87,6 +91,8 @@ public:
     WorldLocation GetLocationInternal() override
     {
         Player* master = GetMaster();
+        if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+            master = nullptr;
         if (!master)
             return WorldLocation();
 
@@ -97,6 +103,8 @@ public:
         if (!lastChangeTime || now - lastChangeTime >= 3)
         {
             Player* master = GetMaster();
+            if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+                master = nullptr;
             if (!master)
                 return WorldLocation();
 
@@ -162,6 +170,8 @@ public:
 
         Unit* target = AI_VALUE(Unit*, "current target");
         Player* master = GetMaster();
+        if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+            master = nullptr;
         if (!target && target != bot)
             target = master;
 
@@ -216,6 +226,8 @@ public:
         float range = 2.0f;
 
         Player* master = GetMaster();
+        if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+            master = nullptr;
         if (!master)
             return Formation::NullLocation;
 
@@ -255,6 +267,8 @@ public:
         float range = sPlayerbotAIConfig->followDistance;
 
         Player* master = GetMaster();
+        if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+            master = nullptr;
         if (!master)
             return Formation::NullLocation;
 
@@ -324,6 +338,8 @@ public:
         float followRange = sPlayerbotAIConfig->followDistance;
 
         Player* master = GetMaster();
+        if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+            master = nullptr;
         if (!master)
             return Formation::NullLocation;
 
@@ -386,6 +402,8 @@ public:
 float Formation::GetFollowAngle()
 {
     Player* master = GetMaster();
+    if (master && master->FindMap() != bot->FindMap())   // its map is another thread's
+        master = nullptr;
     Group* group = bot->GetGroup();
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
 
@@ -407,7 +425,7 @@ float Formation::GetFollowAngle()
             Player* member = ref->GetSource();
 
             // Skip invalid, dead, or out-of-map members
-            if (!member || !member->IsAlive() || bot->GetMapId() != member->GetMapId())
+            if (!member || !member->IsAlive() || bot->FindMap() != member->FindMap())
                 continue;
 
             // Skip the master

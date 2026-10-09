@@ -1180,7 +1180,8 @@ void AchievementMgr::SendAchievementEarned(AchievementEntry const* achievement, 
     data.WriteByteSeq(guid2[2]);
     referencePlayer->SendMessageToSetInRange(&data, sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_SAY), true);
 
-    referencePlayer->SetSaveTimer(1);
+    if (!referencePlayer->GetSession() || !referencePlayer->GetSession()->IsBot())   // not for a bot
+        referencePlayer->SetSaveTimer(1);
 }
 
 void GuildAchievementMgr::SendAchievementEarned(AchievementEntry const* achievement) const
@@ -2393,6 +2394,11 @@ void AchievementMgr::CompletedAchievement(AchievementEntry const* achievement, P
 
     // disable for gamemasters with GM-mode enabled
     if (referencePlayer->IsGameMaster() || referencePlayer->GetSession()->HasPermission(rbac::RBAC_PERM_CANNOT_EARN_ACHIEVEMENTS))
+        return;
+
+    // bots are never a realm first (login / skill checks reached this past the bot skip in
+    // Player::UpdateAchievementCriteria)
+    if (referencePlayer->GetSession()->IsBot() && (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL)))
         return;
 
     if (achievement->Flags & ACHIEVEMENT_FLAG_COUNTER || HasAchieved(achievement->ID))

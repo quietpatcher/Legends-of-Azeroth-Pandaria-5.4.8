@@ -104,6 +104,7 @@ uint32 CONF_TargetBuild = 18273;              // 5.4.8 18273 -- current build is
 char const* CONF_mpq_list[] =
 {
     "world.MPQ",
+    "world2.MPQ", // in the 5.4.8 client, holds dungeon WMOs (Wailing Caverns, Auchindoun, ...)
     "model.MPQ",
     "misc.MPQ",
     "expansion1.MPQ",

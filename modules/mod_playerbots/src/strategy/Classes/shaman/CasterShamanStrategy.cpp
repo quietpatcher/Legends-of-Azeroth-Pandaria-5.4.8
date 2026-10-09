@@ -40,10 +40,15 @@ CasterShamanStrategy::CasterShamanStrategy(PlayerbotAI* botAI) : GenericShamanSt
 
 NextAction** CasterShamanStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("lava burst", ACTION_DEFAULT + 0.2f),
-                             new NextAction("lightning bolt", ACTION_DEFAULT + 0.1f),
-                            //  new NextAction("earth shock", ACTION_DEFAULT), // cast during movement
-                             nullptr);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("flame shock", ACTION_DEFAULT + 0.90f),
+        new NextAction("lava burst", ACTION_DEFAULT + 0.80f),
+        new NextAction("unleash elements", ACTION_DEFAULT + 0.70f),
+        new NextAction("earth shock", ACTION_DEFAULT + 0.55f),
+        new NextAction("lightning bolt", ACTION_DEFAULT + 0.40f),
+        nullptr);
 }
 
 void CasterShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

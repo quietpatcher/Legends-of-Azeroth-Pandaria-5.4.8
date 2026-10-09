@@ -51,6 +51,15 @@ public:
         creators["light energy available"] = &TriggerContext::LightEnergyAvailable;
         creators["medium energy available"] = &TriggerContext::MediumEnergyAvailable;
         creators["high energy available"] = &TriggerContext::HighEnergyAvailable;
+        // combo point triggers (missing from the port)
+        creators["healer should attack"] = &TriggerContext::healer_should_attack;
+        creators["combo points available"] = &TriggerContext::ComboPoints5Available;
+        creators["combo points 5 available"] = &TriggerContext::ComboPoints5Available;
+        creators["combo points 4 available"] = &TriggerContext::ComboPoints4Available;
+        creators["combo points 3 available"] = &TriggerContext::ComboPoints3Available;
+        creators["target with combo points almost dead"] = &TriggerContext::target_with_combo_points_almost_dead;
+        creators["combo points not full"] = &TriggerContext::ComboPointsNotFull;
+        creators["combo points not full and high energy"] = &TriggerContext::ComboPointsNotFullAndHighEnergy;
         creators["almost full energy available"] = &TriggerContext::AlmostFullEnergyAvailable;
 
         creators["party member critical health"] = &TriggerContext::PartyMemberCriticalHealth;
@@ -123,6 +132,13 @@ private:
     static Trigger* LightEnergyAvailable(PlayerbotAI* botAI) { return new LightEnergyAvailableTrigger(botAI); }
     static Trigger* MediumEnergyAvailable(PlayerbotAI* botAI) { return new MediumEnergyAvailableTrigger(botAI); }
     static Trigger* HighEnergyAvailable(PlayerbotAI* botAI) { return new HighEnergyAvailableTrigger(botAI); }
+    static Trigger* healer_should_attack(PlayerbotAI* botAI) { return new HealerShouldAttackTrigger(botAI); }
+    static Trigger* ComboPoints5Available(PlayerbotAI* botAI) { return new ComboPointsAvailableTrigger(botAI, 5); }
+    static Trigger* ComboPoints4Available(PlayerbotAI* botAI) { return new ComboPointsAvailableTrigger(botAI, 4); }
+    static Trigger* ComboPoints3Available(PlayerbotAI* botAI) { return new ComboPointsAvailableTrigger(botAI, 3); }
+    static Trigger* target_with_combo_points_almost_dead(PlayerbotAI* botAI) { return new TargetWithComboPointsLowerHealTrigger(botAI, 3, 3.0f); }
+    static Trigger* ComboPointsNotFull(PlayerbotAI* botAI) { return new ComboPointsNotFullTrigger(botAI); }
+    static Trigger* ComboPointsNotFullAndHighEnergy(PlayerbotAI* botAI) { return new TwoTriggers(botAI, "combo points not full", "high energy available"); }
     static Trigger* AlmostFullEnergyAvailable(PlayerbotAI* botAI) { return new EnergyAvailable(botAI, 90); }
     static Trigger* generic_boost(PlayerbotAI* botAI) { return new GenericBoostTrigger(botAI); }
     static Trigger* PartyMemberCriticalHealth(PlayerbotAI* botAI) { return new PartyMemberCriticalHealthTrigger(botAI); }

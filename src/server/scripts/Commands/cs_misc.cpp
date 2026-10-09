@@ -922,7 +922,7 @@ public:
 
     static bool HandleCooldownCommand(ChatHandler* handler, char const* args)
     {
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_PLAYER_NOT_FOUND);
@@ -1308,7 +1308,7 @@ public:
         if (!*args)
             return false;
 
-        Player* playerTarget = handler->getSelectedPlayer();
+        Player* playerTarget = handler->getSelectedPlayerOrSelf();
         if (!playerTarget)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -1352,7 +1352,7 @@ public:
         if (!*args)
             return false;
 
-        Player* playerTarget = handler->getSelectedPlayer();
+        Player* playerTarget = handler->getSelectedPlayerOrSelf();
         if (!playerTarget)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -1435,7 +1435,7 @@ public:
             count = 1;
 
         Player* player = handler->GetSession()->GetPlayer();
-        Player* playerTarget = handler->getSelectedPlayer();
+        Player* playerTarget = handler->getSelectedPlayerOrSelf();
         if (!playerTarget)
             playerTarget = player;
 
@@ -1515,7 +1515,7 @@ public:
         }
 
         Player* player = handler->GetSession()->GetPlayer();
-        Player* playerTarget = handler->getSelectedPlayer();
+        Player* playerTarget = handler->getSelectedPlayerOrSelf();
         if (!playerTarget)
             playerTarget = player;
 
@@ -1610,7 +1610,7 @@ public:
 
     static bool HandleMaxSkillCommand(ChatHandler* handler, char const* /*args*/)
     {
-        Player* SelectedPlayer = handler->getSelectedPlayer();
+        Player* SelectedPlayer = handler->getSelectedPlayerOrSelf();
         if (!SelectedPlayer)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -1646,7 +1646,7 @@ public:
 
         int32 level = uint32(atol(levelStr));
 
-        Player* target = handler->getSelectedPlayer();
+        Player* target = handler->getSelectedPlayerOrSelf();
         if (!target)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
@@ -4263,7 +4263,7 @@ public:
             count = 1;
 
         Player* pl = handler->GetSession()->GetPlayer();
-        Player* plTarget = handler->getSelectedPlayer();
+        Player* plTarget = handler->getSelectedPlayerOrSelf();
         if (!plTarget)
             plTarget = pl;
 

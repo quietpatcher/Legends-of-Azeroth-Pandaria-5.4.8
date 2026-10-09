@@ -279,6 +279,9 @@ bool SpiritHealerAction::Execute(Event event)
 
     WorldSafeLocsEntry const* ClosestGrave = GetGrave(dCount > 10 || deadTime > 15 * MINUTE || AI_VALUE(uint8, "durability") < 10);
 
+    if (!ClosestGrave)   // was dereferenced before the null check below
+        return false;
+
     if (bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig->sightDistance)
     {
         GuidVector npcs = AI_VALUE(GuidVector, "nearest npcs");

@@ -28,7 +28,9 @@
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
 #include "BotFactory.h"
+#include "BotLife.h"
 #include "CharacterCache.h"
+#include "Config.h"
 #include "CellImpl.h"
 #include "ChannelMgr.h"
 #include "DBCStores.h"
@@ -64,6 +66,62 @@ RandomPlayerbotMgr::~RandomPlayerbotMgr() {}
 void RandomPlayerbotMgr::Reserve(const uint32 size)
 {
     _currentBots.reserve(size);
+}
+
+// rotation and natural progression
+namespace
+{
+    // a bot plays for a while and then makes room for another one of the pool
+    bool TTRotation()
+    {
+        static bool const value = sConfigMgr->GetBoolDefault("AiPlayerbot.RandomBotRotation", false);
+        return value;
+    }
+
+    // seconds a bot that logged out stays out
+    uint32 TTStandbyTime()
+    {
+        static uint32 const value = uint32(std::max(60, sConfigMgr->GetIntDefault("AiPlayerbot.RandomBotStandbyTime", 21600)));
+        return value;
+    }
+
+    // no level or gear from the factory: a bot keeps what it earned
+    bool TTNaturalProgression()
+    {
+        static bool const value = sConfigMgr->GetBoolDefault("AiPlayerbot.NaturalProgression", false);
+        return value;
+    }
+
+    // a player's guild keeps this many of its bots online (world thread only)
+    std::unordered_set<uint32> ttPinned;
+    std::unordered_set<uint32> ttKept;   // walkers
+    time_t ttPinnedRefresh = 0;
+    uint32 TTPinnedTarget()
+    {
+        static uint32 const value = uint32(std::max(0, sConfigMgr->GetIntDefault("AiPlayerbot.PinnedGuildOnline", 0)));
+        return value;
+    }
+    void TTRefreshPinned()
+    {
+        time_t const now = time(nullptr);
+        if (!TTPinnedTarget() || now < ttPinnedRefresh)
+            return;
+        ttPinnedRefresh = now + 60;
+        static std::string const name = sConfigMgr->GetStringDefault("AiPlayerbot.PinnedGuild", "");
+        ttPinned.clear();
+        if (name.empty())
+            return;
+        Guild* guild = sGuildMgr->GetGuildByName(name);
+        if (!guild)
+            return;
+        if (QueryResult result = CharacterDatabase.PQuery("SELECT guid FROM guild_member WHERE guildid = {}", guild->GetId()))
+            do
+            {
+                uint32 guid = result->Fetch()[0].GetUInt32();
+                if (sRandomPlayerbotMgr->IsPoolBot(guid))
+                    ttPinned.insert(guid);
+            } while (result->NextRow());
+    }
 }
 
 uint32 RandomPlayerbotMgr::GetMaxAllowedBotCount()
@@ -190,8 +248,42 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         maxAllowedBotCount -= _currentBots.size();
         maxAllowedBotCount = std::min(sPlayerbotAIConfig->randomBotsPerInterval, maxAllowedBotCount);
 
-        for (std::vector<uint32>::iterator i = sPlayerbotAIConfig->randomBotAccounts.begin();
-            i != sPlayerbotAIConfig->randomBotAccounts.end(); i++)
+        // the bots of the pinned guild come first, until its target is online
+        TTRefreshPinned();
+        if (!ttPinned.empty())
+        {
+            uint32 online = 0;
+            for (uint32 guid : _currentBots)
+                if (ttPinned.count(guid))
+                    ++online;
+            std::vector<uint32> waiting;
+            for (uint32 guid : ttPinned)
+                if (!GetPlayerBot(guid) && std::find(_currentBots.begin(), _currentBots.end(), guid) == _currentBots.end())
+                    waiting.push_back(guid);
+            std::shuffle(waiting.begin(), waiting.end(), std::mt19937(std::random_device{}()));
+            for (uint32 guid : waiting)
+            {
+                if (online >= TTPinnedTarget() || !maxAllowedBotCount)
+                    break;
+                uint32 add_time = TTRotation()
+                    ? urand(sPlayerbotAIConfig->minRandomBotInWorldTime, sPlayerbotAIConfig->maxRandomBotInWorldTime) : 31104000;
+                SetEventValue(guid, "add", 1, add_time);
+                SetEventValue(guid, "logout", 0, 0);
+                SetEventValue(guid, "randomize", 1, 62208000);
+                SetEventValue(guid, "teleport", 1, 62208000);
+                _currentBots.push_back(guid);
+                ++online;
+                --maxAllowedBotCount;
+            }
+            if (!maxAllowedBotCount)
+                return _currentBots.size();
+        }
+
+        // the accounts in a shuffled order - in list order the quota was always full before the last
+        // accounts came up, and their characters never played
+        std::vector<uint32> accounts = sPlayerbotAIConfig->randomBotAccounts;
+        std::shuffle(accounts.begin(), accounts.end(), std::mt19937(std::random_device{}()));
+        for (std::vector<uint32>::iterator i = accounts.begin(); i != accounts.end(); i++)
         {
             uint32 accountId = *i;
 
@@ -225,12 +317,14 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
 
             for (uint32& guid : guids)
             {
-                uint32 add_time = 31104000;
+                // with the rotation a bot is added for one session (it was a year: the same bots for good)
+                uint32 add_time = TTRotation()
+                    ? urand(sPlayerbotAIConfig->minRandomBotInWorldTime, sPlayerbotAIConfig->maxRandomBotInWorldTime) : 31104000;
 
                 SetEventValue(guid, "add", 1, add_time);
                 SetEventValue(guid, "logout", 0, 0);
-                SetEventValue(guid, "randomize", 1, add_time * 2);
-                SetEventValue(guid, "teleport", 1, add_time * 2);
+                SetEventValue(guid, "randomize", 1, 62208000);
+                SetEventValue(guid, "teleport", 1, 62208000);
                 _currentBots.push_back(guid);
 
                 maxAllowedBotCount--;
@@ -274,6 +368,25 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     ObjectGuid botGUID = ObjectGuid::Create<HighGuid::Player>(bot);
 
     uint32 isValid = GetEventValue(bot, "add");
+    // a walker stays
+    if (!isValid && ttKept.count(bot))
+    {
+        SetEventValue(bot, "add", 1, 31104000);
+        isValid = 1;
+    }
+    // a bot of the pinned guild stays while the guild has no more than its target online
+    if (!isValid && player && ttPinned.count(bot))
+    {
+        uint32 online = 0;
+        for (uint32 guid : _currentBots)
+            if (ttPinned.count(guid))
+                ++online;
+        if (online <= TTPinnedTarget())
+        {
+            SetEventValue(bot, "add", 1, urand(sPlayerbotAIConfig->minRandomBotInWorldTime, sPlayerbotAIConfig->maxRandomBotInWorldTime));
+            isValid = 1;
+        }
+    }
     if (!isValid)
     {
         if (!player || !player->GetGroup())
@@ -287,6 +400,9 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
                 TC_LOG_INFO("playerbots", "Bot #{}: log out", bot);
 
             SetEventValue(bot, "add", 0, 0);
+            // on standby - AddRandomBots skips a bot while this is set, so others come online
+            if (TTRotation())
+                SetEventValue(bot, "logout", 1, TTStandbyTime());
             _currentBots.erase(std::remove(_currentBots.begin(), _currentBots.end(), bot), _currentBots.end());
 
             if (player)
@@ -445,6 +561,9 @@ bool RandomPlayerbotMgr::ProcessBot(Player* player)
     {
         if (player->GetInstanceId() || player->GetGroup() || player->InArena() || player->inRandomLfgDungeon() || player->IsInFlight() || player->IsInCombat() || !player->IsAlive())
             return false;
+        // a walker is never randomized or teleported away from its quest: it is the measurement
+        if (sBotLife->IsWalker(player))
+            return false;
 
         // randomize
         uint32 randomize = GetEventValue(bot, "randomize");
@@ -565,6 +684,13 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
 
 void RandomPlayerbotMgr::Randomize(Player* bot)
 {
+    // natural progression - no level and no gear from the factory, ever
+    if (TTNaturalProgression())
+    {
+        ScheduleRandomize(bot->GetGUID().GetCounter(), 62208000);
+        return;
+    }
+
     if (GET_PLAYERBOT_AI(bot))
             GET_PLAYERBOT_AI(bot)->Reset(true);
 
@@ -640,6 +766,32 @@ bool RandomPlayerbotMgr::IsRandomBot(Player* bot)
     }
 
     return false;
+}
+
+// a character of a random bot account, whether it is in the rotation or not
+bool RandomPlayerbotMgr::IsPoolBot(ObjectGuid::LowType bot)
+{
+    return sPlayerbotAIConfig->IsInRandomAccountList(sCharacterCache->GetCharacterAccountIdByGuid(ObjectGuid::Create<HighGuid::Player>(bot)));
+}
+
+// a walker - in the rotation now (ProcessBot logs it in), and its session is renewed while kept
+void RandomPlayerbotMgr::TTKeepBot(ObjectGuid::LowType bot, bool keep)
+{
+    if (!keep)
+    {
+        ttKept.erase(bot);
+        return;
+    }
+    ttKept.insert(bot);
+    SetEventValue(bot, "add", 1, 31104000);
+    SetEventValue(bot, "logout", 0, 0);
+    SetEventValue(bot, "randomize", 1, 62208000);
+    SetEventValue(bot, "teleport", 1, 62208000);
+    if (std::find(_currentBots.begin(), _currentBots.end(), bot) == _currentBots.end())
+        _currentBots.push_back(bot);
+    // the rotation only logs in while fewer than the maximum are online: a walker comes in right away
+    if (!GetPlayerBot(bot))
+        AddPlayerBot(ObjectGuid::Create<HighGuid::Player>(bot), 0);
 }
 
 bool RandomPlayerbotMgr::IsRandomBot(ObjectGuid::LowType bot)
@@ -995,7 +1147,7 @@ void RandomPlayerbotMgr::PrepareAddclassCache()
             continue;
         QueryResult results = CharacterDatabase.PQuery(
             "SELECT guid, race FROM characters "
-            "WHERE account >= %u AND account <= %u AND class = '%u' AND online = 0 AND "
+            "WHERE account >= {} AND account <= {} AND class = '{}' AND online = 0 AND "
             "guid NOT IN ( SELECT guid FROM guild_member ) "
             "ORDER BY account DESC",
             minAccountId, maxAccountId, claz);
@@ -1187,6 +1339,10 @@ void RandomPlayerbotMgr::PrepareTeleportCache()
 void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 {
     if (!bot) return;
+
+    // LoA Discord bug-report, ptitom758: teleporting a bot still in combat leaves the same
+    // dangling-attacker-pointer crash as logout/disable; clear combat first (covers all 3 callers of this function).
+    bot->CombatStop(true);
 
     // Teleport to city
     if (bot->GetLevel() >= 10 && urand(0, 100) < 0.25 * 100)

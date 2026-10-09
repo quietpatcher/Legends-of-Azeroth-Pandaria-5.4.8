@@ -394,7 +394,7 @@ std::string const RandomPlayerbotFactory::CreateRandomBotName(Gender gender)
             "SELECT n.name "
             "FROM playerbots_names n "
             "LEFT OUTER JOIN characters c ON c.name = n.name "
-            "WHERE c.guid IS NULL and n.gender = '%d' "
+            "WHERE c.guid IS NULL and n.gender = '{}' "
             "ORDER BY RAND() LIMIT 1",
             (uint8)gender);
         if (!result)
@@ -501,7 +501,9 @@ void RandomPlayerbotFactory::CreateRandomBots()
     int account_creation = 0;
 
     TC_LOG_INFO("playerbots", "Creating cache for names per gender and race.");
-    QueryResult result = CharacterDatabase.Query("SELECT name, gender FROM playerbots_names");
+    // 
+    QueryResult result = CharacterDatabase.Query("SELECT n.name, n.gender FROM playerbots_names n "
+        "LEFT JOIN characters c ON c.name = n.name WHERE c.guid IS NULL");
     if (!result)
     {
         TC_LOG_ERROR("playerbots", "No more unused names left");
@@ -588,7 +590,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
         RandomPlayerbotFactory factory(accountId);
 
         WorldSession* session = new WorldSession(accountId, accountName, nullptr, AccountTypes::SEC_PLAYER, EXPANSION_MISTS_OF_PANDARIA,
-            time_t(0), LOCALE_enUS, 0, false, false, true);
+            time_t(0), LOCALE_enUS, 0, 0 /*flags*/, false /*isARecruiter*/, false /*hasBoost*/, true /*isBot*/);   // args were shifted
         //session->SetVirtualRealmID(1);
         sessionBots.push_back(session);
 

@@ -955,10 +955,10 @@ class spell_sc_cleave : public SpellScriptLoader
 
                 if (InstanceScript* Iscript = caster->GetInstanceScript())
                 {
+                    // normal mode: the 125% weapon damage of the spell data stands (was a fixed 900-1200,
+                    // half the health of a level 30 player per hit); heroic keeps its fixed value
                     if (Iscript->instance && Iscript->instance->IsHeroic())
                         SetHitDamage(40000);
-                    else 
-                        SetHitDamage(urand(900, 1200));
                 }
             }
 

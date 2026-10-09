@@ -181,7 +181,6 @@ enum ancientEnemy
         SPELL_FIRES_BEAM            = 73294,
 };
 
-#define VOLJIN_GOSSIP       "我准备好了."
 static const uint32 npcId[3] = { NPC_ZUNI, NPC_VANIRA, NPC_VOLJIN };
 
 class npc_voljin_ancient_enemy : public CreatureScript
@@ -190,6 +189,7 @@ class npc_voljin_ancient_enemy : public CreatureScript
     {
         QUEST_ANCIENT_ENEMY         = 24814,
         GOSSIP_VOLJIN               = 15318,
+        GOSSIP_MENU_VOLJIN_READY    = 11020,   // gossip_menu_option 11020/0 "I am ready, Vol'jin." (localized)
 
         SPELL_VOLJIN_CREDIT         = 73589,
         SPELL_SHADOW_SHOCK          = 73087,
@@ -213,6 +213,7 @@ class npc_voljin_ancient_enemy : public CreatureScript
         void Reset() override
         {
             EventInProgress = false;
+            eventTime = 0;
             events.Reset();
             me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
         }
@@ -252,6 +253,19 @@ class npc_voljin_ancient_enemy : public CreatureScript
             if(!EventInProgress)
                 return;
 
+            // an event that never got to its fight (Zar'jira dead or gone, the player left) gave the
+            // gossip back only after a restart - nobody could start it again
+            eventTime += diff;
+            if (eventTime > 3 * MINUTE * IN_MILLISECONDS && !me->IsInCombat())
+            {
+                for (uint32 entry : { uint32(NPC_ZUNI), uint32(NPC_VANIRA) })
+                    if (Creature* helper = me->FindNearestCreature(entry, 60.0f))
+                        if (helper->IsAIEnabled)
+                            helper->AI()->EnterEvadeMode();
+                EnterEvadeMode();
+                return;
+            }
+
             events.Update(diff);
             {
                 if(uint32 eventId = events.ExecuteEvent())
@@ -279,6 +293,7 @@ class npc_voljin_ancient_enemy : public CreatureScript
         }
     private:
         bool EventInProgress;
+        uint32 eventTime = 0;
         EventMap events;
     };
 
@@ -288,7 +303,7 @@ public:
     {
         if(player->GetQuestStatus(QUEST_ANCIENT_ENEMY) == QUEST_STATUS_INCOMPLETE)
         {
-            player->ADD_GOSSIP_ITEM(GOSSIP_ICON_CHAT, VOLJIN_GOSSIP, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF+1);
+            player->ADD_GOSSIP_ITEM_DB(GOSSIP_MENU_VOLJIN_READY, 0, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF+1);
             player->SEND_GOSSIP_MENU(GOSSIP_VOLJIN, creature->GetGUID());            
         }
         return true;
@@ -298,6 +313,10 @@ public:
     {
         player->PlayerTalkClass->ClearMenus();
         player->CLOSE_GOSSIP_MENU();
+        // Zar'jira back first when an earlier group killed her (she stayed dead for an hour)
+        if (Creature* zarjira = creature->FindNearestCreature(NPC_ZARJIRA, 60.0f, false))
+            if (!zarjira->IsAlive())
+                zarjira->Respawn(true);
         if (action == GOSSIP_ACTION_INFO_DEF+1)
             creature->AI()->DoAction(1);
         player->KilledMonsterCredit(NPC_VOLJIN);
@@ -318,6 +337,7 @@ class npc_zarjira : public CreatureScript
     enum
     {
         NPC_FIRE_OF_THE_SEAS        = 38542,
+        NPC_MANIFESTATION           = 38302,
         SPELL_FROSTBOLT             = 46987,
         SPELL_SUMMON_MANIFESTATION  = 73295,
         SPELL_DELUGE_OF_SHADOW      = 72044,
@@ -343,6 +363,9 @@ class npc_zarjira : public CreatureScript
 
         void AttackStart(Unit * who) override
         {
+            // a player never becomes her target: only Vol'jin and his companions
+            if (who && who->GetTypeId() == TYPEID_PLAYER)
+                return;
             ScriptedAI::AttackStartNoMove(who);
         }
 
@@ -379,6 +402,37 @@ class npc_zarjira : public CreatureScript
 
         void UpdateAI(uint32 diff) override
         {
+            // a state line every 15 s while she is in combat or attackable
+            if (diagTimer <= diff)
+            {
+                diagTimer = 15000;
+                if (me->IsInCombat() || !me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE))
+                {
+                    Creature* vj = me->FindNearestCreature(NPC_VOLJIN, 100.0f, true);
+                    uint32 threats = 0;
+                    for (ThreatReference const* ref : me->GetThreatManager().GetUnsortedThreatList()) { (void)ref; ++threats; }
+                    TC_LOG_INFO("playerbots", "ZARJIRA hp {}/{} flags {:#x} react {} victim {} threats {} voljin hp {} alive {} phase {} events {}",
+                        me->GetHealth(), me->GetMaxHealth(), me->GetUInt32Value(UNIT_FIELD_FLAGS), uint32(me->GetReactState()),
+                        me->GetVictim() ? me->GetVictim()->GetName() : "-", threats, vj ? vj->GetHealth() : 0, vj ? 1 : 0,
+                        me->IsInCombat() ? 1 : 0, events.Empty() ? 0 : 1);
+                }
+            }
+            else
+                diagTimer -= diff;
+            // players hit her, but she keeps her eyes on Vol'jin: clear their threat, turn back to him
+            if (me->IsInCombat())
+            {
+                for (ThreatReference const* ref : me->GetThreatManager().GetUnsortedThreatList())
+                    if (ref->GetVictim() && ref->GetVictim()->GetTypeId() == TYPEID_PLAYER)
+                    {
+                        me->GetThreatManager().ClearThreat(ref->GetVictim());
+                        break;   // the list changed: the next tick goes on
+                    }
+                if (Unit* victim = me->GetVictim())
+                    if (victim->GetTypeId() == TYPEID_PLAYER)
+                        if (Creature* voljin = me->FindNearestCreature(NPC_VOLJIN, 100.0f, true))
+                            me->Attack(voljin, false);
+            }
             events.Update(diff);
             if(uint32 eventId = events.ExecuteEvent())
             {
@@ -419,27 +473,61 @@ class npc_zarjira : public CreatureScript
                 case EVENT_FROSTBOLT:
                     if(me->GetPower(POWER_MANA) <= me->GetMaxPower(POWER_MANA) / 4)
                         me->SetPower(POWER_MANA, me->GetMaxPower(POWER_MANA));
-                    DoCastVictim(SPELL_FROSTBOLT);
+                    // at Vol'jin, never at a player
+                    if (Creature* voljinTarget = me->FindNearestCreature(NPC_VOLJIN, 100.0f, true))
+                        DoCast(voljinTarget, SPELL_FROSTBOLT);
                     events.ScheduleEvent(EVENT_FROSTBOLT, urand(2500, 3000));
                     break;
                 case EVENT_MANIFESTATION:
-                    if(Unit * target = SelectTarget(SELECT_TARGET_RANDOM, 0, 0.0f, true))
-                        target->CastSpell(target, SPELL_SUMMON_MANIFESTATION, true);
-                    events.ScheduleEvent(EVENT_MANIFESTATION, urand(10000, 15000));
+                {
+                    // at most two Manifestations at a time - they piled up
+                    std::list<Creature*> manifestations;
+                    me->GetCreatureListWithEntryInGrid(manifestations, NPC_MANIFESTATION, 60.0f);
+                    manifestations.remove_if([](Creature* c) { return !c->IsAlive(); });
+                    if (manifestations.size() >= 2)
+                    {
+                        events.ScheduleEvent(EVENT_MANIFESTATION, 5000);
+                        break;
+                    }
+                    // players are not on her threat list: the wisp comes up at a random player in range
+                    {
+                        std::list<Player*> wispPlayers;
+                        GetPlayerListInGrid(wispPlayers, me, 60.0f);
+                        wispPlayers.remove_if([](Player* pl) { return !pl->IsAlive(); });
+                        if (!wispPlayers.empty())
+                        {
+                            auto it = wispPlayers.begin();
+                            std::advance(it, urand(0, uint32(wispPlayers.size()) - 1));
+                            (*it)->CastSpell(*it, SPELL_SUMMON_MANIFESTATION, true);
+                        }
+                    }
+                    events.ScheduleEvent(EVENT_MANIFESTATION, urand(15000, 20000));
                     break;
+                }
                 case EVENT_FIRES:
                     {
                         if (Creature* ancientenemy = me->FindNearestCreature(38225, 100.0f, true))
                             ancientenemy->AI()->Talk(SAY_INTRO, me);
                         std::list<Creature*> cList;
                         me->GetCreatureListWithEntryInGrid(cList, NPC_FIRE_OF_THE_SEAS, 30.0f);
+                        // the fires light again only when all are out (a lit fire is
+                        // selectable), and 90-120 s later instead of 60-80 s
+                        bool anyLit = false;
+                        for (Creature* fire : cList)
+                            if (!fire->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE))
+                                anyLit = true;
+                        if (anyLit)
+                        {
+                            events.ScheduleEvent(EVENT_FIRES, 15000);
+                            break;
+                        }
                         for(std::list<Creature*>::const_iterator i = cList.begin(); i != cList.end(); ++i)
                         {
                             (*i)->CastSpell((*i), SPELL_FIRES, true);
                             (*i)->CastSpell(me, SPELL_FIRES_BEAM, true);
                             (*i)->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);                            
                         }
-                        events.ScheduleEvent(EVENT_FIRES, urand(60000, 80000));
+                        events.ScheduleEvent(EVENT_FIRES, urand(90000, 120000));
                     }
                     break;
                 default:
@@ -449,6 +537,7 @@ class npc_zarjira : public CreatureScript
         }
     private:
         EventMap events;
+        uint32 diagTimer = 0;
     };
 
 public:

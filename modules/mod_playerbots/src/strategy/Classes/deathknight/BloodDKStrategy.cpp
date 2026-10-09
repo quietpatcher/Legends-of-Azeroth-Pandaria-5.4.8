@@ -81,12 +81,21 @@ BloodDKStrategy::BloodDKStrategy(PlayerbotAI* botAI) : GenericDKStrategy(botAI)
 
 NextAction** BloodDKStrategy::getDefaultActions()
 {
-    return NextAction::array(
-        0, new NextAction("rune strike", ACTION_DEFAULT + 0.8f), new NextAction("icy touch", ACTION_DEFAULT + 0.7f),
-        new NextAction("heart strike", ACTION_DEFAULT + 0.6f), new NextAction("blood strike", ACTION_DEFAULT + 0.5f),
-        new NextAction("dancing rune weapon", ACTION_DEFAULT + 0.4f),
-        new NextAction("death coil", ACTION_DEFAULT + 0.3f), new NextAction("plague strike", ACTION_DEFAULT + 0.2f),
-        new NextAction("horn of winter", ACTION_DEFAULT + 0.1f), new NextAction("melee", ACTION_DEFAULT), NULL);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("dancing rune weapon", ACTION_DEFAULT + 0.97f),
+        new NextAction("outbreak", ACTION_DEFAULT + 0.95f),
+        new NextAction("soul reaper", ACTION_DEFAULT + 0.90f),
+        new NextAction("death strike", ACTION_DEFAULT + 0.85f),
+        new NextAction("icy touch", ACTION_DEFAULT + 0.80f),
+        new NextAction("plague strike", ACTION_DEFAULT + 0.78f),
+        new NextAction("heart strike", ACTION_DEFAULT + 0.70f),
+        new NextAction("rune strike", ACTION_DEFAULT + 0.60f),
+        new NextAction("death coil", ACTION_DEFAULT + 0.50f),
+        new NextAction("horn of winter", ACTION_DEFAULT + 0.20f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void BloodDKStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

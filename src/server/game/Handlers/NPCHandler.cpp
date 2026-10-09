@@ -360,7 +360,8 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPackets::NPC::TrainerBuySpel
     else
         _player->LearnSpell(spellId, false);
 
-    _player->SetSaveTimer(1);
+    if (!IsBot())   // not for a bot
+        _player->SetSaveTimer(1);
 }
 
 void WorldSession::SendTrainerBuyFailed(ObjectGuid guid, uint32 spellId, uint32 reason)

@@ -26,7 +26,7 @@ enum PetBattleMisc
 
     PET_BATTLE_NULL_PET_INDEX   = -1,
 
-    PET_BATTLE_SYSTEM_UPDATE_BATTLE_TIMER   = 300,
+    PET_BATTLE_SYSTEM_UPDATE_BATTLE_TIMER   = 50,     // was 300 - a round started up to 300 ms + a world tick after the click
 };
 
 // sent in SMSG_PET_BATTLE_REQUEST_FAILED

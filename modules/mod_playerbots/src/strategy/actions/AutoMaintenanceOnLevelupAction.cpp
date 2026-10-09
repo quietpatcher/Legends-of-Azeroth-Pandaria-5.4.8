@@ -1,6 +1,7 @@
 #include "AutoMaintenanceOnLevelupAction.h"
 
 #include "BotFactory.h"
+#include "Config.h"
 #include "GuildMgr.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
@@ -52,7 +53,10 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
     if (!sRandomPlayerbotMgr->IsRandomBot(bot)) return;
 
     BotFactory factory(bot, bot->GetLevel());
-    factory.InitEquipment(true);
+    // a level-up came with a new set of gear; with natural progression a bot wears what it finds
+    static bool const natural = sConfigMgr->GetBoolDefault("AiPlayerbot.NaturalProgression", false);
+    if (!natural)
+        factory.InitEquipment(true);
     factory.InitPet();
     /*if (!sPlayerbotAIConfig->autoUpgradeEquip || !sRandomPlayerbotMgr->IsRandomBot(bot))
     {

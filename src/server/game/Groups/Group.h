@@ -167,6 +167,8 @@ enum GroupRaidMarkersFlags
 
 #define MAX_RAID_MARKERS 5
 
+struct ItemTemplate;
+
 class Roll : public LootValidatorRef
 {
     public:
@@ -416,6 +418,9 @@ class Group
         Rolls::iterator GetRoll(ObjectGuid lootGuid, uint8 slot);
         void CountTheRoll(Rolls::iterator roll);
         void CountRollVote(ObjectGuid lootGuid, ObjectGuid playerGUID, uint8 slot, uint8 choise);
+        // playerbots have no client to answer a loot roll; the bot module decides need / greed / pass
+        static uint8 (*BotRollChoice)(Player* bot, ItemTemplate const* proto, uint8 rollVoteMask);
+        void BotRollVotes(Roll* roll);
         void EndRoll(Loot* loot);
 
         // related to disenchant rolls

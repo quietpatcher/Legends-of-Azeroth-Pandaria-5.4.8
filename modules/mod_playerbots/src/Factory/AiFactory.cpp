@@ -16,6 +16,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PlayerbotSpec.h"
+#include "BotLife.h"
 
 #include "SharedDefines.h"
 #include "SpellInfo.h"
@@ -31,6 +32,7 @@
 #include "MageAiObjectContext.h"
 #include "WarriorAIObjectContext.h"
 #include "WarlockAiObjectContext.h"
+#include "MonkAiObjectContext.h"
 
 AiObjectContext* AiFactory::createAiObjectContext(Player* player, PlayerbotAI* botAI)
 {
@@ -56,8 +58,8 @@ AiObjectContext* AiFactory::createAiObjectContext(Player* player, PlayerbotAI* b
             return new RogueAiObjectContext(botAI);
         case CLASS_DEATH_KNIGHT:
             return new DKAiObjectContext(botAI);
-        //case CLASS_MONK:
-            //return new MonkAiObjectContext(botAI);
+        case CLASS_MONK:  // monk class AI
+            return new MonkAiObjectContext(botAI);
     }
 
     return new BotAiObjectContext(botAI);
@@ -82,7 +84,7 @@ BotRoles AiFactory::GetPlayerRoles(Player* player)
                 role = BOT_ROLE_HEALER;
             break;
         case CLASS_SHAMAN:
-            if (spec == Specializations::SPEC_DRUID_RESTORATION)
+            if (spec == Specializations::SPEC_SHAMAN_RESTORATION)  // was SPEC_DRUID_RESTORATION
                 role = BOT_ROLE_HEALER;
             else
                 role = BOT_ROLE_DPS;
@@ -98,7 +100,7 @@ BotRoles AiFactory::GetPlayerRoles(Player* player)
                 role = BOT_ROLE_HEALER;
             else if (spec == Specializations::SPEC_PALADIN_PROTECTION)
                 role = BOT_ROLE_TANK;
-            else if (spec == 2)
+            else  // was "spec == 2", retribution paladins got no role
                 role = BOT_ROLE_DPS;
             break;
         case CLASS_DRUID:
@@ -234,7 +236,8 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     {
         engine->addStrategiesNoInit("racials", "chat", "default", "cast time", "duel", "boost", nullptr);
     }
-    if (sPlayerbotAIConfig->autoAvoidAoe && facade->HasRealPlayerMaster())
+    // 
+    if (sPlayerbotAIConfig->autoAvoidAoe)
     {
         engine->addStrategy("avoid aoe", false);
     }
@@ -373,16 +376,17 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         }
         case CLASS_MONK:
         {
+            // strategies of the monk class AI (MonkAiObjectContext)
             if (spec == Specializations::SPEC_MONK_BREWMASTER)
                 engine->addStrategiesNoInit("tank", "tank assist", "aoe", nullptr);
             else if (spec == Specializations::SPEC_MONK_MISTWEAVER)
-                engine->addStrategiesNoInit("heal", nullptr);
+                engine->addStrategiesNoInit("heal", "dps assist", nullptr);
             else
-                engine->addStrategiesNoInit("melee", "melee aoe", "dps assist", nullptr);
+                engine->addStrategiesNoInit("dps", "aoe", "dps assist", nullptr);
 
-            engine->addStrategiesNoInit("dps assist", "cure", nullptr);
+            engine->addStrategiesNoInit("cure", nullptr);
+            break;
         }
-        break;
     }
 
     if (PlayerBotSpec::IsTank(player, true))
@@ -440,6 +444,13 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
                 }
                 break;
             }
+            case CLASS_MONK:
+            {
+                // solo mistweavers fight like windwalkers
+                if (spec == Specializations::SPEC_MONK_MISTWEAVER)
+                    engine->addStrategiesNoInit("dps", "aoe", nullptr);
+                break;
+            }
             default:
                 break;
             }
@@ -449,6 +460,12 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     {
         engine->ChangeStrategy(sPlayerbotAIConfig->combatStrategies);
     }
+
+    // DPS of a dungeon or raid party hold back at 80% of the tank's threat (50% for AoE)
+    if ((facade->life.party == BOTLIFE_PARTY_DUNGEON || facade->life.party == BOTLIFE_PARTY_RAID
+         || (player->GetGroup() && player->GetGroup()->isLFGGroup()))   // dungeon finder groups too
+        && !PlayerBotSpec::IsTank(player, true) && !PlayerBotSpec::IsHeal(player, true))
+        engine->addStrategy("threat", false);
 
     // temporary
     //engine->addStrategy("ranged");
@@ -557,6 +574,13 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
                 nonCombatEngine->addStrategy("tank assist", false);
             else
                 nonCombatEngine->addStrategy("dps assist", false);
+            break;
+        case CLASS_MONK:
+            if (tab == Specializations::SPEC_MONK_BREWMASTER)
+                nonCombatEngine->addStrategy("tank assist", false);
+            else
+                nonCombatEngine->addStrategy("dps assist", false);
+            nonCombatEngine->addStrategiesNoInit("cure", nullptr);
             break;
         default:
             nonCombatEngine->addStrategy("dps assist", false);

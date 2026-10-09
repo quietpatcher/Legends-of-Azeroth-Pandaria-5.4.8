@@ -29,9 +29,15 @@ HolyPriestStrategy::HolyPriestStrategy(PlayerbotAI* botAI) : HealPriestStrategy(
 
 NextAction** HolyPriestStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("smite", ACTION_DEFAULT + 0.2f),
-                             new NextAction("mana burn", ACTION_DEFAULT + 0.1f),
-                             new NextAction("starshards", ACTION_DEFAULT), nullptr);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("holy fire", ACTION_DEFAULT + 0.80f),
+        new NextAction("penance", ACTION_DEFAULT + 0.70f),
+        new NextAction("shadow word: pain", ACTION_DEFAULT + 0.60f),
+        new NextAction("smite", ACTION_DEFAULT + 0.50f),
+        new NextAction("shoot", ACTION_DEFAULT + 0.10f),
+        nullptr);
 }
 
 void HolyPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

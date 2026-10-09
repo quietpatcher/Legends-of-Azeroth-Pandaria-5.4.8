@@ -25,6 +25,13 @@
 #include "SpellMgr.h"
 #include "Unit.h"
 #include "UnitAI.h"
+#include "Map.h"
+#include "ThreadOwnerCheck.h"
+#include "Log.h"
+#include <atomic>
+#include <sstream>
+#include <dlfcn.h>
+#include <execinfo.h>
 #include <algorithm>
 #include <boost/heap/fibonacci_heap.hpp>
 
@@ -58,6 +65,34 @@ void ThreatReference::ScaleThreat(float factor)
     _mgr._needClientUpdate = true;
 }
 
+Map const*& TTCurrentUpdateMap()
+{
+    static thread_local Map const* map = nullptr;
+    return map;
+}
+
+void TTCheckThreadOwner(Unit const* owner, char const* what, ObjectGuid const& other)
+{
+    Map const* current = TTCurrentUpdateMap();
+    if (!current || !owner)
+        return;
+    Map const* own = owner->FindMap();
+    if (!own || own == current)
+        return;
+    static std::atomic<uint32> reported{ 0 };
+    if (reported.fetch_add(1) >= 200)
+        return;
+    void* frames[24];
+    int n = backtrace(frames, 24);
+    Dl_info info;
+    uintptr_t base = dladdr(reinterpret_cast<void*>(&TTCheckThreadOwner), &info) ? reinterpret_cast<uintptr_t>(info.dli_fbase) : 0;
+    std::ostringstream bt;
+    for (int i = 1; i < n; ++i)
+        bt << " 0x" << std::hex << (reinterpret_cast<uintptr_t>(frames[i]) - base);
+    TC_LOG_ERROR("misc", "TT-THREADCHECK {} owner {} (map {} inst {}) other {} from worker of map {} inst {} bt:{}", what,
+        owner->GetGUID().ToString(), own->GetId(), own->GetInstanceId(), other.ToString(), current->GetId(), current->GetInstanceId(), bt.str());
+}
+
 void ThreatReference::UpdateOffline()
 {
     bool const shouldBeOffline = ShouldBeOffline();
@@ -82,7 +117,10 @@ void ThreatReference::UpdateOffline()
 {
     if (a->GetTypeId() == TYPEID_UNIT && a->ToCreature()->IsTrigger())
         return false;
-    if (a->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED))
+    // UNIT_FLAG_PLAYER_CONTROLLED is 0x01000000 (old pet flag) in this core, players never have it;
+    // TC master means "player or player controlled" here -> IsControlledByPlayer(). Otherwise every creature with
+    // IMMUNE_TO_NPC (21% of normal mobs) drops a player from its threat list and evades.
+    if (a->IsControlledByPlayer())
     {
         if (b->HasUnitFlag(UNIT_FLAG_IMMUNE_TO_PC))
             return false;
@@ -849,6 +887,7 @@ void ThreatManager::SendThreatListToClients(bool newHighest) const
 
 void ThreatManager::PutThreatListRef(ObjectGuid const& guid, ThreatReference* ref)
 {
+    TTCheckThreadOwner(_owner, "PutThreatListRef", guid);
     _needClientUpdate = true;
     auto& inMap = _myThreatListEntries[guid];
     ASSERT(!inMap, "Duplicate threat reference at %p being inserted on %s for %s - memory leak!", ref, _owner->GetGUID().ToString().c_str(), guid.ToString().c_str());
@@ -858,6 +897,7 @@ void ThreatManager::PutThreatListRef(ObjectGuid const& guid, ThreatReference* re
 
 void ThreatManager::PurgeThreatListRef(ObjectGuid const& guid)
 {
+    TTCheckThreadOwner(_owner, "PurgeThreatListRef", guid);
     auto it = _myThreatListEntries.find(guid);
     if (it == _myThreatListEntries.end())
         return;
@@ -873,6 +913,7 @@ void ThreatManager::PurgeThreatListRef(ObjectGuid const& guid)
 
 void ThreatManager::PutThreatenedByMeRef(ObjectGuid const& guid, ThreatReference* ref)
 {
+    TTCheckThreadOwner(_owner, "PutThreatenedByMeRef", guid);
     auto& inMap = _threatenedByMe[guid];
     ASSERT(!inMap, "Duplicate threatened-by-me reference at %p being inserted on %s for %s - memory leak!", ref, _owner->GetGUID().ToString().c_str(), guid.ToString().c_str());
     inMap = ref;
@@ -880,6 +921,7 @@ void ThreatManager::PutThreatenedByMeRef(ObjectGuid const& guid, ThreatReference
 
 void ThreatManager::PurgeThreatenedByMeRef(ObjectGuid const& guid)
 {
+    TTCheckThreadOwner(_owner, "PurgeThreatenedByMeRef", guid);
     auto it = _threatenedByMe.find(guid);
     if (it != _threatenedByMe.end())
         _threatenedByMe.erase(it);

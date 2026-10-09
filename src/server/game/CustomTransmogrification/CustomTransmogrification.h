@@ -36,7 +36,7 @@ struct ItemTemplate;
 
 enum TransmogTrinityStrings // Language.h might have same entries, appears when executing SQL, change if needed
 {
-    LANG_ERR_TRANSMOG_OK = 11100, // change this
+    LANG_ERR_TRANSMOG_OK = 900020, // was 11100, which collided with core strings 11102-11104
     LANG_ERR_TRANSMOG_INVALID_SLOT,
     LANG_ERR_TRANSMOG_INVALID_SRC_ENTRY,
     LANG_ERR_TRANSMOG_MISSING_SRC_ITEM,
@@ -51,6 +51,12 @@ enum TransmogTrinityStrings // Language.h might have same entries, appears when 
 #ifdef PRESETS
     LANG_PRESET_ERR_INVALID_NAME,
 #endif
+};
+
+// confirmation box of a transmogrification (trinity_string, every locale)
+enum TransmogConfirmString
+{
+    LANG_TRANSMOG_CONFIRM_BOX = 900010,
 };
 
 class Transmogrification

@@ -74,8 +74,18 @@ bool TransactionTask::Execute(MySQLConnection* conn, std::shared_ptr<Transaction
 
         for (uint32 loopDuration = 0, startMSTime = getMSTime(); loopDuration <= DEADLOCK_MAX_RETRY_TIME_MS; loopDuration = GetMSTimeDiffToNow(startMSTime))
         {
-            if (!TryExecute(conn, trans))
+            int retryError = TryExecute(conn, trans);
+            if (!retryError)
                 return true;
+
+            // the retry failed on something else (a duplicate key, say) - repeating that for a minute
+            // cannot help, it only keeps this worker (and every other one waiting for the lock above) busy
+            if (retryError != ER_LOCK_DEADLOCK)
+            {
+                TC_LOG_ERROR("sql.sql", "Deadlocked SQL Transaction failed with error {} on retry, giving up. Thread Id: {}", retryError, threadId.c_str());
+                trans->Cleanup();
+                return false;
+            }
 
             TC_LOG_WARN("sql.sql", "Deadlocked SQL Transaction, retrying. Loop timer: {} ms, Thread Id: {}", loopDuration, threadId.c_str());
         }

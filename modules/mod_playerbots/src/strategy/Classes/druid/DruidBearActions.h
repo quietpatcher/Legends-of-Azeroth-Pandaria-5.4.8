@@ -52,7 +52,7 @@ public:
 class CastMangleBearAction : public CastMeleeSpellAction
 {
 public:
-    CastMangleBearAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "mangle (bear)") {}
+    CastMangleBearAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "mangle") {}
 };
 
 class CastSwipeBearAction : public CastMeleeSpellAction
@@ -65,6 +65,19 @@ class CastLacerateAction : public CastMeleeSpellAction
 {
 public:
     CastLacerateAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "lacerate") {}
+};
+
+// the bear's bleed with area threat, and its active mitigation
+class CastThrashBearAction : public CastMeleeSpellAction
+{
+public:
+    CastThrashBearAction(PlayerbotAI* botAI) : CastMeleeSpellAction(botAI, "thrash") {}
+};
+
+class CastSavageDefenseAction : public CastBuffSpellAction
+{
+public:
+    CastSavageDefenseAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "savage defense") {}
 };
 
 class CastBashOnEnemyHealerAction : public CastSpellOnEnemyHealerAction

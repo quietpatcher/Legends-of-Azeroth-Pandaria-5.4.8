@@ -17,6 +17,11 @@ float ThreatMultiplier::GetValue(Action* action)
     if (!AI_VALUE(bool, "group"))
         return 1.0f;
 
+    // a mob that hits the bot itself is fought back, whatever the threat
+    if (Unit* target = AI_VALUE(Unit*, "current target"))
+        if (target->GetVictim() == botAI->GetBot())
+            return 1.0f;
+
     if (action->getThreatType() == Action::ActionThreatType::Aoe)
     {
         uint8 threat = AI_VALUE2(uint8, "threat", "aoe");

@@ -7,6 +7,9 @@
 #define _PLAYERBOT_AIOBJECTCONTEXT_H
 
 #include <sstream>
+#include <type_traits>
+#include <typeinfo>
+#include <unordered_map>
 #include <string>
 
 #include "Common.h"
@@ -22,7 +25,11 @@ class AiObjectContext : public PlayerbotAIAware
 {
 public:
     AiObjectContext(PlayerbotAI* botAI);
-    virtual ~AiObjectContext() {}
+    virtual ~AiObjectContext()
+    {
+        for (auto& missing : missingValues)
+            delete missing.second;
+    }
 
     virtual Strategy* GetStrategy(std::string const name);
     virtual std::set<std::string> GetSiblingStrategy(std::string const name);
@@ -33,8 +40,33 @@ public:
     template <class T>
     Value<T>* GetValue(std::string const name)
     {
-        return dynamic_cast<Value<T>*>(GetUntypedValue(name));
+        if (Value<T>* value = dynamic_cast<Value<T>*>(GetUntypedValue(name)))
+            return value;
+        // a value this port does not register (or of another type). Callers use the result right away
+        // (AI_VALUE -> ->Get()), which was a null dereference / garbage read and crashed the server. Hand out a
+        // default value owned by this context and built with this bot's AI (a value built without an AI crashes in
+        // the AiObject constructor), and report the name once.
+        if constexpr (!std::is_reference_v<T> && std::is_default_constructible_v<T>)
+        {
+            std::string key = name + "#" + typeid(T).name();
+            auto it = missingValues.find(key);
+            if (it == missingValues.end())
+            {
+                ReportMissingValue(name);
+                it = missingValues.emplace(key, new ManualSetValue<T>(botAI, T(), "missing value")).first;
+            }
+            ManualSetValue<T>* missing = static_cast<ManualSetValue<T>*>(it->second);
+            missing->Reset();
+            return missing;
+        }
+        else
+        {
+            ReportMissingValue(name);
+            return nullptr;
+        }
     }
+
+    static void ReportMissingValue(std::string const& name);
 
     template <class T>
     Value<T>* GetValue(std::string const name, std::string const param)
@@ -69,6 +101,7 @@ protected:
     NamedObjectContextList<Action> actionContexts;
     NamedObjectContextList<Trigger> triggerContexts;
     NamedObjectContextList<UntypedValue> valueContexts;
+    std::unordered_map<std::string, UntypedValue*> missingValues;   // defaults for unregistered values
 };
 
 #endif

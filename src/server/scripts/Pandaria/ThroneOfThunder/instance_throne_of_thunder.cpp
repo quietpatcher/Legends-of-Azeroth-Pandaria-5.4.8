@@ -1132,6 +1132,9 @@ class instance_throne_of_thunder : public InstanceMapScript
 
             bool CheckRequiredBosses(uint32 bossId, Player const* player = NULL) const override
             {
+                if (_SkipCheckRequiredBosses(player))   // GMs with the permission and bots
+                    return true;
+
                 if (!InstanceScript::CheckRequiredBosses(bossId, player))
                     return false;
 

@@ -36,7 +36,15 @@ AssassinationRogueStrategy::AssassinationRogueStrategy(PlayerbotAI* ai) : MeleeC
 
 NextAction** AssassinationRogueStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("melee", ACTION_DEFAULT), NULL);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("vendetta", ACTION_DEFAULT + 0.90f),
+        new NextAction("dispatch", ACTION_DEFAULT + 0.60f),
+        new NextAction("mutilate", ACTION_DEFAULT + 0.50f),
+        new NextAction("sinister strike", ACTION_DEFAULT + 0.30f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void AssassinationRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

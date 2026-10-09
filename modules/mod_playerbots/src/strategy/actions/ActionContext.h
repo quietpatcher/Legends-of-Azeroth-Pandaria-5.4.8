@@ -22,6 +22,7 @@ public:
     {
         creators["say hello"] = &ActionContext::hello;
         creators["move random"] = &ActionContext::move_random;
+        creators["avoid aoe"] = &ActionContext::avoid_aoe;
 
         creators["follow"] = &ActionContext::follow;
         creators["flee"] = &ActionContext::flee;
@@ -62,6 +63,7 @@ public:
 private:
     static Action* hello(PlayerbotAI* botAI) { return new SayHelloAction(botAI); }
     static Action* move_random(PlayerbotAI* botAI) { return new MoveRandomAction(botAI); }
+    static Action* avoid_aoe(PlayerbotAI* botAI) { return new AvoidAoeAction(botAI); }
 
     static Action* follow(PlayerbotAI* botAI) { return new FollowAction(botAI); }
     static Action* flee(PlayerbotAI* botAI) { return new FleeAction(botAI); }

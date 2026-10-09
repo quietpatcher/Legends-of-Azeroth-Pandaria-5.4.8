@@ -24,7 +24,8 @@ Unit* CastPowerWordShieldOnAlmostFullHealthBelowAction::GetTarget()
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
-        if (!player)
+        // only heal/shield a member updated on our own map thread (cross-thread write = heap corruption)
+        if (!player || !player->IsInWorld() || player->FindMap() != bot->FindMap())
             continue;
         if (player->isDead())
         {
@@ -53,7 +54,8 @@ bool CastPowerWordShieldOnAlmostFullHealthBelowAction::isUseful()
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
-        if (!player)
+        // only heal/shield a member updated on our own map thread (cross-thread write = heap corruption)
+        if (!player || !player->IsInWorld() || player->FindMap() != bot->FindMap())
             continue;
         if (player->isDead())
         {
@@ -83,7 +85,8 @@ Unit* CastPowerWordShieldOnNotFullAction::GetTarget()
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
-        if (!player)
+        // only heal/shield a member updated on our own map thread (cross-thread write = heap corruption)
+        if (!player || !player->IsInWorld() || player->FindMap() != bot->FindMap())
             continue;
         if (player->isDead() || player->IsFullHealth())
         {

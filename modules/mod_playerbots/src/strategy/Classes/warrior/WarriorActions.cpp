@@ -47,7 +47,8 @@ Unit* CastVigilanceAction::GetTarget()
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
-        if (!member || member == bot || !member->IsAlive())
+        // skip members updated on another map thread (cross-thread aura write = heap corruption)
+        if (!member || member == bot || !member->IsAlive() || member->FindMap() != bot->FindMap())
             continue;
 
         // Check if member has Vigilance applied by the bot

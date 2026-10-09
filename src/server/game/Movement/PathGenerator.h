@@ -67,7 +67,8 @@ class TC_GAME_API PathGenerator
 
         // option setters - use optional
         void SetUseStraightPath(bool useStraightPath) { _useStraightPath = useStraightPath; }
-        void SetPathLengthLimit(float distance) { _pointPathLimit = std::min<uint32>(uint32(distance/SMOOTH_PATH_STEP_SIZE), MAX_POINT_PATH_LENGTH); }
+        // a length, not a point count - the smooth path also has a point at every polygon corner
+        void SetPathLengthLimit(float distance) { _pathLengthLimit = distance; }
         void SetUseRaycast(bool useRaycast) { _useRaycast = useRaycast; }
 
         // result getters
@@ -128,6 +129,7 @@ class TC_GAME_API PathGenerator
         bool _useStraightPath;  // type of path will be generated
         bool _forceDestination; // when set, we will always arrive at given point
         uint32 _pointPathLimit; // limit point path size; min(this, MAX_POINT_PATH_LENGTH)
+        float _pathLengthLimit = 0.0f;  // a longer path is PATHFIND_SHORT (0: no limit)
         bool _useRaycast;       // use raycast if true for a straight line path
 
         G3D::Vector3 _startPosition;        // {x, y, z} of current location

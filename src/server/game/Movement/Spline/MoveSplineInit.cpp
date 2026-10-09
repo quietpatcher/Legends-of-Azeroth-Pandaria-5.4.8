@@ -16,6 +16,8 @@
 */
 
 #include "MoveSplineInit.h"
+#include <atomic>
+#include "Log.h"
 #include "MoveSpline.h"
 #include "MovementPacketBuilder.h"
 #include "Unit.h"
@@ -23,6 +25,10 @@
 #include "Vehicle.h"
 #include "WorldPacket.h"
 #include "Opcodes.h"
+
+// to-do #64: movement measurement, ".botlife movediag <count> [entry]"
+std::atomic<int32> g_ttMoveDiagLeft{0};
+std::atomic<uint32> g_ttMoveDiagEntry{0};
 
 namespace Movement
 {
@@ -108,6 +114,20 @@ namespace Movement
         }
 
         args.velocity = std::min(args.velocity, args.flags.catmullrom || args.flags.flying || args.flags.falling || args.flags.parabolic ? 50.0f : std::max(28.0f, unit->GetSpeed(MOVE_RUN) * 4.0f));
+
+        // to-do #64: the speed a creature really gets
+        if (g_ttMoveDiagLeft.load(std::memory_order_relaxed) > 0 && unit->GetTypeId() == TYPEID_UNIT && !unit->IsControlledByPlayer()
+            && (!g_ttMoveDiagEntry.load(std::memory_order_relaxed) || unit->GetEntry() == g_ttMoveDiagEntry.load(std::memory_order_relaxed))
+            && g_ttMoveDiagLeft.fetch_sub(1) > 0)
+        {
+            float length = 0.0f;
+            for (size_t i = 1; i < args.path.size(); ++i)
+                length += (args.path[i] - args.path[i - 1]).length();
+            TC_LOG_INFO("server", "MOVEDIAG {} ({}) map {} at {:.0f} {:.0f}: velocity {:.2f} walkmode {} hasVelocity {} moveFlags 0x{:X} combat {} water {} length {:.1f} | speed walk {:.2f} run {:.2f} swim {:.2f}",
+                unit->GetName(), unit->GetEntry(), unit->GetMapId(), unit->GetPositionX(), unit->GetPositionY(), args.velocity,
+                args.flags.walkmode ? 1 : 0, args.HasVelocity ? 1 : 0, moveFlags, unit->IsInCombat() ? 1 : 0, unit->IsInWater() ? 1 : 0,
+                length, unit->GetSpeed(MOVE_WALK), unit->GetSpeed(MOVE_RUN), unit->GetSpeed(MOVE_SWIM));
+        }
 
         if (!args.Validate(unit))
             return 0;

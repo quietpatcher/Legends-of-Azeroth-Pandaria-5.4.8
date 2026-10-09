@@ -1197,7 +1197,8 @@ void Battleground::EndBattleground(uint32 winner)
         player->SendDirectMessage(&data);
 
         player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_COMPLETE_BATTLEGROUND, 1);
-        player->SetSaveTimer(1);
+        if (!player->GetSession() || !player->GetSession()->IsBot())   // not for a bot
+            player->SetSaveTimer(1);
     }
 
     if (winnerGroup && (IsArena() || IsRatedBG()) && res & ARENA_NEED_REWARD)

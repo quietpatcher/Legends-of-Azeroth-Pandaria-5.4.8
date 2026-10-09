@@ -1,6 +1,7 @@
 #ifndef _PLAYERBOT_PLAYERBOTAI_H
 #define _PLAYERBOT_PLAYERBOTAI_H
 
+#include "BotLifeInfo.h"
 #include <queue>
 #include <stack>
 
@@ -135,6 +136,7 @@ public:
     std::vector<std::string> GetStrategies(BotState type);
 
     Player* GetBot() { return bot; }
+    std::unordered_map<uint32, uint32> _spellRetryBlock;   // spellId -> msTime until which casting is not retried
     Player* GetMaster() { return master; }
     Player* GetGroupMaster();
     Creature* GetCreature(ObjectGuid guid);
@@ -144,13 +146,16 @@ public:
     GameObject* GetGameObject(ObjectGuid guid);
     // static GameObject* GetGameObject(GameObjectData const* gameObjectData);
     WorldObject* GetWorldObject(ObjectGuid guid);
-    AiObjectContext* GetAiObjectContext() { return _aiObjectContext; }
+    AiObjectContext* GetAiObjectContext();   // out of line, with a thread owner check
     BotState GetState() { return _currentState; };
     const NewRpgInfo& GetRpgInfo() { return _rpgInfo; }
+    BotLifeInfo life;   // bot life state (BotLife)
     float GetRange(std::string const type);
 
     bool IsOpposing(Player* player);
     static bool IsOpposing(uint8 race1, uint8 race2);
+    // a creature that strikes back at every melee attack for a few seconds
+    static bool IsStrikingBack(Unit const* target);
     // Checks if the bot is really a player. Players always have themselves as master.
     bool IsRealPlayer() { return master ? (master == bot) : false; }
     // Bot has a master that is a player.

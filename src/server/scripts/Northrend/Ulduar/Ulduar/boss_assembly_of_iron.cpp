@@ -16,6 +16,7 @@
 */
 
 #include "ScriptMgr.h"
+#include <unordered_set>
 #include "ScriptedCreature.h"
 #include "SpellScript.h"
 #include "SpellAuraEffects.h"
@@ -279,10 +280,30 @@ void ResetEncounter(InstanceScript* instance, Creature* me)
             }
 }
 
+// the three bosses engage each other (StartEncounter -> SetInCombatWithZone -> JustEngagedWith -> StartEncounter,
+// DoZoneInCombat re-entering the own JustEngagedWith), and Brundir evades (and resets the encounter) when the required bosses
+// are not dead - bots at level in Ulduar made that an endless recursion: stack overflow crashes and a hang with 29 GB RSS
+// (26-9 23:21 / 23:36 / 23:40). One engage per creature at a time, one StartEncounter at a time.
+namespace
+{
+    struct AssemblyEngageGuard
+    {
+        static std::unordered_set<ObjectGuid>& Active() { static thread_local std::unordered_set<ObjectGuid> s; return s; }
+        ObjectGuid guid;
+        bool ok;
+        explicit AssemblyEngageGuard(Creature* me) : guid(me->GetGUID()), ok(Active().insert(guid).second) { }
+        ~AssemblyEngageGuard() { if (ok) Active().erase(guid); }
+    };
+}
+
 void StartEncounter(InstanceScript* instance, Creature* caller)
 {
     if (instance->GetBossState(BOSS_ASSEMBLY_OF_IRON) == IN_PROGRESS)
         return; // Prevent recursive calls
+    static thread_local bool starting = false;
+    if (starting)
+        return;
+    struct StartingFlag { bool& f; explicit StartingFlag(bool& b) : f(b) { f = true; } ~StartingFlag() { f = false; } } flag(starting);
 
     instance->SetBossState(BOSS_ASSEMBLY_OF_IRON, IN_PROGRESS);
 
@@ -338,6 +359,9 @@ class boss_steelbreaker : public CreatureScript
 
             void JustEngagedWith(Unit* who) override
             {
+                AssemblyEngageGuard engageGuard(me);   // , see StartEncounter
+                if (!engageGuard.ok)
+                    return;
                 me->setActive(true);
                 StartEncounter(instance, me);
                 switch (urand(1, 3))
@@ -647,6 +671,9 @@ class boss_runemaster_molgeim : public CreatureScript
 
             void JustEngagedWith(Unit* who) override
             {
+                AssemblyEngageGuard engageGuard(me);   // , see StartEncounter
+                if (!engageGuard.ok)
+                    return;
                 me->InterruptSpell(CURRENT_CHANNELED_SPELL);
                 me->setActive(true);
                 StartEncounter(instance, me);
@@ -947,6 +974,9 @@ class boss_stormcaller_brundir : public CreatureScript
 
             void JustEngagedWith(Unit* who) override
             {
+                AssemblyEngageGuard engageGuard(me);   // , see StartEncounter
+                if (!engageGuard.ok)
+                    return;
                 if (!who)
                     return;
 

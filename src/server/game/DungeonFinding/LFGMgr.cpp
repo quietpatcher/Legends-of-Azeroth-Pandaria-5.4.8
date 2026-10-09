@@ -490,6 +490,8 @@ void LFGMgr::InitializeLockedDungeons(Player* player, uint8 level /* = 0 */)
    @param[in]     dungeons Dungeons the player/group is applying for
    @param[in]     comment Player selected comment
 */
+void (*LFGMgr::FillMissingRoles)(Player* player, uint32 queueId, LfgDungeonSet const& dungeons) = nullptr;
+
 void LFGMgr::JoinLfg(Player* player, LfgRoles roles, LfgDungeonSet& dungeons, const std::string& comment)
 {
     if (!player || !player->GetSession() || dungeons.empty())
@@ -501,6 +503,13 @@ void LFGMgr::JoinLfg(Player* player, LfgRoles roles, LfgDungeonSet& dungeons, co
     Group* group = player->GetGroup();
     ObjectGuid guid = player->GetGUID();
     ObjectGuid gguid = group ? group->GetGUID() : guid;
+    // the locks again at join - a holiday that started (or ended) after the login counts now
+    InitializeLockedDungeons(player);
+    if (group)
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member != player && member->IsInWorld())
+                    InitializeLockedDungeons(member);
     LfgJoinResultData joinData;
     LfgCategory category = LFG_CATEGORY_NONE;
     LfgGuidSet players;
@@ -754,6 +763,25 @@ void LFGMgr::JoinLfg(Player* player, LfgRoles roles, LfgDungeonSet& dungeons, co
         }
         // Update leader role
         UpdateRoleCheck(gguid, guid, roles);
+
+        // bots have no client to answer the role check popup, so a group with bots always ran into the
+        // role check timeout (LFG_ROLECHECK_MISSING_ROLE). Bots answer at once with the role of their spec.
+        for (auto&& member : *group)
+        {
+            if (RoleChecksStore.find(gguid) == RoleChecksStore.end())
+                break;   // finished or failed already
+            WorldSession* session = member->GetSession();
+            if (member->GetGUID() == guid || !session || !session->IsBot())
+                continue;
+            uint8 botRole;
+            switch (member->GetRoleForGroup())
+            {
+                case ROLES_TANK:   botRole = PLAYER_ROLE_TANK; break;
+                case ROLES_HEALER: botRole = PLAYER_ROLE_HEALER; break;
+                default:           botRole = PLAYER_ROLE_DAMAGE; break;
+            }
+            UpdateRoleCheck(gguid, member->GetGUID(), botRole);
+        }
     }
     else                                                   // Add player to queue
     {
@@ -784,6 +812,12 @@ void LFGMgr::JoinLfg(Player* player, LfgRoles roles, LfgDungeonSet& dungeons, co
         player->GetSession()->SendLfgJoinResult(queueId, joinData);
         player->GetSession()->SendLfgUpdateStatus(LFG_UPDATETYPE_ADDED_TO_QUEUE, queueData);
         SetState(gguid, queueId, LFG_STATE_QUEUED);
+
+        // a solo real player can be matched instantly under LFGSolo.Enabled (no waiting for a full
+        // group), faster than any periodic check could react - fill the missing roles with bots right here,
+        // before this function returns and any proposal has a chance to form.
+        if (FillMissingRoles && player->GetSession() && !player->GetSession()->IsBot())
+            FillMissingRoles(player, queueId, dungeons);
 
         if (!isContinue && category != LFG_CATEGORY_SCENARIO)
         {
@@ -1597,6 +1631,21 @@ bool LFGMgr::AddProposal(LfgProposal& proposal)
 
         SendLfgUpdateStatus(LFG_UPDATETYPE_PROPOSAL_BEGIN, guid, queueId);
         SendLfgUpdateProposal(guid, proposal);
+    }
+
+    // bots cannot click "enter dungeon"; they accept the proposal at once (the proposal may be completed
+    // and removed by an answer, so look it up again each time)
+    uint32 proposalId = proposal.id;
+    std::vector<ObjectGuid> bots;
+    for (auto&& it : proposal.players)
+        if (Player* member = ObjectAccessor::FindConnectedPlayer(it.first))
+            if (member->GetSession() && member->GetSession()->IsBot())
+                bots.push_back(it.first);
+    for (ObjectGuid const& botGuid : bots)
+    {
+        if (ProposalsStore.find(proposalId) == ProposalsStore.end())
+            break;
+        UpdateProposal(proposalId, botGuid, true);
     }
     return true;
 }
@@ -2755,37 +2804,37 @@ ObjectGuid LFGMgr::GetLeader(ObjectGuid guid)
 
 void LFGMgr::SendLfgRoleChosen(ObjectGuid guid, ObjectGuid pguid, uint8 roles)
 {
-    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))   // also during a far teleport
         player->GetSession()->SendLfgRoleChosen(pguid, roles);
 }
 
 void LFGMgr::SendLfgRoleCheckUpdate(ObjectGuid guid, LfgRoleCheck const& roleCheck)
 {
-    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))   // also during a far teleport
         player->GetSession()->SendLfgRoleCheckUpdate(roleCheck);
 }
 
 void LFGMgr::SendLfgUpdateStatus(LfgUpdateType updateType, ObjectGuid guid, uint32 queueId)
 {
-    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))   // also during a far teleport
         player->GetSession()->SendLfgUpdateStatus(updateType, GetPlayerQueueData(guid, queueId));
 }
 
 void LFGMgr::SendLfgJoinResult(ObjectGuid guid, uint32 queueId, LfgJoinResultData const& data)
 {
-    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))   // also during a far teleport
         player->GetSession()->SendLfgJoinResult(queueId, data);
 }
 
 void LFGMgr::SendLfgBootProposalUpdate(ObjectGuid guid, LfgPlayerBoot const& boot)
 {
-    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))   // also during a far teleport
         player->GetSession()->SendLfgBootProposalUpdate(boot);
 }
 
 void LFGMgr::SendLfgUpdateProposal(ObjectGuid guid, LfgProposal const& proposal)
 {
-    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))   // also during a far teleport
         player->GetSession()->SendLfgUpdateProposal(proposal);
 }
 
@@ -2796,7 +2845,7 @@ uint64 LFGMgr::GetGuidForLog(ObjectGuid guid) const
 
 void LFGMgr::SendLfgQueueStatus(ObjectGuid guid, LfgQueueStatusData const& data)
 {
-    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))   // also during a far teleport
         player->GetSession()->SendLfgQueueStatus(data);
 }
 

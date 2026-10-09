@@ -80,8 +80,14 @@ DpsRogueStrategy::DpsRogueStrategy(PlayerbotAI* botAI) : MeleeCombatStrategy(bot
 
 NextAction** DpsRogueStrategy::getDefaultActions()
 {
-    return NextAction::array(0, new NextAction("killing spree", ACTION_DEFAULT + 0.1f),
-                             new NextAction("melee", ACTION_DEFAULT), nullptr);
+    // MoP priority list (the port had WotLK or empty rotations); resources and cooldowns gate each
+    // entry through CanCastSpell, so the first castable spell wins
+    return NextAction::array(0,
+        new NextAction("killing spree", ACTION_DEFAULT + 0.90f),
+        new NextAction("revealing strike", ACTION_DEFAULT + 0.50f),
+        new NextAction("sinister strike", ACTION_DEFAULT + 0.40f),
+        new NextAction("melee", ACTION_DEFAULT + 0.00f),
+        nullptr);
 }
 
 void DpsRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

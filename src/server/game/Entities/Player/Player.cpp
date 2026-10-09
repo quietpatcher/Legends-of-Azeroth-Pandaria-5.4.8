@@ -1123,6 +1123,16 @@ void Player::SetDrunkValue(uint8 newDrunkValue, uint32 itemId /*= 0*/)
     SendMessageToSet(&data, true);
 }
 
+// what triggers the full saves: 0 direct call, 1 forced timer (SetSaveTimer(1)), 2 periodic
+// timer, 3 corpse removal after a resurrect. One line per minute in the "playerbots" log.
+namespace
+{
+    std::atomic<uint32> tt_saveCount[4];
+    std::atomic<uint32> tt_saveDirectLogged{ 0 };
+    std::atomic<int64> tt_saveNextLog{ 0 };
+    thread_local uint8 tl_saveReason = 0;
+}
+
 void Player::Update(uint32 p_time)
 {
     if (!IsInWorld())
@@ -1336,7 +1346,9 @@ void Player::Update(uint32 p_time)
         TeleportTo(m_homebindMapId, m_homebindX, m_homebindY, m_homebindZ, GetOrientation());
 
     // teleport out if player is not eligible for isle of thunder
-    if (GetZoneId() == 6507 && GetQuestStatus(32680) == QUEST_STATUS_NONE && GetQuestStatus(32681) == QUEST_STATUS_NONE && GetSession()->GetSecurity() < SEC_GAMEMASTER)
+    // not the bots - they have no introduction scenario to play, and the island stayed empty
+    if (GetZoneId() == 6507 && GetQuestStatus(32680) == QUEST_STATUS_NONE && GetQuestStatus(32681) == QUEST_STATUS_NONE && GetSession()->GetSecurity() < SEC_GAMEMASTER
+        && !GetSession()->IsBot())
     {
         if (GetTeam() == HORDE)
             TeleportTo(870, 1678.752f, 931.605f, 471.426f, 3.295924f);
@@ -1436,6 +1448,7 @@ void Player::Update(uint32 p_time)
         {
             // m_nextSave reset in SaveToDB call
             sScriptMgr->OnPlayerSave(this);
+            tl_saveReason = m_nextSave <= 1 ? 1 : 2;
             SaveToDB();
             //TC_LOG_DEBUG("entities.player", "Player '{}' (GUID: {}) saved", GetName().c_str(), GetGUIDLow());
         }
@@ -1969,15 +1982,15 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
     }
     else
     {
-        if (GetClass() == CLASS_DEATH_KNIGHT && GetMapId() == 609 && !IsGameMaster() && GetLevel() < 80 && !HasSpell(50977))
+        if (GetClass() == CLASS_DEATH_KNIGHT && GetMapId() == 609 && !IsGameMaster() && !GetSession()->IsBot() /* bots may leave starting zones */ && GetLevel() < 80 && !HasSpell(50977))
             return false;
-        if (GetRace() == RACE_GOBLIN && GetClass() != CLASS_DEATH_KNIGHT && GetMapId() == 648 && !IsGameMaster() && GetLevel() < 30 && !IsQuestRewarded(25266) && GetQuestStatus(25266) != QUEST_STATUS_COMPLETE)
+        if (GetRace() == RACE_GOBLIN && GetClass() != CLASS_DEATH_KNIGHT && GetMapId() == 648 && !IsGameMaster() && !GetSession()->IsBot() /* bots may leave starting zones */ && GetLevel() < 30 && !IsQuestRewarded(25266) && GetQuestStatus(25266) != QUEST_STATUS_COMPLETE)
             return false;
-        if (GetRace() == RACE_WORGEN && GetClass() != CLASS_DEATH_KNIGHT && GetMapId() == 654 && !IsGameMaster() && GetLevel() < 30 && !IsQuestRewarded(26706))
+        if (GetRace() == RACE_WORGEN && GetClass() != CLASS_DEATH_KNIGHT && GetMapId() == 654 && !IsGameMaster() && !GetSession()->IsBot() /* bots may leave starting zones */ && GetLevel() < 30 && !IsQuestRewarded(26706))
             return false;
-        if (GetRace() == RACE_PANDAREN_ALLIANCE && GetMapId() == 860 && !IsGameMaster() && GetLevel() < 30 && !IsQuestRewarded(31450) && GetQuestStatus(31450) != QUEST_STATUS_COMPLETE)
+        if (GetRace() == RACE_PANDAREN_ALLIANCE && GetMapId() == 860 && !IsGameMaster() && !GetSession()->IsBot() /* bots may leave starting zones */ && GetLevel() < 30 && !IsQuestRewarded(31450) && GetQuestStatus(31450) != QUEST_STATUS_COMPLETE)
             return false;
-        if (GetRace() == RACE_PANDAREN_HORDE && GetMapId() == 860 && !IsGameMaster() && GetLevel() < 30 && !IsQuestRewarded(31450) && GetQuestStatus(31450) != QUEST_STATUS_COMPLETE)
+        if (GetRace() == RACE_PANDAREN_HORDE && GetMapId() == 860 && !IsGameMaster() && !GetSession()->IsBot() /* bots may leave starting zones */ && GetLevel() < 30 && !IsQuestRewarded(31450) && GetQuestStatus(31450) != QUEST_STATUS_COMPLETE)
             return false;
 
         // far teleport to another map
@@ -2614,7 +2627,7 @@ Creature* Player::GetNPCIfCanInteractWith(ObjectGuid guid, uint32 npcflagmask)
                     return nullptr;
 
     // not too far
-    if (!creature->IsWithinDistInMap(this, npcflagmask & UNIT_NPC_FLAG_WILDPET_CAPTURABLE ? PETBATTLE_INTERACTION_DIST : (creature->GetEntry() == 60166 || creature->GetEntry() == 60167) ? 9.6f : INTERACTION_DISTANCE))
+    if (!creature->IsWithinDistInMap(this, npcflagmask & UNIT_NPC_FLAG_WILDPET_CAPTURABLE ? PETBATTLE_INTERACTION_DIST : (creature->GetEntry() == 60166 || creature->GetEntry() == 60167) ? 9.6f : creature->GetEntry() == 3678 ? 12.0f : INTERACTION_DISTANCE))   // Muyoh (Wailing Caverns) hovers in owl form
         return nullptr;
 
     return creature;
@@ -3095,7 +3108,8 @@ void Player::GiveLevel(uint8 level)
 
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
 
-    SetSaveTimer(1);
+    if (!GetSession() || !GetSession()->IsBot())   // not for a bot
+        SetSaveTimer(1);
 
 }
 
@@ -5310,8 +5324,12 @@ void Player::SpawnCorpseBones(bool triggerSave /*= true*/)
 {
     _corpseLocation.WorldRelocate();
     if (GetMap()->ConvertCorpseToBones(GetGUID()))
-        if (triggerSave && !GetSession()->PlayerLogoutWithSave()) // at logout we will already store the player
+        // not for a bot: it resurrects all day, its periodic save is enough
+        if (triggerSave && !GetSession()->PlayerLogoutWithSave() && !GetSession()->IsBot()) // at logout we will already store the player
+        {
+            tl_saveReason = 3;
             SaveToDB();                                           // prevent loading as ghost without corpse
+        }
 }
 
 Corpse* Player::GetCorpse() const
@@ -12829,7 +12847,8 @@ Item* Player::StoreNewItem(ItemPosCountVec const& dest, uint32 item, bool update
         }
 
         sScriptMgr->OnPlayerEquipChanged(this, pItem->GetEntry());
-        SetSaveTimer(1);
+        if (!GetSession() || !GetSession()->IsBot())   // not for a bot: this is every looted item
+            SetSaveTimer(1);
 
         uint8 bag = pItem->GetBagSlot();
         ItemTemplate const* proto = pItem->GetTemplate();
@@ -15523,6 +15542,10 @@ void Player::PrepareGossipMenu(WorldObject* source, uint32 menuId /*= 0*/, bool 
                     if (GetClass() != CLASS_HUNTER)
                         canTalk = false;
                     break;
+                case GOSSIP_OPTION_HEAL_BATTLE_PETS:        // only for who has learned battle pet training
+                    if (!HasFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_BATTLE_PET_ENABLED))
+                        canTalk = false;
+                    break;
                 case GOSSIP_OPTION_PROVING_GROUNDS:
                     if (!((creature->isCanTrainingAndResetTalentsOf(this) || creature->GetEntry() == 72536) && GetLevel() == 90))
                         canTalk = false;
@@ -15702,6 +15725,14 @@ void Player::OnGossipSelect(WorldObject* source, uint32 gossipListId, uint32 men
             break;
         case GOSSIP_OPTION_STABLEPET:
             GetSession()->SendPetList(guid, PET_SLOT_ACTIVE_FIRST, PET_SLOT_STABLE_LAST);
+            break;
+        case GOSSIP_OPTION_HEAL_BATTLE_PETS:
+            // the stable master heals and revives the battle pets for the fee of the option; the
+            // spell (Revive Battle Pets, 125801) also carries the quest credits. Every effect of it targets the
+            // caster, so the player casts it on himself (cast by the stable master it healed nobody).
+            PlayerTalkClass->SendCloseGossip();
+            ModifyMoney(-int64(cost));
+            CastSpell(this, 125801, true);
             break;
         case GOSSIP_OPTION_TRAINER:
             GetSession()->SendTrainerList(guid);
@@ -16292,6 +16323,22 @@ void Player::AddQuestAndCheckCompletion(Quest const* quest, Object* questGiver)
 {
     AddQuest(quest, questGiver);
 
+    // "Level Up!" asks for a level 3 battle pet - credit it right away when the journal has one
+    for (QuestObjective const& obj : quest->GetObjectives())
+    {
+        if (obj.Type != QUEST_OBJECTIVE_MONSTER || obj.ObjectID != 65876)
+            continue;
+        for (BattlePet* pet : GetBattlePetMgr().BattlePets)
+        {
+            if (pet && pet->GetLevel() >= 3)
+            {
+                KilledMonsterCredit(65876);
+                break;
+            }
+        }
+        break;
+    }
+
     bool brokenQuest = sObjectMgr->IsBrokenQuest(quest->GetQuestId());
 
     if (CanCompleteQuest(quest->GetQuestId()) || brokenQuest)
@@ -16556,6 +16603,26 @@ bool Player::CanSelectQuestPackageItem(QuestPackageItemEntry const* questPackage
     return false;
 }
 
+// the quest counts as done, nothing is given for it. For bots: a quest a bot cannot do (a scripted
+// event, a vehicle) would keep the rest of its chain closed. Not used for real players.
+void Player::MarkQuestRewarded(uint32 questId)
+{
+    if (!sObjectMgr->GetQuestTemplate(questId) || m_RewardedQuests.count(questId))
+        return;
+
+    uint16 const slot = FindQuestSlot(questId);
+    if (slot < MAX_QUEST_LOG_SIZE)
+        SetQuestSlot(slot, 0);
+    RemoveActiveQuest(questId, false);
+    m_RewardedQuests.insert(questId);
+    m_RewardedQuestsSave[questId] = true;
+
+    PhaseUpdateData phaseUpdateData;
+    phaseUpdateData.AddQuestUpdate(questId);
+    phaseMgr.NotifyConditionChanged(phaseUpdateData);
+    UpdateForQuestWorldObjects();
+}
+
 void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, bool announce)
 {
     //this THING should be here to protect code from quest, which cast on player far teleport as a reward
@@ -16816,10 +16883,17 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
         }
 
         PlayerTalkClass->ClearMenus();
+        // the script hook was never called, so CreatureScript/GameObjectScript::OnQuestReward overrides were dead
         if (Creature* creatureQGiver = questGiver->ToCreature())
-            creatureQGiver->AI()->OnQuestReward(this, quest, reward);
+        {
+            if (!sScriptMgr->OnQuestReward(this, creatureQGiver, quest, reward))
+                creatureQGiver->AI()->OnQuestReward(this, quest, reward);
+        }
         else if (GameObject* goQGiver = questGiver->ToGameObject())
-            goQGiver->AI()->OnQuestReward(this, quest, reward);
+        {
+            if (!sScriptMgr->OnQuestReward(this, goQGiver, quest, reward))
+                goQGiver->AI()->OnQuestReward(this, quest, reward);
+        }
     }
 
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, QUEST_STATUS_REWARDED);
@@ -16827,7 +16901,8 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
 
     SendQuestGiverStatusMultiple();
 
-    SetSaveTimer(1);
+    if (!GetSession() || !GetSession()->IsBot())   // not for a bot
+        SetSaveTimer(1);
 
 }
 
@@ -17672,9 +17747,10 @@ void Player::AreaExploredOrEventHappens(uint32 questId)
                 m_QuestStatusSave[questId] = true;
                 SetQuestSlotState(log_slot, QUEST_STATE_COMPLETE);
                 // m_QuestStatusSave[questId] = QUEST_DEFAULT_SAVE_TYPE;
-                // Todo 
-
-                SendQuestComplete(questId);
+                // CompleteQuest below sends the message for a quest that is complete now; sending it
+                // here as well showed "completed" twice
+                if (!CanCompleteQuest(questId))
+                    SendQuestComplete(questId);
             }
         }
         if (CanCompleteQuest(questId))
@@ -18130,10 +18206,30 @@ bool Player::HasQuestForItem(uint32 itemId) const
     return false;
 }
 
+// temporary: how often does a player get the "quest completed" message for one quest?
+static void TTCompleteDiag(Player const* player, uint32 questId)
+{
+    if (!player->GetSession() || !player->GetSession()->IsBot() || player->GetLevel() > 20)
+        return;   // the walkers of the start zones
+    static std::mutex lock;
+    static std::unordered_map<uint64, uint32> last;
+    uint64 const key = (uint64(player->GetGUID().GetCounter()) << 32) | questId;
+    uint32 const now = getMSTime();
+    bool dup = false;
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto it = last.find(key);
+        dup = it != last.end() && getMSTimeDiff(it->second, now) < 3000;
+        last[key] = now;
+    }
+    TC_LOG_INFO("playerbots", "COMPLETEDIAG {} quest {}{}", player->GetName(), questId, dup ? " DUPLICATE (second message within 3 s)" : "");
+}
+
 void Player::SendQuestComplete(Quest const* quest)
 {
     if (quest)
     {
+        TTCompleteDiag(this, quest->GetQuestId());
         WorldPackets::Quest::QuestUpdateComplete packet;
         packet.QuestID = quest->GetQuestId();
         SendDirectMessage(packet.Write());
@@ -18144,6 +18240,7 @@ void Player::SendQuestComplete(uint32 questId) const
 {
     if (questId)
     {
+        TTCompleteDiag(this, questId);
         WorldPackets::Quest::QuestUpdateComplete data;
         data.QuestID = questId;
         SendDirectMessage(data.Write());
@@ -18186,8 +18283,8 @@ void Player::SendQuestFailed(uint32 questId, InventoryResult reason)
     if (questId)
     {
         WorldPacket data(SMSG_QUESTGIVER_QUEST_FAILED, 4 + 4);
+        data << uint32(questId);                            // 5.4.8 order: quest id first (reason first made the client show quest 50 "Sweet Amber")
         data << uint32(reason);                             // failed reason (valid reasons: 4, 16, 50, 17, 74, other values show default message)
-        data << uint32(questId);
         GetSession()->SendPacket(&data);
         TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUESTGIVER_QUEST_FAILED");
     }
@@ -20769,6 +20866,10 @@ bool Player::Satisfy(AccessRequirement const* ar, uint32 target_map, bool report
             if (!leader || !leader->HasAchieved(ar->achievement))
                 missingAchievement = ar->achievement;
 
+        // bots (BotLife dungeon parties) have no attunement quests/items/achievements; only level counts
+        if (GetSession()->IsBot())
+            missingItem = missingQuest = missingAchievement = 0;
+
         Difficulty target_difficulty = GetDifficulty(mapEntry->IsRaid());
         MapDifficulty const* mapDiff = sDBCManager.GetDownscaledMapDifficultyData(target_map, target_difficulty);
         if (LevelMin || LevelMax || missingItem || missingQuest || missingAchievement)
@@ -20894,6 +20995,25 @@ bool Player::_LoadHomeBind(PreparedQueryResult result)
 
 void Player::SaveToDB(bool create /*=false*/)
 {
+    // count this save by its trigger
+    {
+        uint8 const reason = tl_saveReason < 4 ? tl_saveReason : 0;
+        tl_saveReason = 0;
+        ++tt_saveCount[reason];
+        if (!reason && !create && tt_saveDirectLogged.fetch_add(1) < 5)
+            TC_LOG_INFO("playerbots", "SAVEDIAG direct save of {} (bot {}) called from {}, SaveToDB at {}", GetName(),
+                GetSession() && GetSession()->IsBot() ? 1 : 0, fmt::ptr(__builtin_return_address(0)),
+                fmt::ptr(reinterpret_cast<void*>(&tt_saveCount)));
+        int64 const now = int64(time(nullptr));
+        int64 next = tt_saveNextLog.load();
+        if (now >= next && tt_saveNextLog.compare_exchange_strong(next, now + 60))
+        {
+            if (next)
+                TC_LOG_INFO("playerbots", "SAVEDIAG full saves last minute: direct {}, forced timer {}, periodic timer {}, resurrect {}",
+                    tt_saveCount[0].exchange(0), tt_saveCount[1].exchange(0), tt_saveCount[2].exchange(0), tt_saveCount[3].exchange(0));
+            tt_saveDirectLogged = 0;
+        }
+    }
     // delay auto save at any saves (manual, in code, or autosave)
     m_nextSave = sWorld->getIntConfig(CONFIG_INTERVAL_SAVE);
 
@@ -21477,6 +21597,16 @@ void Player::_SaveInventory(CharacterDatabaseTransaction trans)
 
 void Player::_SaveVoidStorage(CharacterDatabaseTransaction trans)
 {
+    // locked and empty: no rows can exist, so there is nothing to delete or replace
+    if (!IsVoidStorageUnlocked())
+    {
+        bool empty = true;
+        for (uint8 i = 0; i < VOID_STORAGE_MAX_SLOT && empty; ++i)
+            empty = !_voidStorageItems[i];
+        if (empty)
+            return;
+    }
+
     CharacterDatabasePreparedStatement* stmt = nullptr;
     uint32 lowGuid = GetGUID().GetCounter();
 
@@ -21510,6 +21640,16 @@ void Player::_SaveVoidStorage(CharacterDatabaseTransaction trans)
 
 void Player::_SaveCUFProfiles(CharacterDatabaseTransaction trans)
 {
+    // a bot never has raid frame profiles: skip the five deletes
+    if (GetSession() && GetSession()->IsBot())
+    {
+        bool empty = true;
+        for (uint8 i = 0; i < MAX_CUF_PROFILES && empty; ++i)
+            empty = !_CUFProfiles[i];
+        if (empty)
+            return;
+    }
+
     CharacterDatabasePreparedStatement* stmt = nullptr;
     uint32 lowGuid = GetGUID().GetCounter();
 
@@ -25083,12 +25223,27 @@ Player* Player::GetSelectedPlayer() const
     return nullptr;
 }
 
+// 9-10 combotarget: the combo target can leave the map without telling us (despawn, map change); then the pointer dangles
+Unit* Player::GetValidComboTarget()
+{
+    if (!m_comboTarget)
+        return nullptr;
+    if (ObjectAccessor::GetUnit(*this, m_comboTargetGuid) != m_comboTarget)
+    {
+        m_comboTarget = nullptr;
+        m_comboTargetGuid.Clear();
+        m_comboPoints = 0;
+        return nullptr;
+    }
+    return m_comboTarget;
+}
+
 void Player::SendComboPoints()
 {
-    if (m_comboTarget)
+    if (GetValidComboTarget())
     {
         WorldPacket data;
-        ObjectGuid guid = m_comboTarget->GetGUID();
+        ObjectGuid guid = m_comboTargetGuid;
         if (m_mover != this)
         {
             ObjectGuid mover = m_mover->GetGUID();
@@ -25162,12 +25317,13 @@ void Player::AddComboPoints(Unit* target, int8 count, Spell* spell)
 
     if (target && target != m_comboTarget)
     {
-        if (m_comboTarget)
+        if (GetValidComboTarget())
         {
             m_comboTarget->RemoveComboPointHolder(GetGUID());
         }
 
         m_comboTarget = target;
+        m_comboTargetGuid = target->GetGUID();
         m_comboPoints = count;
         target->AddComboPointHolder(GetGUID());
     }
@@ -25181,7 +25337,7 @@ void Player::AddComboPoints(Unit* target, int8 count, Spell* spell)
 
 void Player::ClearComboPoints()
 {
-    if (!m_comboTarget || (m_comboTarget && m_comboTarget->GetGUID().IsEmpty()))
+    if (!GetValidComboTarget() || m_comboTargetGuid.IsEmpty())
         return;
 
     // without combopoints lost (duration checked in aura)
@@ -25191,6 +25347,7 @@ void Player::ClearComboPoints()
     SendComboPoints();
     m_comboTarget->RemoveComboPointHolder(GetGUID());
     m_comboTarget = nullptr;
+    m_comboTargetGuid.Clear();
 }
 
 bool Player::IsInGroup(ObjectGuid groupGuid) const
@@ -26878,6 +27035,14 @@ void Player::UpdateZoneDependentAuras(uint32 newZone)
 
 void Player::UpdateAreaDependentAuras(uint32 newArea)
 {
+    // re-entrancy guard. An autocast spell_area spell that applies no aura but whose hit updates the area
+    // again (area 6391 The Briny Muck, Dread Wastes) was cast over and over until the stack overflowed.
+    static thread_local bool updatingAreaAuras = false;
+    if (updatingAreaAuras)
+        return;
+    updatingAreaAuras = true;
+    struct ResetGuard { ~ResetGuard() { updatingAreaAuras = false; } } resetGuard;
+
     // remove auras from spells with area limitations
     for (AuraMap::iterator iter = m_ownedAuras.begin(); iter != m_ownedAuras.end();)
     {
@@ -27661,6 +27826,22 @@ void Player::StoreLootItem(uint8 lootSlot, Loot* loot, Object* src, AELootResult
 
         --loot->unlootedCount;
 
+        // a catch counts for his dailies - Weekend Catch (99101) any fish, The One
+        // That Didn't Get Away (99102) a rare one (green or better, or one catch in twelve), Net Gains (99103) anything
+        // from a fishing pool, a school or wreckage (the loot of a fishing hole)
+        bool const fromHole = src && src->GetTypeId() == TYPEID_GAMEOBJECT && src->ToGameObject()->GetGoType() == GAMEOBJECT_TYPE_FISHINGHOLE;
+        if (loot->loot_type == LOOT_FISHING || fromHole)
+            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item->itemid))
+            {
+                if (proto->Quality >= ITEM_QUALITY_NORMAL && GetQuestStatus(99101) == QUEST_STATUS_INCOMPLETE)
+                    KilledMonsterCredit(990011);
+                if (proto->Quality >= ITEM_QUALITY_NORMAL && GetQuestStatus(99102) == QUEST_STATUS_INCOMPLETE
+                    && (proto->Quality >= ITEM_QUALITY_UNCOMMON || urand(0, 11) == 0))
+                    KilledMonsterCredit(990012);
+                if (fromHole && GetQuestStatus(99103) == QUEST_STATUS_INCOMPLETE)
+                    KilledMonsterCredit(990013);
+            }
+
         if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item->itemid))
             if (proto->Quality > ITEM_QUALITY_EPIC || (proto->Quality == ITEM_QUALITY_EPIC && proto->ItemLevel >= MinNewsItemLevel[sWorld->getIntConfig(CONFIG_EXPANSION)]))
                 if (Guild* guild = GetGuild())
@@ -28082,6 +28263,18 @@ void Player::ResetCriterias(CriteriaStartTypes type, uint32 asset)
 
 void Player::UpdateAchievementCriteria(AchievementCriteriaTypes type, uint64 miscValue1 /*= 0*/, uint64 miscValue2 /*= 0*/, uint64 miscValue3 /*= 0*/, Unit* unit /*= NULL*/)
 {
+    // bots do not need their own achievement progress; with 2000 bots this was ~40% of the map thread.
+    // what a bot does still counts for its guild (professions, levels, honorable kills,
+    // reputation ... never moved). Guild::UpdateAchievementCriteria drops the types no guild criteria asks for and
+    // applies the rest on the world thread.
+    if (m_session && m_session->IsBot())
+    {
+        if (GetGuildId() && !sAchievementMgr->IsGroupCriteriaType(type))
+            if (Guild* guild = sGuildMgr->GetGuildById(GetGuildId()))
+                guild->UpdateAchievementCriteria(type, miscValue1, miscValue2, miscValue3, unit, this);
+        return;
+    }
+
     // Also include Account achievements.
     m_achievementMgr->UpdateAchievementCriteria(type, miscValue1, miscValue2, miscValue3, unit, this);
     Guild* guild = sGuildMgr->GetGuildById(GetGuildId());

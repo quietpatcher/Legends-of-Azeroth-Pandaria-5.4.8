@@ -28,6 +28,8 @@
 #include "Playerbots.h"
 #include "SharedDefines.h"
 #include "TemporarySummon.h"
+#include "Group.h"
+#include "PlayerbotSpec.h"
 #include "ThreatManager.h"
 #include "Timer.h"
 
@@ -45,7 +47,8 @@ bool MediumManaTrigger::IsActive()
 
 bool NoPetTrigger::IsActive()
 {
-    return (bot->GetMinionGUID().IsEmpty()) && (!AI_VALUE(Unit*, "pet target")) && (!bot->GetGuardianPet()) &&
+    // a summoned hunter/warlock pet is not always the minion GUID here; Call Pet was recast every ~10 s
+    return !bot->GetPet() && (bot->GetMinionGUID().IsEmpty()) && (!AI_VALUE(Unit*, "pet target")) && (!bot->GetGuardianPet()) &&
         (!bot->GetFirstControlled()) && (!AI_VALUE2(bool, "mounted", "self target"));
 }
 
@@ -184,7 +187,48 @@ bool NoAttackersTrigger::IsActive()
     return !AI_VALUE(Unit*, "current target") && AI_VALUE(uint8, "my attacker count") > 0;
 }
 
-bool InvalidTargetTrigger::IsActive() { return AI_VALUE2(bool, "invalid target", "current target"); }
+// a healer whose group fights - itself, or a member within 40 yards on its map in combat
+static bool HealerInGroupFight(Player* bot)
+{
+    if (!bot || !PlayerBotSpec::IsHeal(bot, true))
+        return false;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+    if (bot->IsInCombat())
+        return true;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            if (member != bot && member->IsInWorld() && member->GetMap() == bot->GetMap() && member->IsAlive() && member->IsInCombat()
+                && bot->GetExactDist(member) < 40.0f)
+                return true;
+    return false;
+}
+
+// a tank whose party fights - a member within 40 yards on its map is attacked - while it is not hit itself
+static bool TankInGroupFight(Player* bot)
+{
+    if (!bot || bot->IsInCombat() || !PlayerBotSpec::IsTank(bot, true))
+        return false;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            if (member != bot && member->IsInWorld() && member->GetMap() == bot->GetMap() && member->IsAlive() && member->IsInCombat()
+                && !member->getAttackers().empty() && bot->GetExactDist(member) < 40.0f)
+                return true;
+    return false;
+}
+
+bool InvalidTargetTrigger::IsActive()
+{
+    // no target is no invalid target for a healer while its group fights (drop target would put it
+    // back on the non-combat engine, away from its heals)
+    if (!AI_VALUE(Unit*, "current target") && (HealerInGroupFight(bot) || TankInGroupFight(bot)))   // tanks too
+        return false;
+    return AI_VALUE2(bool, "invalid target", "current target");
+}
 
 bool NoTargetTrigger::IsActive() { return !AI_VALUE(Unit*, "current target"); }
 
@@ -619,3 +663,16 @@ bool IsFallingFarTrigger::IsActive() { return bot->HasUnitMovementFlag(MOVEMENTF
 bool HasAreaDebuffTrigger::IsActive() { return AI_VALUE2(bool, "has area debuff", "self target"); }
 
 Value<Unit*>* BuffOnMainTankTrigger::GetTargetValue() { return context->GetValue<Unit*>("main tank", spell); }
+// combo point triggers (see GenericTriggers.h)
+bool ComboPointsAvailableTrigger::IsActive() { return AI_VALUE2(uint8, "combo", "current target") >= amount; }
+
+bool ComboPointsNotFullTrigger::IsActive() { return AI_VALUE2(uint8, "combo", "current target") < amount; }
+
+bool TargetWithComboPointsLowerHealTrigger::IsActive()
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || !target->IsInWorld())
+        return false;
+    float dps = AI_VALUE(float, "estimated group dps");
+    return ComboPointsAvailableTrigger::IsActive() && dps > 0.0f && (target->GetHealth() / dps) <= lifeTime;
+}

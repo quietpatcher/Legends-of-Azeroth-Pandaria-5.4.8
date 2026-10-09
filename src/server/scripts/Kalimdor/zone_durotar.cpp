@@ -681,11 +681,8 @@ class npc_watershed_patrol : public CreatureScript
             {
                 if (_Quest->GetQuestId() == iType.first)
                 {
+                    // only the credit; the quest completes by itself once all four helpers are done
                     player->KilledMonsterCredit(iType.second);
-
-                    if (player->GetQuestStatus(QUEST_WATERSHED_PATROL) == QUEST_STATUS_INCOMPLETE)
-                        player->CompleteQuest(QUEST_WATERSHED_PATROL);
-
                     return true;
                 }
             }
@@ -829,6 +826,8 @@ struct npc_captive_pitescale_scout : public ScriptedAI
                     Talk(0);
                     if (Player* player = me->FindNearestPlayer(30.0f))
                         AttackStart(player);
+                    else
+                        EnterEvadeMode();   // nobody to fight - home, so the jailor talks again
                     break;
             }
         });

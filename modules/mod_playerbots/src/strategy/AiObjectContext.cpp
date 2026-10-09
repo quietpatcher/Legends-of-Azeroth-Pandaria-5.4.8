@@ -5,6 +5,9 @@
 
 #include "AiObjectContext.h"
 
+#include <mutex>
+#include <set>
+
 #include "Helper.h"
 #include "ActionContext.h"
 
@@ -151,3 +154,13 @@ std::string const AiObjectContext::FormatValues()
 }
 
 void AiObjectContext::AddShared(NamedObjectContext<UntypedValue>* sharedValues) { valueContexts.Add(sharedValues); }
+
+// see AiObjectContext::GetValue
+void AiObjectContext::ReportMissingValue(std::string const& name)
+{
+    static std::mutex lock;
+    static std::set<std::string> reported;
+    std::lock_guard<std::mutex> guard(lock);
+    if (reported.insert(name).second)
+        TC_LOG_ERROR("playerbots", "Playerbots: value [{}] is not available in this port, using a default", name);
+}

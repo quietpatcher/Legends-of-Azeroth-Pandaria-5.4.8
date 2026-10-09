@@ -119,13 +119,16 @@ bool ChaseMovementGenerator::Update(Unit* owner, uint32 diff)
     float const maxRange = _range ? _range->MaxRange + hitboxSum : owner->GetMeleeRange(target); // melee range already includes hitboxes
     float const maxTarget = _range ? _range->MaxTolerance + hitboxSum : CONTACT_DISTANCE + hitboxSum;
     Optional<ChaseAngle> angle = mutualChase ? Optional<ChaseAngle>() : _angle;
+    // to-do #64: two NPCs fighting each other do not keep stepping apart (both at run speed)
+    bool const npcDuel = mutualChase && owner->GetTypeId() == TYPEID_UNIT && target->GetTypeId() == TYPEID_UNIT
+        && !owner->IsControlledByPlayer() && !target->IsControlledByPlayer();
 
     // periodically check if we're already in the expected range...
     _rangeCheckTimer.Update(diff);
     if (_rangeCheckTimer.Passed())
     {
         _rangeCheckTimer.Reset(RANGE_CHECK_INTERVAL);
-        if (HasFlag(MOVEMENTGENERATOR_FLAG_INFORM_ENABLED) && PositionOkay(owner, target, _movingTowards ? Optional<float>() : minTarget, _movingTowards ? maxTarget : Optional<float>(), angle))
+        if (HasFlag(MOVEMENTGENERATOR_FLAG_INFORM_ENABLED) && PositionOkay(owner, target, (_movingTowards || npcDuel) ? Optional<float>() : minTarget, _movingTowards ? maxTarget : Optional<float>(), angle))
         {
             RemoveFlag(MOVEMENTGENERATOR_FLAG_INFORM_ENABLED);
             _path = nullptr;
@@ -155,7 +158,7 @@ bool ChaseMovementGenerator::Update(Unit* owner, uint32 diff)
     {
         _lastTargetPosition = target->GetPosition();
         _mutualChase = mutualChase;
-        if (owner->HasUnitState(UNIT_STATE_CHASE_MOVE) || !PositionOkay(owner, target, minRange, maxRange, angle))
+        if (owner->HasUnitState(UNIT_STATE_CHASE_MOVE) || !PositionOkay(owner, target, npcDuel ? Optional<float>() : Optional<float>(minRange), maxRange, angle))
         {
             Creature* const cOwner = owner->ToCreature();
             // can we get to the target?

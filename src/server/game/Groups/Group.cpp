@@ -1306,6 +1306,7 @@ void Group::GroupLoot(Loot* loot, WorldObject* pLootedObject)
                 SendLootStartRoll(60000, pLootedObject->GetMapId(), *r);
 
                 RollId.push_back(r);
+                BotRollVotes(r);   // may complete (and delete) the roll
 
                 if (Creature* creature = pLootedObject->ToCreature())
                 {
@@ -1366,6 +1367,7 @@ void Group::GroupLoot(Loot* loot, WorldObject* pLootedObject)
             SendLootStartRoll(60000, pLootedObject->GetMapId(), *r);
 
             RollId.push_back(r);
+            BotRollVotes(r);   // may complete (and delete) the roll
 
             if (Creature* creature = pLootedObject->ToCreature())
             {
@@ -1452,6 +1454,7 @@ void Group::NeedBeforeGreed(Loot* loot, WorldObject* lootedObject)
                 }
 
                 RollId.push_back(r);
+                BotRollVotes(r);   // may complete (and delete) the roll
 
                 if (Creature* creature = lootedObject->ToCreature())
                 {
@@ -1516,6 +1519,7 @@ void Group::NeedBeforeGreed(Loot* loot, WorldObject* lootedObject)
             }
 
             RollId.push_back(r);
+            BotRollVotes(r);   // may complete (and delete) the roll
 
             if (Creature* creature = lootedObject->ToCreature())
             {
@@ -1617,6 +1621,44 @@ void Group::MasterLoot(Loot* loot, WorldObject* pLootedObject)
         Player* looter = itr->GetSource();
         if (looter->CanRollForLootIn(pLootedObject))
             looter->GetSession()->SendPacket(&data);
+    }
+}
+
+// bots vote at once (need for a real upgrade, greed for the rest), so rolls do not wait 60 s for them
+uint8 (*Group::BotRollChoice)(Player* bot, ItemTemplate const* proto, uint8 rollVoteMask) = nullptr;
+
+void Group::BotRollVotes(Roll* roll)
+{
+    if (!BotRollChoice || !roll)
+        return;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(roll->itemid);
+    if (!proto)
+        return;
+    ObjectGuid lootGuid = roll->lootGUID;
+    uint8 slot = roll->itemSlot;
+    uint8 mask = roll->rollVoteMask;
+    std::vector<std::pair<ObjectGuid, uint8>> votes;
+    for (auto const& vote : roll->playerVote)
+    {
+        if (vote.second != NOT_EMITED_YET)
+            continue;
+        Player* bot = ObjectAccessor::FindPlayer(vote.first);
+        if (!bot || !bot->GetSession() || !bot->GetSession()->IsBot())
+            continue;
+        uint8 choice = BotRollChoice(bot, proto, mask);
+        if (choice == NEED && !(mask & ROLL_FLAG_TYPE_NEED))
+            choice = GREED;
+        if (choice == DISENCHANT && !(mask & ROLL_FLAG_TYPE_DISENCHANT))
+            choice = GREED;
+        if (choice <= DISENCHANT)
+            votes.emplace_back(vote.first, choice);
+    }
+    // the last vote completes the roll and deletes it: look it up again every time
+    for (auto const& vote : votes)
+    {
+        if (GetRoll(lootGuid, slot) == RollId.end())
+            break;
+        CountRollVote(lootGuid, vote.first, slot, vote.second);
     }
 }
 
@@ -3461,7 +3503,7 @@ bool Group::IsGuildGroup(uint32 guildId, Player* refPlayer, float* outXpMultipli
         WorldLocation corpseLocation = player->GetCorpseLocation();
         if (player->GetGuildId() == guildId && // If player is in the same guild
             ((player->FindMap() && player->GetMap()->GetId() == mapId && player->GetMap()->GetInstanceId() == InstanceId) || // If player is in the same map
-            (player->HasCorpse() && corpseLocation.GetMapId() == mapId && player->GetCorpse()->GetMap()->GetInstanceId() == InstanceId))) // Or their corpse is in the same map
+            (player->HasCorpse() && corpseLocation.GetMapId() == mapId && player->GetCorpse() && player->GetCorpse()->GetMap()->GetInstanceId() == InstanceId))) // Or their corpse is in the same map (GetCorpse() null when it lies on another map)
             ++count;
     }
 

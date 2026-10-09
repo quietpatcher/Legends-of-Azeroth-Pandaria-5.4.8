@@ -1618,6 +1618,9 @@ class instance_ulduar : public InstanceMapScript
             
             bool CheckRequiredBosses(uint32 bossId, Player const* player = nullptr) const override
             {
+                if (_SkipCheckRequiredBosses(player))   // GMs with the permission and bots
+                    return true;
+
                 switch (bossId)
                 {
                     case BOSS_ASSEMBLY_OF_IRON:

@@ -33,6 +33,76 @@
 #include "Opcodes.h"
 #include "Realm.h"
 #include "ReputationMgr.h"
+#include "ThreadOwnerCheck.h"
+#include "GameTime.h"
+#include <unordered_map>
+#include <unordered_set>
+
+namespace
+{
+    // "This week's Cash Flow Contribution" in the guild bank money log was a hardcoded 0. Kept per
+    // guild in characters.guild_cash_flow (plain queries, no new prepared statement): what the Cash Flow perk deposited
+    // since the weekly reset, written with the periodic guild save.
+    struct TTCashFlow
+    {
+        uint32 week = 0;
+        uint64 amount = 0;
+        bool dirty = false;
+    };
+    std::mutex tt_cashFlowLock;
+    std::unordered_map<uint32, TTCashFlow> tt_cashFlow;   // guild id -> this week's perk deposits in copper
+    std::once_flag tt_cashFlowLoaded;
+
+    // weeks since the epoch, turning over at the weekly reset (Wednesday 00:00 UTC)
+    uint32 TTCashFlowWeek()
+    {
+        return uint32((uint64(GameTime::GetGameTime()) + DAY) / WEEK);
+    }
+
+    // adds to this week's total (amount 0: just read it) and returns the total
+    uint64 TTCashFlowAdd(uint32 guildId, uint64 amount)
+    {
+        std::call_once(tt_cashFlowLoaded, []()
+        {
+            if (QueryResult result = CharacterDatabase.Query("SELECT guildid, week, amount FROM guild_cash_flow"))
+            {
+                do
+                {
+                    Field* fields = result->Fetch();
+                    TTCashFlow& entry = tt_cashFlow[fields[0].GetUInt32()];
+                    entry.week = fields[1].GetUInt32();
+                    entry.amount = fields[2].GetUInt64();
+                } while (result->NextRow());
+            }
+        });
+        std::lock_guard<std::mutex> guard(tt_cashFlowLock);
+        TTCashFlow& entry = tt_cashFlow[guildId];
+        uint32 const week = TTCashFlowWeek();
+        if (entry.week != week)
+        {
+            entry.week = week;
+            entry.amount = 0;
+            entry.dirty = true;
+        }
+        if (amount)
+        {
+            entry.amount += amount;
+            entry.dirty = true;
+        }
+        return entry.amount;
+    }
+
+    void TTCashFlowSave(uint32 guildId)
+    {
+        std::lock_guard<std::mutex> guard(tt_cashFlowLock);
+        auto it = tt_cashFlow.find(guildId);
+        if (it == tt_cashFlow.end() || !it->second.dirty)
+            return;
+        it->second.dirty = false;
+        CharacterDatabase.PExecute("REPLACE INTO guild_cash_flow (guildid, week, amount) VALUES ({}, {}, {})", guildId, it->second.week, it->second.amount);
+    }
+}
+#include <mutex>
 
 #define MAX_GUILD_BANK_TAB_TEXT_LEN 500
 #define EMBLEM_PRICE 10 * GOLD
@@ -771,9 +841,11 @@ void Guild::Member::SaveProfessionsToDB(CharacterDatabaseTransaction trans)
     stmt->setUInt16(1, m_professions[0].Value);
     stmt->setUInt16(2, m_professions[0].Rank);
 
+    // after alexkulya #137: the recipe flags are uint8 - streamed as characters they ended up as raw
+    // bytes in the text column and read back as zeros after every restart
     std::ostringstream ss;
     for (auto&& it : m_professions[0].Recipes)
-        ss << it << ' ';
+        ss << uint32(it) << ' ';
 
     stmt->setString(3, ss.str());
     stmt->setUInt16(4, m_professions[1].SkillId);
@@ -782,7 +854,7 @@ void Guild::Member::SaveProfessionsToDB(CharacterDatabaseTransaction trans)
 
     ss.str("");
     for (auto&& it : m_professions[1].Recipes)
-        ss << it << ' ';
+        ss << uint32(it) << ' ';
 
     stmt->setString(7, ss.str());
 
@@ -855,7 +927,7 @@ bool Guild::Member::LoadFromDB(Field* fields)
                 recipes.resize(300, 0);
                 for (uint32 j = 0; j < 300; ++j)
                 {
-                    uint32 byte;
+                    uint32 byte = 0;   // an old raw row fails to parse - zeros, not stack garbage
                     ss >> byte;
                     recipes[j] = byte;
                 }
@@ -1535,6 +1607,7 @@ void Guild::SaveToDB()
     GetAchievementMgr().SaveToDB(trans);
 
     CharacterDatabase.CommitTransaction(trans);
+    TTCashFlowSave(m_id);
 }
 
 void Guild::UpdateMemberData(Player* player, uint8 dataid, uint32 value)
@@ -2042,6 +2115,29 @@ void Guild::HandleSetRankInfo(WorldSession* session, uint32 rankIndex, std::stri
     }
 }
 
+// BotLife bot guilds - HandleSetRankInfo / HandleSetBankTabInfo without the session and permission checks
+void Guild::SetRankInfoSystem(uint32 rankIndex, std::string const& name, uint32 rights, uint32 moneyPerDay, GuildBankRightsAndSlotsVec const& rightsAndSlots)
+{
+    RankInfo* rankInfo = GetRankInfoByIndex(rankIndex);
+    if (!rankInfo)
+        return;
+    rankInfo->SetName(name);
+    rankInfo->SetRights(rights);
+    SetRankBankMoneyPerDay(rankInfo->GetId(), moneyPerDay);
+    for (GuildBankRightsAndSlots const& tabRights : rightsAndSlots)
+        SetRankBankTabRightsAndSlots(rankInfo->GetId(), tabRights);
+
+    WorldPacket data(SMSG_GUILD_EVENT_RANK_CHANGED, 4);
+    data << uint32(rankInfo->GetId());
+    BroadcastPacket(&data);
+}
+
+void Guild::SetBankTabInfoSystem(uint8 tabId, std::string const& name, std::string const& icon)
+{
+    if (BankTab* tab = GetBankTab(tabId))
+        tab->SetInfo(name, icon);
+}
+
 void Guild::HandleBuyBankTab(WorldSession* session, uint8 tabId)
 {
     Player* player = session->GetPlayer();
@@ -2453,13 +2549,18 @@ void Guild::HandleMemberDepositMoney(WorldSession* session, uint64 amount, bool 
 
     CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     ModifyBankMoney(trans, amount, true);
+    if (cashFlow)
+        TTCashFlowAdd(m_id, amount);   // this week's Cash Flow contribution (money log)
     if (!cashFlow)
     {
         player->ModifyMoney(-int64(amount));
         player->SaveGoldToDB(trans);
     }
 
-    LogBankEvent(trans, cashFlow ? GUILD_BANK_LOG_CASH_FLOW_DEPOSIT : GUILD_BANK_LOG_DEPOSIT_MONEY, uint8(0), player->GetGUID().GetCounter(), amount);
+    // the money log keeps 25 lines; the cash flow perk of the bots (a line per looted corpse)
+    // pushed every real deposit out of it at once
+    if (!cashFlow || !session->IsBot())
+        LogBankEvent(trans, cashFlow ? GUILD_BANK_LOG_CASH_FLOW_DEPOSIT : GUILD_BANK_LOG_DEPOSIT_MONEY, uint8(0), player->GetGUID().GetCounter(), amount);
     CharacterDatabase.CommitTransaction(trans);
 
     SendEventBankMoneyChanged();
@@ -2508,7 +2609,9 @@ bool Guild::HandleMemberWithdrawMoney(WorldSession* session, uint64 amount, bool
     ModifyBankMoney(trans, amount, false);
 
     // Log guild bank event
-    LogBankEvent(trans, repair ? GUILD_BANK_LOG_REPAIR_MONEY : GUILD_BANK_LOG_WITHDRAW_MONEY, uint8(0), player->GetGUID().GetCounter(), amount);
+    // the repairs of a few hundred bots would push everything else out of the money log
+    if (!repair || !session->IsBot())
+        LogBankEvent(trans, repair ? GUILD_BANK_LOG_REPAIR_MONEY : GUILD_BANK_LOG_WITHDRAW_MONEY, uint8(0), player->GetGUID().GetCounter(), amount);
     CharacterDatabase.CommitTransaction(trans);
 
     SendEventBankMoneyChanged();
@@ -2617,7 +2720,7 @@ void Guild::SendBankLog(WorldSession* session, uint8 tabId) const
         data.WriteBit(GetLevel() >= 5 && tabId == GUILD_BANK_MAX_TABS);     // has Cash Flow perk
         log->WritePacket(data);
         if (GetLevel() >= 5 && tabId == GUILD_BANK_MAX_TABS)
-            data << uint64(0);
+            data << uint64(TTCashFlowAdd(m_id, 0));   // was a hardcoded 0
         session->SendPacket(&data);
         TC_LOG_DEBUG("guild", "SMSG_GUILD_BANK_LOG_QUERY_RESULT [{}] TabId: {}", session->GetPlayerInfo().c_str(), tabId);
     }
@@ -3768,6 +3871,12 @@ inline Item* Guild::GetItem(uint8 tabId, uint8 slotId) const
     return NULL;
 }
 
+// BotLife guild bankers
+Item* Guild::GetBankItem(uint8 tabId, uint8 slotId) const
+{
+    return GetItem(tabId, slotId);
+}
+
 inline void Guild::RemoveItem(CharacterDatabaseTransaction trans, uint8 tabId, uint8 slotId)
 {
     if (BankTab* pTab = GetBankTab(tabId))
@@ -4143,6 +4252,29 @@ void Guild::SendGuildRanksUpdate(ObjectGuid setterGuid, Member* member, bool pro
         member->GetGUID().GetCounter(), setterGuid.GetCounter(), member->GetRankId());
 }
 
+namespace
+{
+    // see Guild::GiveXP
+    std::mutex tt_pendingGuildXpLock;
+    std::unordered_map<uint32, std::pair<uint64, ObjectGuid>> tt_pendingGuildXp;
+    thread_local bool tt_flushingGuildXp = false;
+}
+
+void TTFlushPendingGuildXP()
+{
+    std::unordered_map<uint32, std::pair<uint64, ObjectGuid>> pending;
+    {
+        std::lock_guard<std::mutex> guard(tt_pendingGuildXpLock);
+        pending.swap(tt_pendingGuildXp);
+    }
+    tt_flushingGuildXp = true;
+    for (auto const& entry : pending)
+        if (Guild* guild = sGuildMgr->GetGuildById(entry.first))
+            guild->GiveXP(uint32(std::min<uint64>(entry.second.first, std::numeric_limits<uint32>::max())),
+                ObjectAccessor::FindConnectedPlayer(entry.second.second));
+    tt_flushingGuildXp = false;
+}
+
 void Guild::GiveXP(uint32 xp, Player* source)
 {
     if (!sWorld->getBoolConfig(CONFIG_GUILD_LEVELING_ENABLED))
@@ -4156,8 +4288,21 @@ void Guild::GiveXP(uint32 xp, Player* source)
     WorldPacket data(SMSG_GUILD_XP_GAIN, 8);
     data << uint64(xp);
 
-    if (source)
+    if (source && !tt_flushingGuildXp)
         source->GetSession()->SendPacket(&data);
+
+    // quest rewards run on a map-updater thread, but the guild is shared by all maps and a level-up edits
+    // every online member (SetGuildLevel -> AddToUpdate into THEIR map's update set, LearnSpell) - crash 30-9 05:57 in
+    // std::set insert of another map. Collect the XP here and apply it on the world thread (TTFlushPendingGuildXP).
+    if (xp && TTCurrentUpdateMap())
+    {
+        std::lock_guard<std::mutex> guard(tt_pendingGuildXpLock);
+        auto& pending = tt_pendingGuildXp[GetId()];
+        pending.first += xp;
+        if (source)
+            pending.second = source->GetGUID();
+        return;
+    }
 
     _experience += xp;
 
@@ -4258,8 +4403,74 @@ bool Guild::HasAchieved(uint32 achievementId) const
     return GetAchievementMgr().HasAchieved(achievementId);
 }
 
+namespace
+{
+    // guild achievement criteria raised on a map-updater thread are applied on the world thread
+    // (TTFlushPendingGuildCriteria, right after the maps are done). The guild is shared by all maps: its achievement
+    // manager, the completed list and the broadcasts to members of other maps are not safe from a map worker (the
+    // forwarded cast criteria of 30-9 corrupted the heap within minutes), and a lock around the progress map alone
+    // does not cover that.
+    struct TTPendingGuildCriteria
+    {
+        uint32 guildId;
+        AchievementCriteriaTypes type;
+        uint64 miscValue1, miscValue2, miscValue3;
+        ObjectGuid unit;
+        ObjectGuid player;
+    };
+    std::mutex tt_pendingGuildCriteriaLock;
+    std::vector<TTPendingGuildCriteria> tt_pendingGuildCriteria;
+
+    // every cast of every member arrives here: only the spells some guild criteria asks for are worth queueing
+    bool TTGuildWantsSpell(AchievementCriteriaTypes type, uint32 spellId)
+    {
+        static std::unordered_set<uint32> spells[2];
+        static std::once_flag once;
+        std::call_once(once, []()
+        {
+            for (auto&& criteria : sAchievementMgr->GetAchievementCriteriaByType(ACHIEVEMENT_CRITERIA_TYPE_CAST_SPELL, AchievementType::Guild))
+                spells[0].insert(criteria->Entry->Asset.SpellID);
+            for (auto&& criteria : sAchievementMgr->GetAchievementCriteriaByType(ACHIEVEMENT_CRITERIA_TYPE_CAST_SPELL2, AchievementType::Guild))
+                spells[1].insert(criteria->Entry->Asset.SpellID);
+        });
+        return spells[type == ACHIEVEMENT_CRITERIA_TYPE_CAST_SPELL ? 0 : 1].count(spellId) != 0;
+    }
+}
+
+void TTFlushPendingGuildCriteria()
+{
+    std::vector<TTPendingGuildCriteria> pending;
+    {
+        std::lock_guard<std::mutex> guard(tt_pendingGuildCriteriaLock);
+        pending.swap(tt_pendingGuildCriteria);
+    }
+    for (TTPendingGuildCriteria const& entry : pending)
+    {
+        Guild* guild = sGuildMgr->GetGuildById(entry.guildId);
+        Player* player = ObjectAccessor::FindPlayer(entry.player);
+        if (!guild || !player)
+            continue;
+        Unit* unit = nullptr;
+        if (!entry.unit.IsEmpty())
+            unit = entry.unit == entry.player ? player : ObjectAccessor::GetUnit(*player, entry.unit);
+        guild->UpdateAchievementCriteria(entry.type, entry.miscValue1, entry.miscValue2, entry.miscValue3, unit, player);
+    }
+}
+
 void Guild::UpdateAchievementCriteria(AchievementCriteriaTypes type, uint64 miscValue1, uint64 miscValue2, uint64 miscValue3, Unit* unit, Player* player)
 {
+    if (!player || type >= ACHIEVEMENT_CRITERIA_TYPE_TOTAL || sAchievementMgr->GetAchievementCriteriaByType(type, AchievementType::Guild).empty())
+        return;   // nothing a guild can earn with this
+    if ((type == ACHIEVEMENT_CRITERIA_TYPE_CAST_SPELL || type == ACHIEVEMENT_CRITERIA_TYPE_CAST_SPELL2) && !TTGuildWantsSpell(type, uint32(miscValue1)))
+        return;
+    if (TTCurrentUpdateMap())   // on a map worker: see TTPendingGuildCriteria
+    {
+        std::lock_guard<std::mutex> guard(tt_pendingGuildCriteriaLock);
+        if (tt_pendingGuildCriteria.size() < 500000)
+            tt_pendingGuildCriteria.push_back({ GetId(), type, miscValue1, miscValue2, miscValue3, unit ? unit->GetGUID() : ObjectGuid::Empty, player->GetGUID() });
+        return;
+    }
+    std::lock_guard<std::mutex> guard(_achievementLock);
     GetAchievementMgr().UpdateAchievementCriteria(type, miscValue1, miscValue2, miscValue3, unit, player);
 }
 

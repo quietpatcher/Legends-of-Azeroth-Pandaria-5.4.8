@@ -1710,6 +1710,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
     void IncompleteQuest(uint32 quest_id);
     bool CanSelectQuestPackageItem(QuestPackageItemEntry const* questPackageItem) const;
     void RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, bool announce = true);
+    void MarkQuestRewarded(uint32 questId);   // done without any reward (a bot skips a quest it cannot do)
     void FailQuest(uint32 quest_id);
     bool SatisfyQuestSkill(Quest const* qInfo, bool msg) const;
     bool SatisfyQuestLevel(Quest const* qInfo, bool msg);
@@ -1940,13 +1941,11 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
     }
     Unit* GetComboTarget() const
     {
-        return m_comboTarget;
+        return const_cast<Player*>(this)->GetValidComboTarget();   // 9-10 combotarget
     }
     ObjectGuid GetComboTargetGUID() const
     {
-        if (m_comboTarget)
-            return m_comboTarget->GetGUID();
-        return ObjectGuid::Empty;
+        return m_comboTarget ? m_comboTargetGuid : ObjectGuid::Empty;   // 9-10 combotarget: never touch the pointer
     }
 
     void AddComboPoints(Unit* target, int8 count, Spell* spell = NULL);
@@ -3475,6 +3474,8 @@ protected:
     uint32 m_ExtraFlags;
 
     Unit* m_comboTarget;
+    ObjectGuid m_comboTargetGuid;   // 9-10 combotarget
+    Unit* GetValidComboTarget();
     int8 m_comboPoints;
 
     QuestStatusMap m_QuestStatus;

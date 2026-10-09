@@ -210,11 +210,15 @@ class boss_siamat : public CreatureScript
                                 float angle = frand(0, M_PI);
                                 float x, y;
                                 me->GetNearPoint2D(nullptr, x, y, (float)dist, angle);
-                                me->CastSpell(x, y, FLOR_COORD_Z, StaticShock[uiStaticShockId], false);
-                                ++uiStaticShockId;
-
+                                // StaticShock has 3 entries; uiStaticShockId could reach 3 (not reset between
+                                // attempts/phases) -> StaticShock[3] out-of-bounds read (found by AddressSanitizer). Guard it.
                                 if (uiStaticShockId < 3)
-                                    events.ScheduleEvent(EVENT_STATIC_SHOCK, 32000, 0, PHASE_DEFLECTING_WINDS);
+                                {
+                                    me->CastSpell(x, y, FLOR_COORD_Z, StaticShock[uiStaticShockId], false);
+                                    ++uiStaticShockId;
+                                    if (uiStaticShockId < 3)
+                                        events.ScheduleEvent(EVENT_STATIC_SHOCK, 32000, 0, PHASE_DEFLECTING_WINDS);
+                                }
                             }
                             break;
                         case EVENT_DEFLECTING_WINDS:

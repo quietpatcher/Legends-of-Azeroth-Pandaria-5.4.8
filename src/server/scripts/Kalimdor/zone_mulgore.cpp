@@ -81,6 +81,7 @@ enum KyleFrenzied
     SPELL_LUNCH             = 42222,
     NPC_KYLE_FRENZIED       = 23616,
     NPC_KYLE_FRIENDLY       = 23622,
+    GO_KYLES_LUNCH          = 186265,
     POINT_ID                = 1
 };
 
@@ -123,7 +124,9 @@ public:
                 if (Caster->GetTypeId() == TYPEID_PLAYER)
                     PlayerGUID = Caster->GetGUID();
 
-                if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE)
+                // Kyle now runs around randomly (the DB path was 6 points within ~25 yd), stop that too
+                if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE
+                    || me->GetMotionMaster()->GetCurrentMovementGeneratorType() == RANDOM_MOTION_TYPE)
                 {
                     me->GetMotionMaster()->MovementExpired();
                     me->GetMotionMaster()->MoveIdle();
@@ -162,7 +165,11 @@ public:
                         case 1:
                             if (Unit* unit = ObjectAccessor::GetUnit(*me, PlayerGUID))
                             {
-                                if (GameObject* go = unit->GetGameObject(SPELL_LUNCH))
+                                GameObject* go = unit->GetGameObject(SPELL_LUNCH);
+                                if (!go)   // 6-10: the spell summons a wild object, the player does not own it
+                                    go = me->FindNearestGameObject(GO_KYLES_LUNCH, 40.0f);
+                                TC_LOG_INFO("playerbots", "KYLEDIAG start: lunch object {} at {:.1f} yd from Kyle", go ? "found" : "NOT found", go ? me->GetExactDist(go) : -1.0f);
+                                if (go)
                                 {
                                     IsMovingToLunch = true;
                                     me->GetMotionMaster()->MovePoint(POINT_ID, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
@@ -170,6 +177,8 @@ public:
                             }
                             break;
                         case 2:
+                            if (GameObject* lunch = me->FindNearestGameObject(GO_KYLES_LUNCH, 40.0f))
+                                TC_LOG_INFO("playerbots", "KYLEDIAG eat: Kyle stands {:.1f} yd from the lunch", me->GetExactDist(lunch));
                             Talk(EMOTE_EAT_LUNCH);
                             me->HandleEmoteStateCommand(EMOTE_STATE_USE_STANDING);
                             break;

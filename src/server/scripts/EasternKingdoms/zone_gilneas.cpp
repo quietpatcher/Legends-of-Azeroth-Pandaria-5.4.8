@@ -22,6 +22,7 @@
 #include "Vehicle.h"
 #include "GameObjectAI.h"
 #include "TaskScheduler.h"
+#include "ObjectAccessor.h"
 
 enum Gilneas
 {
@@ -1106,8 +1107,8 @@ public:
     {
         if (quest->GetQuestId() == QUEST_FROM_THE_SHADOWS)
         {
-            if (player->GetClass() == CLASS_HUNTER)
-                player->UnsummonPetTemporaryIfAny();
+            // every class puts its pet away (a warlock's imp blocked the mastiff)
+            player->UnsummonPetTemporaryIfAny();
 
             player->CastSpell(player, SPELL_SUMMON_MASTIFF, false);
             creature->AI()->Talk(0);
@@ -1123,7 +1124,7 @@ public:
                     if (Creature* mastiff = charm->ToCreature())
                         mastiff->DespawnOrUnsummon();
 
-        if (player->GetClass() == CLASS_HUNTER)
+        if (quest->GetQuestId() == QUEST_FROM_THE_SHADOWS)   // every class gets its pet back
             player->ResummonPetTemporaryUnSummonedIfAny();
 
         return true;
@@ -1165,12 +1166,36 @@ struct npc_gilnean_mastiff : public ScriptedAI
         me->GetCharmInfo()->SetIsFollowing(true);
     }
 
-    void UpdateAI(uint32 /*diff*/) override
+    uint32 _botTimer = 0;
+
+    void UpdateAI(uint32 diff) override
     {
         Player* player = me->GetOwner()->ToPlayer();
 
         if (player->GetQuestStatus(QUEST_FROM_THE_SHADOWS) == QUEST_STATUS_REWARDED)
             me->DespawnOrUnsummon(1);
+
+        // a bot cannot press the "Attack Lurker" button of its pet: the pet does it for the bot
+        // when a sleeping Lurker is within reach (the spell wakes the nearest one within 30 yd and charges it)
+        if (_botTimer > diff)
+            _botTimer -= diff;
+        else
+        {
+            _botTimer = 4000;
+            // (mastiff2) only next to the bot, on a Lurker the bot can reach, and the bot joins the fight at once
+            if (player->GetSession() && player->GetSession()->IsBot() && player->GetQuestStatus(QUEST_FROM_THE_SHADOWS) == QUEST_STATUS_INCOMPLETE
+                && !me->IsInCombat() && me->GetDistance(player) < 12.0f)
+                if (Creature* lurker = me->FindNearestCreature(NPC_BLOODFANG_LURKER, 30.0f))
+                    if (lurker->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE) && lurker->GetDistance(player) < 25.0f)
+                    {
+                        me->CastSpell(me, SPELL_ATTACK_LURKER, true);
+                        if (!lurker->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE) && player->IsValidAttackTarget(lurker))
+                        {
+                            player->SetSelection(lurker->GetGUID());
+                            player->Attack(lurker, true);
+                        }
+                    }
+        }
 
         if (!UpdateVictim())
         {
@@ -1184,7 +1209,7 @@ struct npc_gilnean_mastiff : public ScriptedAI
 
     void JustDied(Unit* /*killer*/) override
     {
-        me->DespawnOrUnsummon(1);
+        me->DespawnOrUnsummon(1);   // (mastiff3) the owner uses the collar again, as on retail
     }
 
     void KilledUnit(Unit* /*victim*/) override
@@ -1192,6 +1217,9 @@ struct npc_gilnean_mastiff : public ScriptedAI
         Reset();
     }
 };
+
+// the mastiff is summoned by the collar (48707, spell 67807), as on retail; a player or bot whose dog
+// is gone uses the collar again - the server does not bring it back by itself.
 
 struct npc_bloodfang_lurker : public ScriptedAI
 {
@@ -1211,9 +1239,27 @@ struct npc_bloodfang_lurker : public ScriptedAI
 
     void StartAttack(Unit* who)
     {
+        // woken up it can be seen and fought (it attacked a pet while staying 'not attackable')
+        me->RemoveAura(SPELL_SHADOWSTALKER_STEALTH);
+        me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
         me->SetReactState(REACT_AGGRESSIVE);
         me->SetInCombatWith(who);
         who->SetInCombatWith(me);
+    }
+
+    // whatever drags it into a fight (a woken Lurker calling for help, a player walking into it)
+    // makes it visible and attackable; a Lurker that bit while it could not be hit kept the bot in a fight it could not win
+    void AttackStart(Unit* who) override
+    {
+        if (who && me->HasReactState(REACT_PASSIVE))
+            StartAttack(who);
+        ScriptedAI::AttackStart(who);
+    }
+
+    void JustEngagedWith(Unit* who) override
+    {
+        if (who && me->HasReactState(REACT_PASSIVE))
+            StartAttack(who);
     }
 
     void DamageTaken(Unit* attacker, uint32 &damage) override
@@ -2381,7 +2427,7 @@ void AddSC_gilneas()
     new creature_script<npc_josiah_avery_worgen_form>("npc_josiah_avery_worgen_form");
     new spell_script<spell_gilneas_pull_to>("spell_gilneas_pull_to");
     new npc_lorna_crowley_basement("npc_lorna_crowley_basement");
-    new creature_script<npc_gilnean_mastiff>("npc_gilnean_mastiff");
+    new creature_script<npc_gilnean_mastiff>("npc_gilnean_mastiff");   // (mastiff3) the PlayerScript of patch_mastiff is gone again
     new creature_script<npc_bloodfang_lurker>("npc_bloodfang_lurker");
     new spell_script<spell_attack_lurker>("spell_attack_lurker");
     new npc_king_genn_greymane();

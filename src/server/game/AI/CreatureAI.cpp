@@ -16,6 +16,7 @@
 */
 
 #include "CreatureAI.h"
+#include "Config.h"
 #include "AreaBoundary.h"
 #include "CreatureAIImpl.h"
 #include "Creature.h"
@@ -349,6 +350,17 @@ void CreatureAI::JustEnteredCombat(Unit* who)
         EngagementStart(who);
 }
 
+// set by Unit::CombatStop for the unit that is stopping its own combat
+extern thread_local Unit const* tl_combatStopper;
+
+void CreatureAI::JustExitedCombat()
+{
+    // its target died, teleported, logged out or dropped combat. A creature that stops its own combat (a script that
+    // ends the fight, the evade itself) is not meant to evade for it.
+    if (tl_combatStopper != me && me->IsAlive() && !me->IsInEvadeMode())
+        _leftCombat = true;
+}
+
 void CreatureAI::EngagementStart(Unit* who)
 {
     if (IsEngaged())
@@ -470,7 +482,27 @@ bool NeedEvadeIfChallengeNotStarted(uint32 entry, uint32 mapId)
 bool CreatureAI::UpdateVictim()
 {
     if (!me->IsInCombat())
+    {
+        // the other side ended the combat: evade, as the old combat system did. Without it
+        // the creature kept its tap (grey, no loot or xp for anybody else), stayed where the fight ended and an
+        // escort never walked on.
+        if (_leftCombat)
+        {
+            _leftCombat = false;
+            if (me->IsAlive() && !me->IsInEvadeMode() && !me->GetCharmerOrOwnerGUID())
+            {
+                static bool const leftCombatLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);
+                if (leftCombatLog)
+                    TC_LOG_INFO("server", "EVADEDIAG left-combat entry={} map={} home={:.1f} hp={:.0f} tapped={}",
+                        me->GetEntry(), me->GetMapId(), me->GetExactDist(&me->GetHomePosition()), me->GetHealthPct(),
+                        uint32(me->HasLootRecipient()));
+                EnterEvadeMode();
+            }
+        }
         return false;
+    }
+
+    _leftCombat = false;
 
     if (InstanceScript* instance = me->GetInstanceScript())
     {
@@ -490,6 +522,10 @@ bool CreatureAI::UpdateVictim()
     }
     else if (me->GetThreatManager().IsThreatListEmpty())
     {
+        // diagnostic: evade-oorzaak loggen (Debug.EvadeLog = 1)
+        static bool const evadeDiagLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);
+        if (evadeDiagLog)
+            TC_LOG_INFO("server", "EVADEDIAG passive-empty entry={} map={}", me->GetEntry(), me->GetMapId());
         EnterEvadeMode();
         return false;
     }
@@ -514,6 +550,7 @@ bool CreatureAI::_EnterEvadeMode(EvadeReason why)
     me->GetThreatManager().RemoveMeFromThreatLists();
     me->GetThreatManager().ClearAllThreat();
     me->CombatStop(true);
+    _leftCombat = false;
     me->LoadCreaturesAddon();
     me->ApplyInstanceAuraIfNeeded();
     me->SetLootRecipient(NULL);

@@ -21,6 +21,7 @@
 #include "Define.h"
 #include "DetourNavMesh.h"
 #include "DetourNavMeshQuery.h"
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -82,6 +83,10 @@ namespace MMAP
             MMapDataSet loadedMMaps;
             uint32 loadedTiles;
             bool thread_safe_environment;
+            // the instances of one map id share its MMapData and run on different map-updater threads.
+            // Shared for the lookups of every PathGenerator, exclusive for loading / unloading and for the first
+            // query of an instance.
+            mutable std::shared_mutex _lock;
     };
 }
 

@@ -28,7 +28,12 @@ public:
 
 std::vector<uint32> RandomItemManager::GetCachedEquipments(uint32 requiredLevel, uint32 inventoryType)
 {
-    return _equipCacheNew[requiredLevel][inventoryType];
+    // read only (operator[] inserted keys, the cache is shared by all map threads)
+    auto lvl = _equipCacheNew.find(requiredLevel);
+    if (lvl == _equipCacheNew.end())
+        return {};
+    auto type = lvl->second.find(inventoryType);
+    return type == lvl->second.end() ? std::vector<uint32>() : type->second;
 }
 
 void RandomItemManager::Init()
@@ -205,6 +210,27 @@ bool RandomItemManager::ShouldEquipArmorForSpec(uint32 level, Classes playerclas
 {
     if (proto->InventoryType == INVTYPE_TABARD)
         return true;
+
+    // MoP armor specialization: one armor type per class (plate/mail switch at 40), the WotLK-era sets
+    // below let shamans and druids wear cloth and warriors/paladins leather
+    if (proto->Class == ITEM_CLASS_ARMOR && proto->SubClass >= ITEM_SUBCLASS_ARMOR_CLOTH && proto->SubClass <= ITEM_SUBCLASS_ARMOR_PLATE
+        && proto->InventoryType != INVTYPE_CLOAK && proto->InventoryType != INVTYPE_HOLDABLE)
+    {
+        uint32 wanted;
+        switch (playerclass)
+        {
+            case CLASS_WARRIOR:
+            case CLASS_PALADIN:      wanted = level >= 40 ? ITEM_SUBCLASS_ARMOR_PLATE : ITEM_SUBCLASS_ARMOR_MAIL; break;
+            case CLASS_DEATH_KNIGHT: wanted = ITEM_SUBCLASS_ARMOR_PLATE; break;
+            case CLASS_HUNTER:
+            case CLASS_SHAMAN:       wanted = level >= 40 ? ITEM_SUBCLASS_ARMOR_MAIL : ITEM_SUBCLASS_ARMOR_LEATHER; break;
+            case CLASS_ROGUE:
+            case CLASS_DRUID:
+            case CLASS_MONK:         wanted = ITEM_SUBCLASS_ARMOR_LEATHER; break;
+            default:                 wanted = ITEM_SUBCLASS_ARMOR_CLOTH; break;
+        }
+        return proto->SubClass == wanted;
+    }
 
     std::unordered_set<uint32> resultArmorSubClass;
     switch (playerclass)
@@ -702,22 +728,28 @@ uint32 RandomItemManager::FindBestItemForLevelAndEquip(Player* bot, InventoryTyp
 
     for (uint32 requiredLevel = bot->GetLevel(); requiredLevel > std::max((int32)bot->GetLevel() - delta, 0); requiredLevel--)
     {
-        std::mt19937 gen(std::chrono::system_clock::now().time_since_epoch().count());
-        auto& items = _equipCacheNew[requiredLevel][invType];
-        std::shuffle(items.begin(), items.end(), gen);
+        // the port shuffled the shared cache in place and used operator[] (inserts) from several map
+        // threads at once (level-up maintenance): a data race on a std::map/std::vector. Read only, random start.
+        auto lvlItr = _equipCacheNew.find(requiredLevel);
+        if (lvlItr == _equipCacheNew.end())
+            continue;
+        auto typeItr = lvlItr->second.find(invType);
+        if (typeItr == lvlItr->second.end() || typeItr->second.empty())
+            continue;
+        std::vector<uint32> const& items = typeItr->second;
+        size_t const count = items.size();
+        size_t const start = urand(0, uint32(count - 1));
 
-        for (auto it = items.end(); it != items.begin(); )
+        for (size_t k = 0; k < count; ++k)
         {
-            --it;
-
-            uint32 itemID = *it;
+            uint32 itemID = items[(start + k) % count];
 
             if (IsTestItem(itemID)) continue;
 
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemID);
             if (proto->RequiredLevel > level) continue;
             if ((proto->AllowableClass & bot->GetClassMask()) == 0 || (proto->AllowableRace & bot->GetRaceMask()) == 0) continue;
-            if (level < 10 && proto->ItemLevel > 100) continue;
+            if (!ItemLevelFits(level, proto)) continue;
 
             // Item Quality
             {
@@ -783,9 +815,90 @@ uint32 RandomItemManager::FindBestItemForLevelAndEquip(Player* bot, InventoryTyp
                 if (!CheckItemStats((Classes)bot_class, sp, ap, tank)) continue;
             }
 
+            if (HasWrongPrimaryStat(bot, proto))   // e.g. an intellect mail piece for an enhancement shaman
+                continue;
+
             // ok ?
             return proto->ItemId;
         }
     }
     return 0;
+}
+// MoP primary stat of the bot's spec
+uint32 RandomItemManager::PrimaryStat(Player* bot)
+{
+    uint32 spec = bot->GetSpecialization();
+    switch (bot->GetClass())
+    {
+        case CLASS_WARRIOR:
+        case CLASS_DEATH_KNIGHT:
+            return ITEM_MOD_STRENGTH;
+        case CLASS_PALADIN:
+            return spec == Specializations::SPEC_PALADIN_HOLY ? ITEM_MOD_INTELLECT : ITEM_MOD_STRENGTH;
+        case CLASS_HUNTER:
+        case CLASS_ROGUE:
+            return ITEM_MOD_AGILITY;
+        case CLASS_SHAMAN:
+            return spec == Specializations::SPEC_SHAMAN_ENHANCEMENT ? ITEM_MOD_AGILITY : ITEM_MOD_INTELLECT;
+        case CLASS_DRUID:
+            return (spec == Specializations::SPEC_DRUID_FERAL || spec == Specializations::SPEC_DRUID_GUARDIAN) ? ITEM_MOD_AGILITY : ITEM_MOD_INTELLECT;
+        case CLASS_MONK:
+            return spec == Specializations::SPEC_MONK_MISTWEAVER ? ITEM_MOD_INTELLECT : ITEM_MOD_AGILITY;
+        default:
+            return ITEM_MOD_INTELLECT;
+    }
+}
+
+// an item that carries primary stats but not the bot's own (stamina/secondary-only items are fine)
+bool RandomItemManager::HasWrongPrimaryStat(Player* bot, ItemTemplate const* proto)
+{
+    uint32 wanted = PrimaryStat(bot);
+    bool anyPrimary = false;
+    for (uint8 j = 0; j < MAX_ITEM_PROTO_STATS; ++j)
+    {
+        if (!proto->ItemStat[j].ItemStatValue)
+            continue;
+        uint32 type = proto->ItemStat[j].ItemStatType;
+        if (type == ITEM_MOD_STRENGTH || type == ITEM_MOD_AGILITY || type == ITEM_MOD_INTELLECT)
+        {
+            if (type == wanted)
+                return false;
+            anyPrimary = true;
+        }
+    }
+    return anyPrimary;
+}
+
+// weapons and armor only; heirlooms scale with the level and are fine
+bool RandomItemManager::ItemLevelFits(uint32 level, ItemTemplate const* proto)
+{
+    if (proto->Class != ITEM_CLASS_WEAPON && proto->Class != ITEM_CLASS_ARMOR)
+        return true;
+    if (proto->Quality == ITEM_QUALITY_HEIRLOOM)
+        return true;
+    return proto->ItemLevel <= MaxItemLevelForLevel(level);
+}
+
+bool RandomItemManager::FitsBot(Player* bot, ItemTemplate const* proto)
+{
+    if (!ItemLevelFits(bot->GetLevel(), proto))
+        return false;
+    if (proto->Class == ITEM_CLASS_ARMOR)
+    {
+        bool typed = proto->SubClass >= ITEM_SUBCLASS_ARMOR_CLOTH && proto->SubClass <= ITEM_SUBCLASS_ARMOR_PLATE
+            && proto->InventoryType != INVTYPE_CLOAK;
+        if (typed && !ShouldEquipArmorForSpec(bot->GetLevel(), Classes(bot->GetClass()), Specializations(bot->GetSpecialization()), proto))
+            return false;
+        // rings, necks, trinkets, cloaks pass; shields and off-hand frills by class/spec
+        if (!typed && !CanEquipSubArmor(bot, proto))
+            return false;
+    }
+    else if (proto->Class == ITEM_CLASS_WEAPON)
+    {
+        if (!CanEquipWeapon(bot, proto))
+            return false;
+    }
+    else
+        return false;
+    return !HasWrongPrimaryStat(bot, proto);
 }

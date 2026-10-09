@@ -2318,6 +2318,8 @@ public:
 
     void FollowerAdded(AbstractFollower* follower) { _followers.insert(follower); }
     void FollowerRemoved(AbstractFollower* follower) { _followers.erase(follower); }
+    // missing in the AbstractFollower backport (TC: RemoveAllFollowers in RemoveFromWorld) -> dangling chase/follow targets
+    void RemoveAllFollowers() { while (!_followers.empty()) (*_followers.begin())->SetTarget(nullptr); }
     static Unit* GetUnit(WorldObject& object, ObjectGuid guid);
     static Player* GetPlayer(WorldObject& object, ObjectGuid guid);
     static Creature* GetCreature(WorldObject& object, ObjectGuid guid);

@@ -1669,3 +1669,34 @@ AiPlayerbot.TargetPosRecalcDistance = 0.1
 
 # Allow bots to be summoned near innkeepers
 AiPlayerbot.SummonAtInnkeepersEnabled = 1
+
+##################################################################################################
+# BOT LIFE (random bots: travel to grind spots that fit the level, quests, looting, resting,
+# chat/emotes, guild calendar events). Only for random bots without a real player as master.
+##################################################################################################
+BotLife.Enable = 1
+BotLife.Travel = 1
+BotLife.Quests = 1
+BotLife.Loot = 1
+BotLife.Rest = 1
+BotLife.Chat = 1
+BotLife.Emotes = 1
+BotLife.ZoneChat = 1
+BotLife.GuildEvents = 1
+BotLife.RelocateForLevel = 1
+BotLife.MaxQuests = 3
+# seconden
+BotLife.QuestTimeout = 1500
+BotLife.GuildChatInterval = 150
+BotLife.ZoneChatInterval = 240
+BotLife.CalendarSignups = 20
+BotLife.EventRaidSize = 20
+BotLife.Debug = 0
+
+# BotLife: a bad-dungeon mark runs out - a dungeon the bots have beaten before is tried again after RetryHours, one
+# they never got a boss in after RetryDays. DungeonFocus = LfgDungeons ids that are picked first (FocusChance percent
+# of the new dungeon parties), whatever their record.
+BotLife.BadDungeonRetryHours = 3
+BotLife.BadDungeonRetryDays = 3
+BotLife.DungeonFocus =
+BotLife.DungeonFocusChance = 0

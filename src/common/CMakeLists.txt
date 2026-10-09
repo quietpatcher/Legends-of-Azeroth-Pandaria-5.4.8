@@ -108,7 +108,7 @@ target_link_libraries(common
     g3dlib
     Detour
     utf8cpp
-    jemalloc    
+    $<$<NOT:$<BOOL:${NOJEM}>>:jemalloc>
 )
 
 add_dependencies(common revision.h)

@@ -1,4 +1,6 @@
 #include "BotFactory.h"
+#include "Pet.h"
+#include "DatabaseEnv.h"
 
 #include <random>
 #include <utility>
@@ -160,6 +162,14 @@ void BotFactory::Randomize(bool incremental)
     }
 
     InitPet();
+
+    // a full randomize strips gear and talents; without this the bot stays naked and spec-less until its
+    // next level-up (427 of 554 online bots at level 70-89 wore only the BotLife fallback weapon)
+    if (!incremental)
+    {
+        InitTalentsTree(false);
+        InitEquipment(false);
+    }
  
     bot->SetMoney(urand(level * 100000, level * 5 * 100000));
     bot->SetHealth(bot->GetMaxHealth());
@@ -208,6 +218,12 @@ void BotFactory::InitPet()
     {
         if (bot->GetClass() != CLASS_HUNTER)
             return;
+
+        // a hunter with a pet in an active slot calls or revives it (Call Pet 1 / Revive Pet); the port
+        // tamed a new pet at every randomize/refresh without a summoned pet (about 38 stray pets per hunter bot)
+        for (uint8 petSlot = PET_SLOT_ACTIVE_FIRST; petSlot <= PET_SLOT_ACTIVE_LAST; ++petSlot)
+            if (bot->GetPetIdBySlot(petSlot))
+                return;
  
         Map* map = bot->GetMap();
         if (!map)
@@ -263,8 +279,19 @@ void BotFactory::InitPet()
             bot->SetMinion(pet, true);
  
             pet->InitTalentForLevel();
- 
-            pet->SavePetToDB();
+
+            // store the pet in its stable slot like Spell::EffectTameCreature; the port saved it without a
+            // slot (255), so Call Pet 1 (slot 0) never found it again after it was dismissed or died
+            CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+            bot->AddNewPet(newPetSlot, pet);
+            bot->SetCurrentPetId(pet->GetCharmInfo()->GetPetNumber(), trans);
+            pet->SavePetToDB(trans);
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_PET_SLOT_BY_ID);
+            stmt->setUInt8(0, uint8(newPetSlot));
+            stmt->setUInt32(1, bot->GetGUID().GetCounter());
+            stmt->setUInt32(2, pet->GetCharmInfo()->GetPetNumber());
+            trans->Append(stmt);
+            CharacterDatabase.CommitTransaction(trans);
             bot->PetSpellInitialize();
             break;
         }
@@ -536,6 +563,8 @@ bool BotFactory::CanEquipItem(ItemTemplate const* proto)
 
     if (requiredLevel > level)
         return false;
+    if (!RandomItemManager::ItemLevelFits(level, proto))
+        return false;
 
     return true;
 }
@@ -603,10 +632,16 @@ void BotFactory::InitEquipment(bool incremental, bool second_chance)
             continue;
         }
 
+        // take the best candidate (item level, then quality) instead of the last one that fits, and
+        // never replace an equal or better item that is already worn
         uint32 bestItemForSlot = 0;
+        uint32 bestScore = 0;
         for (int index = 0; index < ids.size(); index++)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(ids[index]);
+            uint32 score = proto ? proto->ItemLevel * 8 + proto->Quality : 0;
+            if (score <= bestScore)
+                continue;
 
             // delay heavy check to here
             if (!CanEquipItem(proto))
@@ -615,12 +650,15 @@ void BotFactory::InitEquipment(bool incremental, bool second_chance)
             if (!CanEquipUnseenItem(slot, dest, proto->ItemId))
                 continue;
             bestItemForSlot = proto->ItemId;
+            bestScore = score;
         }
 
         if (bestItemForSlot == 0)
         {
             continue;
         }
+        if (incremental && oldItem && oldItem->GetTemplate()->ItemLevel >= bestScore / 8)
+            continue;
         uint16 dest;
         if (!CanEquipUnseenItem(slot, dest, bestItemForSlot))
         {

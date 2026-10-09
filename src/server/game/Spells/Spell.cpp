@@ -2222,8 +2222,8 @@ void Spell::SearchChainTargets(std::list<WorldObject*>& targets, uint32 chainTar
             break;
         if (!searchNearTarget)
             target = *foundItr;
+        targets.push_back(*foundItr);   // was erase() first, then *foundItr read the freed list node (ASan 29-9)
         tempTargets.erase(foundItr);
-        targets.push_back(*foundItr);
         --chainTargets;
     }
 }
@@ -6316,7 +6316,13 @@ SpellCastResult Spell::CheckCast(bool strict)
         {
             // Cannot be used in this stance/form
             SpellCastResult shapeError = m_spellInfo->CheckShapeshift(m_caster->GetShapeshiftForm());
-            if (shapeError != SPELL_CAST_OK)
+            // a spell that is blocked because ANY shapeshift form is
+            // disallowed (m_spellInfo->Stances == 0, e.g. tradeskill casts like Smelting) auto-cancels a
+            // freely-droppable form (Travel Form etc.) instead of failing, as long as the caster is out of
+            // combat. Spells that need a SPECIFIC other form (SPELL_FAILED_ONLY_SHAPESHIFT) are untouched.
+            if (shapeError == SPELL_FAILED_NOT_SHAPESHIFT && m_spellInfo->Stances == 0 && !m_caster->IsInCombat())
+                m_caster->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+            else if (shapeError != SPELL_CAST_OK)
                 return shapeError;
 
             if ((m_spellInfo->Attributes & SPELL_ATTR0_ONLY_STEALTHED) && !(m_caster->HasStealthAura()))

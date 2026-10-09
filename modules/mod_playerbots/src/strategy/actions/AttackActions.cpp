@@ -75,6 +75,11 @@ bool AttackAction::Attack(Unit* target, bool with_pet /*true*/)
         return false;
     }
 
+    // a melee bot waits out a target that strikes back at melee attacks
+    bool const strikesBack = PlayerbotAI::IsStrikingBack(target);
+    if (strikesBack && PlayerBotSpec::IsMelee(bot))
+        return false;
+
     if (!bot->IsValidAttackTarget(target))
     {
         if (verbose)
@@ -133,6 +138,8 @@ bool AttackAction::Attack(Unit* target, bool with_pet /*true*/)
 
     Unit* oldTarget = context->GetValue<Unit*>("current target")->Get();
     bool melee = bot->IsWithinMeleeRange(target) || PlayerBotSpec::IsMelee(bot);
+    if (strikesBack)   // a ranged bot in melee range keeps its target, without the swing
+        melee = false;
 
     if (oldTarget == target && botAI->GetState() == BOT_STATE_COMBAT && bot->GetVictim() == target && (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) == melee))
         return false;

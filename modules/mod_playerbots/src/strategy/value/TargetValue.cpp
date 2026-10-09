@@ -96,7 +96,9 @@ bool FindNonCcTargetStrategy::IsCcTarget(Unit* attacker)
         for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
         {
             Player* member = ObjectAccessor::FindPlayer(itr->guid);
-            if (!member || !member->IsAlive())
+            // a member on another map is updated by another map thread; asking its AI context from
+            // here inserts into / reads its value maps concurrently with its own thread (heap corruption)
+            if (!member || !member->IsInWorld() || member->FindMap() != botAI->GetBot()->FindMap() || !member->IsAlive())
                 continue;
 
             if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(member))

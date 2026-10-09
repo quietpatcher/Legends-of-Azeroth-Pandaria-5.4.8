@@ -90,6 +90,7 @@ class ChatHandler
 
         void SendGlobalGMSysMessage(const char *str);
         Player*   getSelectedPlayer();
+        Player*   getSelectedPlayerOrSelf();
         Creature* getSelectedCreature();
         Unit*     getSelectedUnit();
         WorldObject* getSelectedObject();
@@ -144,6 +145,10 @@ struct ChatCommandHolder : public std::enable_shared_from_this<ChatCommandHolder
     ChatCommandHolder(ChatHandler* handler) : m_handler(handler) { }
 
     ChatHandler& GetHandler() { return *m_handler; }
+    // ChatCommandHolder is deleted through a shared_ptr<ChatCommandHolder> base pointer while the real object is a
+    // CliCommandHolder (SOAP/CLI path); without a virtual destructor delete frees the wrong size (32 vs 96 bytes) and
+    // skips the derived destructor - heap corruption on every SOAP/CLI command (found by AddressSanitizer).
+    virtual ~ChatCommandHolder() = default;
     virtual void FinishCommand(bool success) { }
 
 protected:

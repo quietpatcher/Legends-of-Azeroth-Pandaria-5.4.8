@@ -68,16 +68,41 @@ class DeathKnightTriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     DeathKnightTriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["icy touch"] = &DeathKnightTriggerFactoryInternal::tt_icy_touch;
+        creators["plague strike"] = &DeathKnightTriggerFactoryInternal::tt_plague_strike;
+        creators["horn of winter"] = &DeathKnightTriggerFactoryInternal::tt_horn_of_winter;
+        creators["bone shield"] = &DeathKnightTriggerFactoryInternal::tt_bone_shield;
+        creators["mind freeze"] = &DeathKnightTriggerFactoryInternal::tt_mind_freeze;
+        creators["mind freeze on enemy healer"] = &DeathKnightTriggerFactoryInternal::tt_mind_freeze_on_enemy_healer;
+        creators["army of the dead"] = &DeathKnightTriggerFactoryInternal::tt_army_of_the_dead;
+        creators["freezing fog"] = &DeathKnightTriggerFactoryInternal::tt_freezing_fog;
     }
 
 private:
+    static Trigger* tt_icy_touch(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "frost fever", 1, true); }
+    static Trigger* tt_plague_strike(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "blood plague", 1, true); }
+    static Trigger* tt_horn_of_winter(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "horn of winter"); }
+    static Trigger* tt_bone_shield(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "bone shield"); }
+    static Trigger* tt_mind_freeze(PlayerbotAI* botAI) { return new InterruptSpellTrigger(botAI, "mind freeze"); }
+    static Trigger* tt_mind_freeze_on_enemy_healer(PlayerbotAI* botAI) { return new InterruptEnemyHealerTrigger(botAI, "mind freeze"); }
+    static Trigger* tt_army_of_the_dead(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "army of the dead"); }
+    static Trigger* tt_freezing_fog(PlayerbotAI* botAI) { return new HasAuraTrigger(botAI, "freezing fog"); }
 };
+
+// MoP actions missing from the port (spell names must match the MoP client exactly)
+MELEE_ACTION(TTCastSoulReaperAction, "soul reaper");
+SPELL_ACTION(TTCastOutbreakAction, "outbreak");
+MELEE_ACTION(TTCastFesteringStrikeAction, "festering strike");
 
 class DeathKnightAiObjectContextInternal : public NamedObjectContext<Action>
 {
 public:
     DeathKnightAiObjectContextInternal()
     {
+        creators["soul reaper"] = &DeathKnightAiObjectContextInternal::tt_soul_reaper;
+        creators["outbreak"] = &DeathKnightAiObjectContextInternal::tt_outbreak;
+        creators["festering strike"] = &DeathKnightAiObjectContextInternal::tt_festering_strike;
         // Unholy
         creators["bone shield"] = &DeathKnightAiObjectContextInternal::bone_shield;
         creators["plague strike"] = &DeathKnightAiObjectContextInternal::plague_strike;
@@ -134,6 +159,9 @@ public:
     }
 
 private:
+    static Action* tt_soul_reaper(PlayerbotAI* botAI) { return new TTCastSoulReaperAction(botAI); }
+    static Action* tt_outbreak(PlayerbotAI* botAI) { return new TTCastOutbreakAction(botAI); }
+    static Action* tt_festering_strike(PlayerbotAI* botAI) { return new TTCastFesteringStrikeAction(botAI); }
     // Unholy
     static Action* bone_shield(PlayerbotAI* botAI) { return new CastBoneShieldAction(botAI); }
     static Action* plague_strike(PlayerbotAI* botAI) { return new CastPlagueStrikeAction(botAI); }

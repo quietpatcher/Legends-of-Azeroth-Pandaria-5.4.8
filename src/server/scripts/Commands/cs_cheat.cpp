@@ -221,7 +221,7 @@ public:
 
         std::string argstr = (char*)args;
 
-        Player* chr = handler->getSelectedPlayer();
+        Player* chr = handler->getSelectedPlayerOrSelf();
 
         if (!chr)
             chr = handler->GetSession()->GetPlayer();
@@ -259,7 +259,7 @@ public:
 
         int flag = atoi((char*)args);
 
-        Player* chr = handler->getSelectedPlayer();
+        Player* chr = handler->getSelectedPlayerOrSelf();
         if (chr == NULL)
         {
             handler->SendSysMessage(LANG_NO_CHAR_SELECTED);

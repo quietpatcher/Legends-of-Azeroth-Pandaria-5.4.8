@@ -16,6 +16,8 @@
 */
 
 #include "PathGenerator.h"
+#include "Player.h"
+#include "WorldSession.h"
 #include "Map.h"
 #include "Creature.h"
 #include "DisableMgr.h"
@@ -618,6 +620,21 @@ void PathGenerator::BuildPointPath(const float *startPoint, const float *endPoin
     for (uint32 i = 0; i < pointCount; ++i)
         _pathPoints[i] = G3D::Vector3(pathPoints[i*VERTEX_SIZE+2], pathPoints[i*VERTEX_SIZE], pathPoints[i*VERTEX_SIZE+1]);
 
+    // the length limit is measured along the path itself
+    if (_pathLengthLimit > 0.0f)
+    {
+        float length = 0.0f;
+        for (uint32 i = 1; i < pointCount; ++i)
+            length += (_pathPoints[i] - _pathPoints[i - 1]).length();
+        if (length > _pathLengthLimit)
+        {
+            TC_LOG_DEBUG("maps.mmaps", "++ PathGenerator::BuildPointPath path of {} yd is longer than the limit of {} yd\n", length, _pathLengthLimit);
+            BuildShortcut();
+            _type = PathType(_type | PATHFIND_SHORT);
+            return;
+        }
+    }
+
     NormalizePath();
 
     // first point is always our current location - we need the next one
@@ -688,6 +705,14 @@ void PathGenerator::CreateFilter()
     {
         // perfect support not possible, just stay 'safe'
         includeFlags |= (NAV_GROUND | NAV_WATER | NAV_MAGMA | NAV_SLIME);
+        // a bot walks its paths for real - not through lava and slime (Ragefire Chasm); a bot that touches
+        // it keeps them to find the way out (UpdateFilter only adds the terrain under a unit that is in it, not on its surface)
+        if (Player const* player = _source->ToPlayer())
+            if (player->GetSession() && player->GetSession()->IsBot()
+                && !(player->GetMap()->GetLiquidStatus(player->GetPhaseMask(), player->GetPositionX(), player->GetPositionY(),
+                    player->GetPositionZ(), MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_SLIME, nullptr, player->GetCollisionHeight())
+                    & MAP_LIQUID_STATUS_IN_CONTACT))
+                includeFlags &= ~(NAV_MAGMA | NAV_SLIME);
     }
 
     _filter.setIncludeFlags(includeFlags);

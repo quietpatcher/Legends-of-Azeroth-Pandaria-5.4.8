@@ -122,6 +122,9 @@ class TC_GAME_API CreatureAI : public UnitAI
         // Called for reaction whenever we start being in combat (overridden from base UnitAI)
         void JustEnteredCombat(Unit* /*who*/) override;
 
+        // combat ended by the other side: UpdateVictim evades once
+        void JustExitedCombat() override;
+
         // Called for reaction whenever a new non-offline unit is added to the threat list
         virtual void JustStartedThreateningMe(Unit* who) { if (!IsEngaged()) EngagementStart(who); }
 
@@ -292,6 +295,7 @@ class TC_GAME_API CreatureAI : public UnitAI
         bool m_MoveInLineOfSight_locked;
         bool m_canSeeEvenInPassiveMode;
         bool _isEngaged;
+        bool _leftCombat = false;
 };
 
 enum Permitions

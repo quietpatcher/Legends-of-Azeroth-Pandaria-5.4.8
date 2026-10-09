@@ -37,6 +37,8 @@ public:
 
     // Cinematic camera data and remote sight functions
     bool IsOnCinematic() const { return (m_cinematicCamera != nullptr); }
+    // from SendCinematicStart until the client reports the end, also without camera data
+    bool HasActiveCinematic() const { return m_activeCinematic != nullptr; }
     void BeginCinematic(CinematicSequencesEntry const* cinematic)
     {
         m_activeCinematic = cinematic;

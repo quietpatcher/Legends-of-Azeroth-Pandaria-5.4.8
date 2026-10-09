@@ -44,3 +44,6 @@ bool CastScareBeastCcAction::Execute(Event event) { return botAI->CastSpell("sca
 bool CastWingClipAction::isUseful() { return CastSpellAction::isUseful() && !botAI->HasAura(spell, GetTarget()); }
 
 NextAction** CastWingClipAction::getPrerequisites() { return nullptr; }
+
+// see HunterActions.h
+bool CastCallPetAction::isUseful() { return CastBuffSpellAction::isUseful() && !AI_VALUE(bool, "pet dead"); }

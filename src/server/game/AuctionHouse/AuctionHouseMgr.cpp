@@ -15,6 +15,7 @@
 * with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include "Common.h"
 #include "GameTime.h"
 #include "ObjectMgr.h"
@@ -26,6 +27,8 @@
 #include "ScriptMgr.h"
 #include "AccountMgr.h"
 #include "AuctionHouseMgr.h"
+#include "BattlePetMgr.h"
+#include "DB2Stores.h"
 #include "AuctionHouseBot.h"
 #include "Item.h"
 #include "Language.h"
@@ -446,6 +449,24 @@ bool AuctionHouseMgr::PendingAuctionAdd(Player* player, AuctionEntry* aEntry, It
     return true;
 }
 
+// ASan: an auction bought / cancelled / expired while still waiting in the pending list (deposit not yet
+// processed) was deleted, and UpdatePendingAuctions then read and saved the freed entry (heap corruption)
+void AuctionHouseMgr::PendingAuctionRemove(AuctionEntry const* aEntry)
+{
+    for (auto itr = pendingAuctionMap.begin(); itr != pendingAuctionMap.end();)
+    {
+        PlayerAuctions* list = itr->second.first;
+        list->erase(std::remove(list->begin(), list->end(), aEntry), list->end());
+        if (list->empty())
+        {
+            delete list;
+            itr = pendingAuctionMap.erase(itr);
+        }
+        else
+            ++itr;
+    }
+}
+
 uint32 AuctionHouseMgr::PendingAuctionCount(Player const* player) const
 {
     auto const itr = pendingAuctionMap.find(player->GetGUID());
@@ -591,6 +612,7 @@ bool AuctionHouseObject::RemoveAuction(AuctionEntry* auction)
     bool wasInMap = AuctionsMap.erase(auction->Id) ? true : false;
 
     sScriptMgr->OnAuctionRemove(this, auction);
+    sAuctionMgr->PendingAuctionRemove(auction);   // no dangling pointer in the pending list
 
     // we need to delete the entry, it is not referenced any more
     delete auction;
@@ -736,16 +758,29 @@ void AuctionHouseObject::BuildListAuctionItems(WorldPacket& data, Player* player
         if (itemClass != 0xffffffff && proto->GetClass() != itemClass)
             continue;
 
-        if (itemSubClass != 0xffffffff && proto->GetSubClass() != itemSubClass)
+        // a caged battle pet is always the same item (Pet Cage); what the client filters the
+        // Battle Pets category on - family, quality, level, name - lives in the cage's modifiers
+        uint32 filterSubClass = proto->GetSubClass(), filterQuality = proto->GetQuality(), filterLevel = proto->GetRequiredLevel();
+        BattlePetSpeciesEntry const* cagedSpecies = nullptr;
+        if (item->GetEntry() == BATTLE_PET_CAGE_ITEM_ID)
+            cagedSpecies = sBattlePetSpeciesStore.LookupEntry(item->GetDynamicUInt32Value(ITEM_DYNAMIC_MODIFIERS, ITEM_MODIFIER_INDEX_BATTLE_PET_SPECIES));
+        if (cagedSpecies)
+        {
+            filterSubClass = cagedSpecies->FamilyId;
+            filterQuality = (item->GetDynamicUInt32Value(ITEM_DYNAMIC_MODIFIERS, ITEM_MODIFIER_INDEX_BATTLE_PET_BREED) >> 24) & 0xFF;
+            filterLevel = item->GetDynamicUInt32Value(ITEM_DYNAMIC_MODIFIERS, ITEM_MODIFIER_INDEX_BATTLE_PET_LEVEL);
+        }
+
+        if (itemSubClass != 0xffffffff && filterSubClass != itemSubClass)
             continue;
 
         if (inventoryType != 0xffffffff && proto->GetInventoryType() != inventoryType)
             continue;
 
-        if (quality != 0xffffffff && proto->GetQuality() != quality)
+        if (quality != 0xffffffff && filterQuality != quality)
             continue;
 
-        if (levelmin != 0x00 && (proto->GetRequiredLevel() < levelmin || (levelmax != 0 && proto->GetRequiredLevel() > levelmax)))
+        if (levelmin != 0x00 && (filterLevel < levelmin || (levelmax != 0 && filterLevel > levelmax)))
             continue;
 
         if (usable != 0x00 && player->CanUseItem(item) != EQUIP_ERR_OK)
@@ -755,6 +790,9 @@ void AuctionHouseObject::BuildListAuctionItems(WorldPacket& data, Player* player
         if (!wsearchedname.empty())
         {
             std::string name = proto->Name1;
+            if (cagedSpecies)   // search caged pets by the name of the pet
+                if (CreatureTemplate const* petTemplate = sObjectMgr->GetCreatureTemplate(cagedSpecies->NpcId))
+                    name = petTemplate->Name;
             if (name.empty())
                 continue;
 

@@ -16,6 +16,7 @@
 */
 
 #include "Creature.h"
+#include "Config.h"
 #include "BattlegroundMgr.h"
 #include "CellImpl.h"
 #include "Common.h"
@@ -78,6 +79,32 @@ std::string CreatureMovementData::ToString() const
     str << ", InteractionPauseTimer: " << InteractionPauseTimer;
 
     return str.str();
+}
+
+namespace
+{
+    // dynamic respawn - the more players around a creature that dies, the sooner it is back (the live
+    // servers do the same in crowded places). Normal open world creatures only, no rares, elites or bosses.
+    uint32 DynamicRespawnDelay(Creature const* creature, uint32 delay)
+    {
+        static uint32 const threshold = uint32(sConfigMgr->GetIntDefault("Respawn.DynamicPlayers", 0));
+        static float const minRate = sConfigMgr->GetFloatDefault("Respawn.DynamicMinRate", 0.1f);
+        static uint32 const minSeconds = uint32(sConfigMgr->GetIntDefault("Respawn.DynamicMinSeconds", 15));
+        if (!threshold || delay <= minSeconds || delay > 15 * MINUTE)
+            return delay;
+        Map const* map = creature->FindMap();
+        if (!map || map->Instanceable() || creature->IsPet() || creature->IsSummon() || creature->GetCreatureTemplate()->rank != CREATURE_ELITE_NORMAL)
+            return delay;
+        uint32 players = 0;
+        for (MapReference const& ref : map->GetPlayers())
+            if (Player const* player = ref.GetSource())
+                if (player->GetExactDist2dSq(creature) < 250.0f * 250.0f)
+                    ++players;
+        if (players <= threshold)
+            return delay;
+        float const rate = std::max(minRate, float(threshold) / float(players));
+        return std::max<uint32>(minSeconds, uint32(delay * rate));
+    }
 }
 
 TrainerSpell const* TrainerSpellData::Find(uint32 spell_id) const
@@ -323,7 +350,10 @@ void Creature::RemoveCorpse(bool setSpawnTime)
     UpdateObjectVisibility();
     ClearComboPointHolders();
     loot.clear();
-    uint32 respawnDelay = m_respawnDelay;
+    uint32 respawnDelay = DynamicRespawnDelay(this, m_respawnDelay);
+    // crowded: the time the corpse lay there was the wait already - back a few seconds after the corpse is gone
+    if (respawnDelay < m_respawnDelay)
+        respawnDelay = std::min<uint32>(respawnDelay, 8);
     if (IsAIEnabled)
         AI()->CorpseRemoved(respawnDelay);
 
@@ -685,12 +715,35 @@ void Creature::Update(uint32 diff)
 
             Regenerate();
 
+            // a tap that outlived the combat, for AIs that never reach the evade in
+            // CreatureAI::UpdateVictim. Open world only: bosses are tapped by their scripts on purpose.
+            if (HasLootRecipient() && !IsInCombat() && !IsInEvadeMode() && !IsPet() && !isWorldBoss() && !GetMap()->Instanceable())
+            {
+                static bool const staleTapLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);
+                if (staleTapLog)
+                    TC_LOG_INFO("server", "EVADEDIAG stale-tap entry={} map={} home={:.1f} hp={:.0f}",
+                        GetEntry(), GetMapId(), GetExactDist(&m_homePosition), GetHealthPct());
+                SetLootRecipient(NULL);
+                ResetPlayerDamageReq();
+            }
+
             if (CanNotReachTarget() && !IsInEvadeMode() && !GetMap()->IsRaid())
             {
                 m_cannotReachTimer += diff;
                 if (m_cannotReachTimer >= CREATURE_NOPATH_EVADE_TIME)
                     if (CreatureAI* ai = AI())
+                    {
+                        // diagnostic: evade-oorzaak loggen (Debug.EvadeLog = 1)
+                        static bool const evadeDiagLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);
+                        if (evadeDiagLog)
+                        {
+                            Unit* v = GetVictim();
+                            TC_LOG_INFO("server", "EVADEDIAG nopath entry={} map={} home={:.1f} victim={} victimType={} accessible={}",
+                                GetEntry(), GetMapId(), GetExactDist(&m_homePosition), v ? v->GetName() : "-",
+                                v ? uint32(v->GetTypeId()) : 0u, v ? uint32(v->isInAccessiblePlaceFor(this)) : 0u);
+                        }
                         ai->EnterEvadeMode(); // TODO missing EVADE_REASON
+                    }
                         // ai->EnterEvadeMode(CreatureAI::EVADE_REASON_NO_PATH);
             }            
             break;
@@ -1001,9 +1054,9 @@ void Creature::SetLootRecipient(Unit* unit)
         return;
     }
 
-    if (unit->GetTypeId() != TYPEID_PLAYER && !unit->IsVehicle())
-        return;
-
+    // no type check here. It let only players and vehicles through, so a creature hit by nothing but a
+    // pet, totem or guardian was never tapped for its owner. The owner lookup below sorts it out: the player behind the
+    // unit, or nobody for a creature without one.
     Player* player = unit->GetCharmerOrOwnerPlayerOrPlayerItself();
     if (!player)                                             // normal creature, no player involved
         return;
@@ -1206,6 +1259,8 @@ void Creature::SelectLevel(const CreatureTemplate* cinfo)
     uint8 maxlevel = std::max(dbmaxlevel, dbminlevel);
     uint8 level = minlevel == maxlevel ? minlevel : urand(minlevel, maxlevel);
     SetLevel(level);
+    if (GetEntry() == 61716 || GetEntry() == 58998)
+        TC_LOG_INFO("playerbots", "LEVELDIAG {} ({}) map {} difficulty {}: level {}", GetName(), GetEntry(), GetMapId(), uint32(GetMap()->GetDifficulty()), uint32(level));
 
     CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, cinfo->unit_class);
 
@@ -1652,7 +1707,7 @@ void Creature::setDeathState(DeathState s)
     {
         m_corpseRemoveTime = time(NULL) + m_corpseDelay;
 
-        m_respawnTime = time(NULL) + (m_respawnDelayMax ? urand(m_respawnDelay, m_respawnDelayMax) : m_respawnDelay) + m_corpseDelay;
+        m_respawnTime = time(NULL) + DynamicRespawnDelay(this, m_respawnDelayMax ? urand(m_respawnDelay, m_respawnDelayMax) : m_respawnDelay) + m_corpseDelay;
 
         // always save boss respawn time at death to prevent crash cheating
         if (sWorld->getBoolConfig(CONFIG_SAVE_RESPAWN_TIME_IMMEDIATELY) || isWorldBoss())
@@ -2185,7 +2240,8 @@ bool Creature::_IsTargetAcceptable(const Unit* target) const
     const Unit* targetVictim = target->getAttackerForHelper();
 
     // if I'm already fighting target, or I'm hostile towards the target, the target is acceptable
-    if (myVictim == target || targetVictim == this || IsHostileTo(target))
+    if (myVictim == target || targetVictim == this || IsHostileTo(target)
+        || GetCombatManager().IsInCombatWith(target))   // caster hitting a neutral creature from range has no melee victim; TC master uses IsEngagedBy
         return true;
 
     // if the target's victim is friendly, and the target is neutral, the target is acceptable

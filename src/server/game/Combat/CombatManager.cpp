@@ -21,6 +21,7 @@
 #include "Unit.h"
 #include "CreatureAI.h"
 #include "Player.h"
+#include "ThreadOwnerCheck.h"
 
 /*static*/ bool CombatManager::CanBeginCombat(Unit const* a, Unit const* b)
 {
@@ -247,8 +248,8 @@ void CombatManager::InheritCombatStatesFrom(Unit const* who)
         if (!IsInCombatWith(pair.first))
         {
             Unit* target = pair.second->GetOther(who);
-            if ((_owner->IsImmuneToPC() && target->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED)) ||
-                (_owner->IsImmuneToNPC() && !target->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED)))
+            if ((_owner->IsImmuneToPC() && target->IsControlledByPlayer() /* */) ||
+                (_owner->IsImmuneToNPC() && !target->IsControlledByPlayer() /* */))
                 continue;
             SetInCombatWith(target);
         }
@@ -256,8 +257,8 @@ void CombatManager::InheritCombatStatesFrom(Unit const* who)
     for (auto const& pair : mgr._pvpRefs)
     {
         Unit* target = pair.second->GetOther(who);
-        if ((_owner->IsImmuneToPC() && target->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED)) ||
-            (_owner->IsImmuneToNPC() && !target->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED)))
+        if ((_owner->IsImmuneToPC() && target->IsControlledByPlayer() /* */) ||
+            (_owner->IsImmuneToNPC() && !target->IsControlledByPlayer() /* */))
             continue;
         SetInCombatWith(target);
     }
@@ -356,6 +357,7 @@ void CombatManager::EndAllPvPCombat()
 
 void CombatManager::PutReference(ObjectGuid const& guid, CombatReference* ref)
 {
+    TTCheckThreadOwner(_owner, "PutCombatRef", guid);
     if (ref->_isPvP)
     {
         auto& inMap = _pvpRefs[guid];
@@ -372,6 +374,7 @@ void CombatManager::PutReference(ObjectGuid const& guid, CombatReference* ref)
 
 void CombatManager::PurgeReference(ObjectGuid const& guid, bool pvp)
 {
+    TTCheckThreadOwner(_owner, "PurgeCombatRef", guid);
     if (pvp)
         _pvpRefs.erase(guid);
     else

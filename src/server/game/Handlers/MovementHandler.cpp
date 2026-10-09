@@ -164,6 +164,10 @@ void WorldSession::HandleMoveWorldportAck()
         return;
     }
 
+    // refresh the terrain state (liquid, lava and slime timers) for the new position; without it a player
+    // that died in lava kept the lava flag after the port and burned at the destination until it moved
+    GetPlayer()->UpdatePositionData();
+
     // battleground state prepare (in case join to BG), at relogin/tele player not invited
     // only add to bg group and object, if the player was invited (else he entered through command)
     if (_player->InBattleground())

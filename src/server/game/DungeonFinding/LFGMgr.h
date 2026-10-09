@@ -427,6 +427,11 @@ class LFGMgr
         void SetJoinTime(ObjectGuid guid, uint32 queueId, time_t time);
         /// Join Lfg with selected roles, dungeons and comment
         void JoinLfg(Player* player, LfgRoles roles, LfgDungeonSet& dungeons, std::string const& comment);
+        // BotLife hook - a solo real player joining LFG can be matched instantly when LFGSolo.Enabled
+        // is on (Bucket::CanAdd skips the role-completeness check), faster than any periodic check could react.
+        // Called synchronously right after a solo real player queue entry is set to QUEUED, before any proposal
+        // can form; the module (if loaded) fills the missing roles with bots in the SAME queue right away.
+        static void (*FillMissingRoles)(Player* player, uint32 queueId, LfgDungeonSet const& dungeons);
         // Primary used on player's logout
         void RemovePlayerQueues(ObjectGuid guid);
         void RemovePlayerQueuesOnPartyFound(ObjectGuid guid, uint32 except = 0);

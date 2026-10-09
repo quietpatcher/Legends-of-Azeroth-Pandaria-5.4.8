@@ -5,12 +5,15 @@
 
 #include "HunterAiObjectContext.h"
 
+#include "BotLife.h"
+
 #include "DpsHunterStrategy.h"
 #include "GenericHunterNonCombatStrategy.h"
 #include "HunterActions.h"
 #include "HunterBuffStrategies.h"
 #include "HunterTriggers.h"
 #include "NamedObjectContext.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 
 class HunterStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -60,9 +63,30 @@ class HunterTriggerFactoryInternal : public NamedObjectContext<Trigger>
 public:
     HunterTriggerFactoryInternal()
     {
+        // triggers the strategies use but the port never registered (ported/adapted from mod-playerbots)
+        creators["hunter's mark"] = &HunterTriggerFactoryInternal::tt_hunter_s_mark;
+        creators["serpent sting"] = &HunterTriggerFactoryInternal::tt_serpent_sting;
+        creators["serpent sting on attacker"] = &HunterTriggerFactoryInternal::tt_serpent_sting_on_attacker;
+        creators["black arrow"] = &HunterTriggerFactoryInternal::tt_black_arrow;
+        creators["rapid fire"] = &HunterTriggerFactoryInternal::tt_rapid_fire;
+        creators["aspect of the hawk"] = &HunterTriggerFactoryInternal::tt_aspect_of_the_hawk;
+        creators["concussive shot on snare target"] = &HunterTriggerFactoryInternal::tt_concussive_shot_on_snare_target;
+        creators["hunters pet dead"] = &HunterTriggerFactoryInternal::hunters_pet_dead;
+        creators["hunters pet low health"] = &HunterTriggerFactoryInternal::hunters_pet_low_health;
+        creators["hunters pet medium health"] = &HunterTriggerFactoryInternal::hunters_pet_medium_health;
     }
 
 private:
+    static Trigger* tt_hunter_s_mark(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "hunter's mark"); }
+    static Trigger* tt_serpent_sting(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "serpent sting", 1, true); }
+    static Trigger* tt_serpent_sting_on_attacker(PlayerbotAI* botAI) { return new DebuffOnAttackerTrigger(botAI, "serpent sting"); }
+    static Trigger* tt_black_arrow(PlayerbotAI* botAI) { return new DebuffTrigger(botAI, "black arrow", 1, true); }
+    static Trigger* tt_rapid_fire(PlayerbotAI* botAI) { return new BoostTrigger(botAI, "rapid fire"); }
+    static Trigger* tt_aspect_of_the_hawk(PlayerbotAI* botAI) { return new BuffTrigger(botAI, "aspect of the hawk"); }
+    static Trigger* tt_concussive_shot_on_snare_target(PlayerbotAI* botAI) { return new SnareTargetTrigger(botAI, "concussive shot"); }
+    static Trigger* hunters_pet_dead(PlayerbotAI* botAI) { return new HuntersPetDeadTrigger(botAI); }
+    static Trigger* hunters_pet_low_health(PlayerbotAI* botAI) { return new HuntersPetLowHealthTrigger(botAI); }
+    static Trigger* hunters_pet_medium_health(PlayerbotAI* botAI) { return new HuntersPetMediumHealthTrigger(botAI); }
 };
 
 class HunterAiObjectContextInternal : public NamedObjectContext<Action>
@@ -113,6 +137,7 @@ public:
         creators["aspect of the dragonhawk"] = &HunterAiObjectContextInternal::aspect_of_the_dragonhawk;
         creators["tranquilizing shot"] = &HunterAiObjectContextInternal::tranquilizing_shot;
         creators["steady shot"] = &HunterAiObjectContextInternal::steady_shot;
+        creators["cobra shot"] = &HunterAiObjectContextInternal::cobra_shot;   // MoP focus shot of BM/SV
         creators["kill shot"] = &HunterAiObjectContextInternal::kill_shot;
         creators["misdirection on main tank"] = &HunterAiObjectContextInternal::misdirection_on_main_tank;
         creators["silencing shot"] = &HunterAiObjectContextInternal::silencing_shot;
@@ -161,6 +186,7 @@ private:
     static Action* aspect_of_the_dragonhawk(PlayerbotAI* ai) { return new CastAspectOfTheDragonhawkAction(ai); }
     static Action* tranquilizing_shot(PlayerbotAI* ai) { return new CastTranquilizingShotAction(ai); }
     static Action* steady_shot(PlayerbotAI* ai) { return new CastSteadyShotAction(ai); }
+    static Action* cobra_shot(PlayerbotAI* ai) { return new CastCobraShotAction(ai); }
     static Action* kill_shot(PlayerbotAI* ai) { return new CastKillShotAction(ai); }
     static Action* misdirection_on_main_tank(PlayerbotAI* ai) { return new CastMisdirectionOnMainTankAction(ai); }
     static Action* silencing_shot(PlayerbotAI* ai) { return new CastSilencingShotAction(ai); }
@@ -169,8 +195,12 @@ private:
 
 HunterAiObjectContext::HunterAiObjectContext(PlayerbotAI* botAI) : AiObjectContext(botAI)
 {
-    //strategyContexts.Add(new HunterStrategyFactoryInternal());
-    //strategyContexts.Add(new HunterBuffStrategyFactoryInternal());
-    //actionContexts.Add(new HunterAiObjectContextInternal());
-    //triggerContexts.Add(new HunterTriggerFactoryInternal());
+    // upstream disabled the hunter AI ("crash", commit b3712fb) and left hunter bots without any class AI;
+    // re-enabled, the missing-value crash class is covered by the AiObjectContext::GetValue fallback
+    if (!sBotLife->HunterAiEnabled())   // BotLife.HunterAI (off until verified crash-free)
+        return;
+    strategyContexts.Add(new HunterStrategyFactoryInternal());
+    strategyContexts.Add(new HunterBuffStrategyFactoryInternal());
+    actionContexts.Add(new HunterAiObjectContextInternal());
+    triggerContexts.Add(new HunterTriggerFactoryInternal());
 }

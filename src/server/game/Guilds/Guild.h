@@ -19,6 +19,7 @@
 #define TRINITYCORE_GUILD_H
 
 #include "World.h"
+#include <mutex>
 #include "Item.h"
 #include "WorldPacket.h"
 #include "ObjectMgr.h"
@@ -925,6 +926,10 @@ public:
     void SaveChallengesToDB(CharacterDatabaseTransaction trans);
 
     inline uint8 GetPurchasedTabsSize() const { return uint8(m_bankTabs.size()); }
+    Item* GetBankItem(uint8 tabId, uint8 slotId) const;   // BotLife guild bankers
+    // BotLife bot guilds - rank and bank tab setup without an online guild master (world thread only)
+    void SetRankInfoSystem(uint32 rankIndex, std::string const& name, uint32 rights, uint32 moneyPerDay, GuildBankRightsAndSlotsVec const& rightsAndSlots);
+    void SetBankTabInfoSystem(uint8 tabId, std::string const& name, std::string const& icon);
 
     uint64 GetBankMoney() const { return m_bankMoney; }
 
@@ -951,6 +956,7 @@ protected:
     LogHolder* m_bankEventLog[GUILD_BANK_MAX_TABS + 1];
     LogHolder* m_newsLog;
     std::unique_ptr<GuildAchievementMgr> m_achievementMgr;
+    std::mutex _achievementLock;  // serialize guild criteria updates (many map threads, GuildAchievementMgr has no internal lock)
 
     uint8 _level;
     uint64 _experience;

@@ -9,6 +9,7 @@
 #include "FuryWarriorStrategy.h"
 #include "GenericWarriorNonCombatStrategy.h"
 #include "NamedObjectContext.h"
+#include "GenericTriggers.h"
 #include "Playerbots.h"
 #include "TankWarriorStrategy.h"
 #include "WarriorActions.h"

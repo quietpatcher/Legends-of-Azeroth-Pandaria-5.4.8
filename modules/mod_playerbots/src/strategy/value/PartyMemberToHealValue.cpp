@@ -42,6 +42,11 @@ Unit* PartyMemberToHeal::Calculate()
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
         Player* player = gref->GetSource();
+        // only inspect/heal a group member updated on our own map thread; a member in another instance
+        // runs on a different thread -> cross-thread read + heal/aura write = heap corruption (the WRITE-analog of the
+        // PartyMemberValue guard). Also null-safe before the IsGameMaster() deref below.
+        if (!player || !player->IsInWorld() || player->FindMap() != bot->FindMap())
+            continue;
         if (player->IsGameMaster())
             continue;
         if (player && player->IsAlive())
@@ -102,7 +107,7 @@ bool PartyMemberToHeal::Check(Unit* player)
     // return player && player != bot && player->GetMapId() == bot->GetMapId() && player->IsInWorld() &&
     //     sServerFacade->GetDistance2d(bot, player) < (player->IsPlayer() && botAI->IsTank((Player*)player) ? 50.0f
     //     : 40.0f);
-    return player->GetMapId() == bot->GetMapId() && !player->IsCharmed() &&
+    return player->FindMap() == bot->FindMap() && !player->IsCharmed() &&
         bot->GetDistance2d(player) < sPlayerbotAIConfig->healDistance * 2 && bot->IsWithinLOSInMap(player);
 }
 
