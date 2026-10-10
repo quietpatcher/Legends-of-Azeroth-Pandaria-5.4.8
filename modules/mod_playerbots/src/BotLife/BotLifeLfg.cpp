@@ -81,31 +81,37 @@ void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint3
     std::shuffle(bots.begin(), bots.end(), RandomEngine::Instance());
 
     uint32 joined = 0, tries = 0;
-    for (Player* bot : bots)
+    // bots of the player's own level first, the others within three levels fill what is left
+    for (uint32 pass = 0; pass < 2; ++pass)
     {
-        if ((!need[0] && !need[1] && !need[2]) || tries >= 40)
-            break;
-        if (!bot->IsInWorld() || !bot->IsAlive() || bot->GetGroup() || bot->InBattleground() || bot->InBattlegroundQueue()
-            || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetMap()->Instanceable() || bot->GetTeam() != player->GetTeam()
-            || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
-            continue;
-        if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
-            continue;
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI || botAI->HasRealPlayerMaster())
-            continue;
-        uint8 role = RoleOf(bot);
-        uint32 slot = role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2;
-        if (!need[slot])
-            continue;
-        ++tries;
-        lfg::LfgDungeonSet botDungeons = dungeonIds;
-        sLFGMgr->JoinLfg(bot, lfg::LfgRoles(role), botDungeons, "");
-        if (!WaitingQueue(bot->GetGUID()))
-            continue;   // locked out of these dungeons (level, item level, deserter)
-        --need[slot];
-        _lfgBots[bot->GetGUID()] = { player->GetGUID(), role, getMSTime() };
-        ++joined;
+        for (Player* bot : bots)
+        {
+            if ((!need[0] && !need[1] && !need[2]) || tries >= 40)
+                break;
+            if (!bot->IsInWorld() || !bot->IsAlive() || bot->GetGroup() || bot->InBattleground() || bot->InBattlegroundQueue()
+                || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetMap()->Instanceable() || bot->GetTeam() != player->GetTeam()
+                || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
+                continue;
+            if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
+                continue;
+            if ((pass == 0) != (bot->GetLevel() == player->GetLevel()))
+                continue;
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            if (!botAI || botAI->HasRealPlayerMaster())
+                continue;
+            uint8 role = RoleOf(bot);
+            uint32 slot = role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2;
+            if (!need[slot])
+                continue;
+            ++tries;
+            lfg::LfgDungeonSet botDungeons = dungeonIds;
+            sLFGMgr->JoinLfg(bot, lfg::LfgRoles(role), botDungeons, "");
+            if (!WaitingQueue(bot->GetGUID()))
+                continue;   // locked out of these dungeons (level, item level, deserter)
+            --need[slot];
+            _lfgBots[bot->GetGUID()] = { player->GetGUID(), role, getMSTime() };
+            ++joined;
+        }
     }
     if (joined)
     {
@@ -328,32 +334,38 @@ void BotLifeMgr::LfgUpdate(uint32 now)
         }
 
         uint32 tries = 0;
-        for (Player* bot : bots)
+        // bots of the player's own level first, the others within three levels fill what is left
+        for (uint32 pass = 0; pass < 2; ++pass)
         {
-            if ((!need[0] && !need[1] && !need[2]) || tries >= 40)
-                break;
-            if (!bot->IsInWorld() || !bot->IsAlive() || bot->GetGroup() || bot->InBattleground() || bot->InBattlegroundQueue()
-                || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetMap()->Instanceable() || bot->GetTeam() != player->GetTeam()
-                || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
-                continue;
-            if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
-                continue;
-            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-            if (!botAI || botAI->HasRealPlayerMaster())
-                continue;
-            uint8 role = RoleOf(bot);
-            uint32 slot = role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2;
-            if (!need[slot])
-                continue;
-            ++tries;
-            lfg::LfgDungeonSet botDungeons = dungeons;
-            sLFGMgr->JoinLfg(bot, lfg::LfgRoles(role), botDungeons, "");
-            if (!WaitingQueue(bot->GetGUID()))
-                continue;   // locked out of these dungeons (level, item level, deserter)
-            --need[slot];
-            _lfgBots[bot->GetGUID()] = { player->GetGUID(), role, now };
-            ++joinedTotal;
-            Count(BLC_LFG_BOT_QUEUED);
+            for (Player* bot : bots)
+            {
+                if ((!need[0] && !need[1] && !need[2]) || tries >= 40)
+                    break;
+                if (!bot->IsInWorld() || !bot->IsAlive() || bot->GetGroup() || bot->InBattleground() || bot->InBattlegroundQueue()
+                    || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetMap()->Instanceable() || bot->GetTeam() != player->GetTeam()
+                    || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
+                    continue;
+                if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
+                    continue;
+                if ((pass == 0) != (bot->GetLevel() == player->GetLevel()))
+                    continue;
+                PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+                if (!botAI || botAI->HasRealPlayerMaster())
+                    continue;
+                uint8 role = RoleOf(bot);
+                uint32 slot = role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2;
+                if (!need[slot])
+                    continue;
+                ++tries;
+                lfg::LfgDungeonSet botDungeons = dungeons;
+                sLFGMgr->JoinLfg(bot, lfg::LfgRoles(role), botDungeons, "");
+                if (!WaitingQueue(bot->GetGUID()))
+                    continue;   // locked out of these dungeons (level, item level, deserter)
+                --need[slot];
+                _lfgBots[bot->GetGUID()] = { player->GetGUID(), role, now };
+                ++joinedTotal;
+                Count(BLC_LFG_BOT_QUEUED);
+            }
         }
         if (need[0] || need[1] || need[2])
             Count(BLC_LFG_SHORT);
@@ -428,15 +440,34 @@ std::string BotLifeMgr::LfgTestQueue(uint32 dungeonId)
         pool[bot->GetTeam() == HORDE ? 1 : 0][role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2].push_back(bot);
     }
     int team = -1;
-    for (int t = 0; t < 2; ++t)
-        if (!pool[t][0].empty() && !pool[t][1].empty() && pool[t][2].size() >= 3 && (team < 0 || pool[t][2].size() > pool[team][2].size()))
-            team = t;
-    if (team < 0)
-        return "lfgtest: not enough idle bots of level " + std::to_string(dbc->minlevel) + "-" + std::to_string(dbc->maxlevel)
-            + " (tank, healer, 3 damage of one faction)";
-    Player* tank = pool[team][0][urand(0, pool[team][0].size() - 1)];
+    Player* tank = nullptr;
+    if (dbc->scenario)
+    {
+        // a scenario takes any role: start from any idle bot of the level, the queue fills the other two
+        std::vector<Player*> any[2];
+        for (int t = 0; t < 2; ++t)
+            for (int r = 0; r < 3; ++r)
+                any[t].insert(any[t].end(), pool[t][r].begin(), pool[t][r].end());
+        for (int t = 0; t < 2; ++t)
+            if (any[t].size() >= 3 && (team < 0 || any[t].size() > any[team].size()))
+                team = t;
+        if (team < 0)
+            return "lfgtest: not enough idle bots of level " + std::to_string(dbc->minlevel) + "-" + std::to_string(dbc->maxlevel)
+                + " for a scenario (3 of one faction, any role)";
+        tank = any[team][urand(0, any[team].size() - 1)];
+    }
+    else
+    {
+        for (int t = 0; t < 2; ++t)
+            if (!pool[t][0].empty() && !pool[t][1].empty() && pool[t][2].size() >= 3 && (team < 0 || pool[t][2].size() > pool[team][2].size()))
+                team = t;
+        if (team < 0)
+            return "lfgtest: not enough idle bots of level " + std::to_string(dbc->minlevel) + "-" + std::to_string(dbc->maxlevel)
+                + " (tank, healer, 3 damage of one faction)";
+        tank = pool[team][0][urand(0, pool[team][0].size() - 1)];
+    }
     lfg::LfgDungeonSet dungeons = { dungeonId };
-    sLFGMgr->JoinLfg(tank, lfg::LfgRoles(lfg::PLAYER_ROLE_TANK), dungeons, "");
+    sLFGMgr->JoinLfg(tank, lfg::LfgRoles(dbc->scenario ? lfg::PLAYER_ROLE_DAMAGE : lfg::PLAYER_ROLE_TANK), dungeons, "");
     uint32 const queueId = WaitingQueue(tank->GetGUID());
     if (!queueId)
         return "lfgtest: " + tank->GetName() + " could not join " + (dbc->name ? dbc->name : "") + " (locked: event not active, level or item level?)";

@@ -16,6 +16,8 @@
 */
 
 #include "ScriptMgr.h"
+#include "Vehicle.h"
+#include <unordered_map>
 #include "ScriptedCreature.h"
 #include "SpellScript.h"
 #include "TemporarySummon.h"
@@ -1652,8 +1654,16 @@ namespace Recruitment
         SPELL_SUMMON_DARNELL            = 91938,
         MAP_EASTERN_KINGDOMS            = 0,
         POINT_CORPSE                    = 1,
-        BACK_TO_FOLLOW_MS               = 7000
+        BACK_TO_FOLLOW_MS               = 7000,
+        // 
+        NPC_SCARLET_CORPSE              = 49340,
+        SPELL_RIDE_VEHICLE              = 46598,
+        ACTION_CARRIED                  = 1,
+        PICKUP_POLL_MS                  = 500,
+        PICKUP_TRIES                    = 30
     };
+    float const PickupRange = 3.0f;
+    float const LaggedBehind = 40.0f;
 
     // Deathknell, around the Scarlet camp
     Position const QuestArea = { 1880.0f, 1600.0f, 90.0f, 0.0f };
@@ -1700,7 +1710,125 @@ namespace Recruitment
         if (Creature* darnell = FindDarnell(player))
             darnell->DespawnOrUnsummon();
     }
+
+    // Darnell runs to the corpse and takes it on his back; the credit comes when he has it.
+    // Which corpse each Darnell is after: a later click takes over, the older run then stops quietly. (All of this is map 0.)
+    std::unordered_map<ObjectGuid, ObjectGuid> DarnellTarget;
+
+    void PickUp(Creature* darnell, ObjectGuid playerGuid, ObjectGuid corpseGuid, uint32 tries)
+    {
+        darnell->m_Events.AddLambdaEventAtOffset([darnell, playerGuid, corpseGuid, tries]
+        {
+            auto target = DarnellTarget.find(darnell->GetGUID());
+            if (target == DarnellTarget.end() || target->second != corpseGuid)
+                return;   // sent to another corpse in the meantime, or this run is done
+            Player* owner = ObjectAccessor::GetPlayer(*darnell, playerGuid);
+            Creature* corpse = ObjectAccessor::GetCreature(*darnell, corpseGuid);
+            bool const wanted = owner && corpse && corpse->IsAlive() && !corpse->GetVehicle()
+                && owner->GetQuestStatus(QUEST_RECRUITMENT) == QUEST_STATUS_INCOMPLETE;
+            if (wanted && darnell->GetExactDist(corpse) > PickupRange && tries < PICKUP_TRIES)
+            {
+                PickUp(darnell, playerGuid, corpseGuid, tries + 1);   // still on his way
+                return;
+            }
+            DarnellTarget.erase(target);
+            if (wanted && darnell->GetExactDist(corpse) <= PickupRange)
+            {
+                // on his back, on the first free seat: his seats are not handed out to a passenger
+                // that asks for 'any seat' (46598 without a seat number)
+                int8 seat = -1;
+                if (Vehicle* kit = darnell->GetVehicleKit())
+                    for (int8 i = 0; i < 8 && seat < 0; ++i)
+                        if (kit->HasEmptySeat(i))
+                            seat = i;
+                if (seat >= 0)
+                    corpse->EnterVehicle(darnell, seat, true);
+                // diagnosis: did it get on?
+                ObjectGuid const diagCorpse = corpse->GetGUID();
+                int32 const diagSeat = seat;
+                darnell->m_Events.AddLambdaEventAtOffset([darnell, diagCorpse, diagSeat]
+                {
+                    Creature* c = ObjectAccessor::GetCreature(*darnell, diagCorpse);
+                    Vehicle* kit = darnell->GetVehicleKit();
+                    TC_LOG_INFO("playerbots", "DARNELLDIAG pickup: seat asked {} kit {} free seats {} corpse found {} alive {} on vehicle {} ride aura on Darnell {} corpse flags {:#x}",
+                        diagSeat, kit ? 1 : 0, kit ? uint32(kit->GetAvailableSeatCount()) : 0, c ? 1 : 0, c && c->IsAlive() ? 1 : 0,
+                        c && c->GetVehicle() ? 1 : 0, darnell->HasAura(SPELL_RIDE_VEHICLE) ? 1 : 0, c ? c->GetUInt32Value(UNIT_FIELD_FLAGS) : 0);
+                }, 1500);
+                owner->KilledMonsterCredit(NPC_SCARLET_CORPSE);
+                if (corpse->AI())
+                    corpse->AI()->DoAction(ACTION_CARRIED);
+            }
+            if (owner)
+                darnell->GetMotionMaster()->MoveFollow(owner, 2.0f, float(M_PI / 2));
+        }, PICKUP_POLL_MS);
+    }
+
+    void SendDarnell(Player* player, Creature* corpse)
+    {
+        if (player->GetQuestStatus(QUEST_RECRUITMENT) != QUEST_STATUS_INCOMPLETE || !corpse->IsAlive() || corpse->GetVehicle())
+            return;
+        EnsureDarnell(player);
+        Creature* darnell = FindDarnell(player);
+        if (!darnell)
+            return;
+        if (darnell->GetExactDist(player) > LaggedBehind)   // lost the player (a teleport): he would not make it in time
+            darnell->NearTeleportTo(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation());
+        bool const running = DarnellTarget.count(darnell->GetGUID()) && DarnellTarget[darnell->GetGUID()] == corpse->GetGUID();
+        DarnellTarget[darnell->GetGUID()] = corpse->GetGUID();
+        darnell->SetWalk(false);
+        darnell->GetMotionMaster()->MovePoint(POINT_CORPSE, corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ());
+        if (!running)
+            PickUp(darnell, player->GetGUID(), corpse->GetGUID(), 0);
+    }
 }
+
+// Scarlet Corpse (49340): a click sends the clicker's Darnell over. 
+struct npc_scarlet_corpse : public ScriptedAI
+{
+    npc_scarlet_corpse(Creature* c) : ScriptedAI(c) { }
+
+    bool m_carried = false;
+    uint32 m_check = 0;
+
+    void Reset() override
+    {
+        m_carried = false;
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void OnSpellClick(Unit* clicker, bool& /*result*/) override
+    {
+        if (Player* player = clicker ? clicker->ToPlayer() : nullptr)
+            Recruitment::SendDarnell(player, me);
+    }
+
+    void DoAction(int32 action) override
+    {
+        if (action == Recruitment::ACTION_CARRIED)
+        {
+            m_carried = true;
+            m_check = 3000;
+        }
+    }
+
+    void UpdateAI(const uint32 diff) override
+    {
+        // off Darnell's back again (he left at the hand-in, or it never got on): gone, and back where it lay after the respawn time
+        if (!m_carried)
+            return;
+        if (m_check > diff)
+        {
+            m_check -= diff;
+            return;
+        }
+        m_check = 2000;
+        if (!me->GetVehicle())
+        {
+            m_carried = false;
+            me->DespawnOrUnsummon();
+        }
+    }
+};
 
 // 91942 Select Scarlet Corpse
 class spell_recruitment_select_scarlet_corpse : public SpellScript
@@ -1709,26 +1837,15 @@ class spell_recruitment_select_scarlet_corpse : public SpellScript
 
     void HandleScript(SpellEffIndex /*effIndex*/)
     {
-        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
-        Creature* corpse = GetHitCreature();
-        if (!player || !corpse)
+        // npc_spellclick_spells lets the corpse cast this on the clicker; take it in either direction
+        Unit* caster = GetCaster();
+        Unit* hit = GetHitUnit();
+        if (!caster || !hit)
             return;
-
-        Recruitment::EnsureDarnell(player);
-        Creature* darnell = Recruitment::FindDarnell(player);
-        if (!darnell)
-            return;
-
-        darnell->SetWalk(false);
-        darnell->GetMotionMaster()->MovePoint(Recruitment::POINT_CORPSE, corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ());
-
-        // with the corpse on his back (or without, when somebody else took it) he follows the player again
-        ObjectGuid playerGuid = player->GetGUID();
-        darnell->m_Events.AddLambdaEventAtOffset([darnell, playerGuid]
-        {
-            if (Player* owner = ObjectAccessor::GetPlayer(*darnell, playerGuid))
-                darnell->GetMotionMaster()->MoveFollow(owner, 2.0f, float(M_PI / 2));
-        }, Recruitment::BACK_TO_FOLLOW_MS);
+        Player* player = caster->ToPlayer() ? caster->ToPlayer() : hit->ToPlayer();
+        Creature* corpse = caster->ToCreature() ? caster->ToCreature() : hit->ToCreature();
+        if (player && corpse && corpse->GetEntry() == Recruitment::NPC_SCARLET_CORPSE)
+            Recruitment::SendDarnell(player, corpse);
     }
 
     void Register() override
@@ -1794,6 +1911,7 @@ void AddSC_tirisfal_glades()
     new creature_script<npc_captured_vile_fin_minor_oracle>("npc_captured_vile_fin_minor_oracle");
     new creature_script<npc_sedrick_calston>("npc_sedrick_calston");
     new spell_script<spell_recruitment_select_scarlet_corpse>("spell_recruitment_select_scarlet_corpse");
+    new creature_script<npc_scarlet_corpse>("npc_scarlet_corpse");
     new quest_recruitment();
     new player_recruitment_darnell();
 }

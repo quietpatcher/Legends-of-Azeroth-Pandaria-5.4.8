@@ -3,6 +3,8 @@
  * Social behaviour (chat, emotes, guild events) lives in BotLifeSocial.cpp.
  */
 
+#include "Vehicle.h"
+#include "TemporarySummon.h"
 #include "BotLife.h"
 
 #include "Chat.h"
@@ -490,6 +492,44 @@ void BotLifeMgr::LoadCaches()
                 } while (result->NextRow());
             }
     }
+    // a creature the quest giver calls up when the quest is accepted (SmartAI 'quest accepted' -> a
+    // spell with a summon effect): it counts as standing at the start of its waypoint path, or at the giver (Swiftclaw 38002)
+    {
+        uint32 acceptSummons = 0;
+        if (QueryResult result = WorldDatabase.Query("SELECT entryorguid, action_param1 FROM smart_scripts WHERE source_type = 0 AND entryorguid > 0 "
+            "AND event_type = 19 AND action_type IN (11, 85, 86) AND action_param1 > 0"))
+        {
+            do
+            {
+                Field* f = result->Fetch();
+                auto giver = _creatureSpawns.find(uint32(f[0].GetInt32()));
+                SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(f[1].GetUInt32());
+                if (!spellInfo || giver == _creatureSpawns.end() || giver->second.empty())
+                    continue;
+                BotLifeSpawn const at = giver->second.front();   // (a copy: the map below may rehash)
+                for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                {
+                    if (spellInfo->Effects[e].Effect != SPELL_EFFECT_SUMMON || spellInfo->Effects[e].MiscValue <= 0)
+                        continue;
+                    uint32 const summoned = uint32(spellInfo->Effects[e].MiscValue);
+                    if (_creatureSpawns.count(summoned))
+                        continue;
+                    BotLifeSpawn s = at;
+                    s.entry = summoned;
+                    if (QueryResult wp = WorldDatabase.PQuery("SELECT position_x, position_y, position_z FROM waypoints WHERE entry = {} ORDER BY pointid LIMIT 1", summoned))
+                    {
+                        Field* w = wp->Fetch();
+                        s.x = w[0].GetFloat();
+                        s.y = w[1].GetFloat();
+                        s.z = w[2].GetFloat();
+                    }
+                    _creatureSpawns[summoned].push_back(s);
+                    ++acceptSummons;
+                }
+            } while (result->NextRow());
+        }
+        TC_LOG_INFO("playerbots", "BotLife: {} creatures a quest giver calls up at accept", acceptSummons);
+    }
     // batch 11o: items a click on a creature hands out: the click spell makes the item, itself or
     // through a spell it triggers
     _itemClickSources.clear();
@@ -531,6 +571,18 @@ void BotLifeMgr::LoadCaches()
                             chain.push_back(spellInfo->Effects[e].TriggerSpell);
                     }
         } while (result->NextRow());
+    }
+    // clicksummon: a click that calls up the creature dropping the quest item, scripted in C++ (not in the data):
+    // Grandma's Cat (14401) - a click on Chance (36459) brings Lucius the Cruel (36461), who carries Chance the Cat (49281)
+    {
+        static constexpr std::pair<uint32, uint32> kClickSummons[] = { { 49281, 36459 } };   // (item, creature to click)
+        for (auto const& cs : kClickSummons)
+            if (_creatureSpawns.count(cs.second))
+            {
+                auto& list = _itemClickSources[cs.first];
+                if (std::find(list.begin(), list.end(), cs.second) == list.end())
+                    list.push_back(cs.second);
+            }
     }
     TC_LOG_INFO("playerbots", "BotLife: {} quest items a click on a creature hands out", _itemClickSources.size());
     // batch 11z2: objects that hand an objective item out after a gossip (SmartAI on the object: gossip
@@ -1151,6 +1203,102 @@ void BotLifeMgr::LoadCaches()
                     spellHitCredits[f[1].GetUInt32()].emplace_back(uint32(f[0].GetInt32()), credit);
             } while (result->NextRow());
         }
+        // creatures whose script gives a kill credit at any point - the credit may come a few steps
+        // after the hit (Horrid Abomination: keg placed, a line of text, then the credit): creature -> its credits
+        std::unordered_map<uint32, std::set<uint32>> scriptCredits;
+        if (QueryResult result = WorldDatabase.Query("SELECT entryorguid, action_param1 FROM smart_scripts WHERE source_type = 0 AND entryorguid > 0 "
+            "AND action_type = 33 AND action_param1 > 0"))
+        {
+            do
+            {
+                Field* f = result->Fetch();
+                scriptCredits[uint32(f[0].GetInt32())].insert(f[1].GetUInt32());
+            } while (result->NextRow());
+        }
+        // ... and the kill credit spells its script casts (Swiftclaw: Raptor Lasso Credit)
+        if (QueryResult result = WorldDatabase.Query("SELECT entryorguid, action_param1 FROM smart_scripts WHERE source_type = 0 AND entryorguid > 0 "
+            "AND action_type IN (11, 85, 86) AND action_param1 > 0"))
+        {
+            do
+            {
+                Field* f = result->Fetch();
+                if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(f[1].GetUInt32()))
+                    for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                        if ((spellInfo->Effects[e].Effect == SPELL_EFFECT_KILL_CREDIT || spellInfo->Effects[e].Effect == SPELL_EFFECT_KILL_CREDIT2)
+                            && spellInfo->Effects[e].MiscValue > 0)
+                            scriptCredits[uint32(f[0].GetInt32())].insert(uint32(spellInfo->Effects[e].MiscValue));
+            } while (result->NextRow());
+        }
+        // a defence event the quest giver starts at 'quest accepted': what it summons (directly or in the
+        // action list it runs) stands at the giver, and when the giver's own script gives the credit of an objective of that quest,
+        // fighting the summoned creatures is a way to get it (It's Raid Night Every Night: Frostmane Raiders at Sergeant Flinthammer)
+        {
+            uint32 acceptEvents = 0;
+            if (QueryResult result = WorldDatabase.Query("SELECT s.entryorguid, s.event_param1, IF(s.action_type = 12, s.action_param1, l.action_param1) "
+                "FROM smart_scripts s LEFT JOIN smart_scripts l ON s.action_type = 80 AND l.source_type = 9 AND l.entryorguid = s.action_param1 "
+                "AND l.action_type = 12 WHERE s.source_type = 0 AND s.entryorguid > 0 AND s.event_type = 19 AND s.event_param1 > 0 "
+                "AND (s.action_type = 12 OR l.action_type = 12)"))
+            {
+                do
+                {
+                    Field* f = result->Fetch();
+                    uint32 const giver = uint32(f[0].GetInt32());
+                    uint32 const summoned = f[2].GetUInt32();
+                    Quest const* quest = sObjectMgr->GetQuestTemplate(f[1].GetUInt32());
+                    auto gs = _creatureSpawns.find(giver);
+                    auto sc = scriptCredits.find(giver);
+                    if (!summoned || !quest || gs == _creatureSpawns.end() || gs->second.empty() || sc == scriptCredits.end())
+                        continue;
+                    bool linked = false;
+                    for (QuestObjective const& obj : quest->GetObjectives())
+                    {
+                        if (obj.Type != QUEST_OBJECTIVE_MONSTER || !sc->second.count(uint32(obj.ObjectID)))
+                            continue;
+                        auto& list = _killCreditSources[uint32(obj.ObjectID)];
+                        if (std::find(list.begin(), list.end(), summoned) == list.end())
+                            list.push_back(summoned);
+                        linked = true;
+                    }
+                    if (!linked)
+                        continue;
+                    if (!_creatureSpawns.count(summoned))
+                    {
+                        BotLifeSpawn s = gs->second.front();
+                        s.entry = summoned;
+                        _creatureSpawns[summoned].push_back(s);
+                    }
+                    ++acceptEvents;
+                } while (result->NextRow());
+            }
+            TC_LOG_INFO("playerbots", "BotLife: {} creatures of defence events a quest giver starts at accept", acceptEvents);
+        }
+        // a kill credit for a text emote at the creature (Rams on the Lam: /whistle at a Stolen Ram)
+        if (QueryResult result = WorldDatabase.Query("SELECT entryorguid, event_param1, action_param1 FROM smart_scripts WHERE source_type = 0 AND entryorguid > 0 "
+            "AND event_type = 22 AND event_param1 > 0 AND action_type = 33 AND action_param1 > 0 AND target_type = 7"))
+        {
+            do
+            {
+                Field* f = result->Fetch();
+                uint32 const creature = uint32(f[0].GetInt32());
+                if (!_creatureSpawns.count(creature))
+                    continue;
+                BotLifeCreditSource src;
+                src.creature = creature;
+                src.emote = f[1].GetUInt32();
+                _creditSources[f[2].GetUInt32()].push_back(src);
+            } while (result->NextRow());
+        }
+        // a credit given to whoever comes into the creature's line of sight (SmartAI OOC LOS -> kill credit to the invoker)
+        _approachCredits.clear();
+        if (QueryResult result = WorldDatabase.Query("SELECT entryorguid, action_param1 FROM smart_scripts WHERE source_type = 0 AND entryorguid > 0 "
+            "AND event_type = 10 AND action_type = 33 AND action_param1 > 0 AND target_type = 7"))
+        {
+            do
+            {
+                Field* f = result->Fetch();
+                _approachCredits[f[1].GetUInt32()].push_back(uint32(f[0].GetInt32()));
+            } while (result->NextRow());
+        }
         // batch 11f: spells whose target has to be dead (condition 36 "alive", negated)
         std::set<uint32> corpseSpells;
         if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT SourceEntry FROM conditions "
@@ -1330,9 +1478,13 @@ void BotLifeMgr::LoadCaches()
                             if (st == spellTargets.end())
                                 continue;
                             for (uint32 entry : st->second)
-                                if (entry == use.hitCredit && _creatureSpawns.count(entry)
+                            {
+                                auto sc = scriptCredits.find(entry);   // (hitcreditchain) or its script gives the credit later
+                                bool const gives = entry == use.hitCredit || (sc != scriptCredits.end() && sc->second.count(use.hitCredit));
+                                if (gives && _creatureSpawns.count(entry)
                                     && std::find(use.creatures.begin(), use.creatures.end(), entry) == use.creatures.end())
                                     use.creatures.push_back(entry);
+                            }
                         }
                         if (!use.creatures.empty())
                         {
@@ -1412,6 +1564,7 @@ void BotLifeMgr::LoadCaches()
                     auto kc = _killCreditSources.find(obj.ObjectID);
                     if (kc != _killCreditSources.end())
                         targets.insert(targets.end(), kc->second.begin(), kc->second.end());
+                    bool anySpawned = false;
                     for (uint32 creature : targets)
                     {
                         if (!_creatureSpawns.count(creature))
@@ -1419,6 +1572,23 @@ void BotLifeMgr::LoadCaches()
                         auto& list = _creditSources[obj.ObjectID];
                         if (std::none_of(list.begin(), list.end(), [&](BotLifeCreditSource const& s) { return s.creature == creature && s.spell == spell; }))
                             list.push_back(BotLifeCreditSource{ creature, spell });
+                        added = true;
+                        anySpawned = true;
+                    }
+                    // itemcredit: the credit lands on the user itself (Keys to the Hot Rod: 48323), no creature to go
+                    // to: the item is used where the bot stands while the objective is open (the helper path of UseQuestItem)
+                    SpellInfo const* selfInfo = sSpellMgr->GetSpellInfo(spell);
+                    if (!anySpawned && selfInfo && !selfInfo->NeedsExplicitUnitTarget())
+                    {
+                        auto& uses = _questUse[quest->GetQuestId()];
+                        if (std::none_of(uses.begin(), uses.end(), [&](BotLifeQuestUse const& u) { return u.credit == uint32(obj.ObjectID) && u.item == proto->ItemId; }))
+                        {
+                            BotLifeQuestUse use;
+                            use.item = proto->ItemId;
+                            use.spell = spell;
+                            use.credit = obj.ObjectID;
+                            uses.push_back(use);
+                        }
                         added = true;
                     }
                 }
@@ -1770,6 +1940,8 @@ bool BotLifeMgr::RunPendingActions(PlayerbotAI* botAI)
     return acted;
 }
 
+bool QtIsHeld(uint32 guidLow);   // cs_playerbots.cpp: '.botlife qt hold'
+
 bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
 {
     if (!_enabled || !_loaded || !botAI)
@@ -1778,6 +1950,9 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     Player* bot = botAI->GetBot();
     if (!bot || !bot->IsInWorld() || !bot->GetSession())
         return false;
+
+    if (QtIsHeld(bot->GetGUID().GetCounter()))   // held still by a test: no plan, no strategy this tick
+        return true;
 
     if (!sRandomPlayerbotMgr->IsRandomBot(bot))
         return false;
@@ -1995,6 +2170,8 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
         t.deadSince = 0;
         if (bot->IsBeingTeleported())
             return false;
+        if (IsLfgTestBot(bot->GetGUID()) && _lfgTestDungeon.load() && ScenarioLeadTick(botAI, t, now))
+            return true;
         if (IsLfgTestBot(bot->GetGUID()) && _lfgTestDungeon.load() && LfgTestLeadTick(bot, t, now))
             return true;   // the holiday boss event of a dungeon finder test
         return DungeonLeaderUpdate(botAI, t, now);
@@ -2062,6 +2239,25 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     }
     t.deadSince = 0;
 
+    if (!bot->GetVehicle() && VehicleQuestMount(bot, t, now))
+        return false;
+    if (Unit* base = bot->GetVehicleBase())   // on a quest vehicle without the quest: climb off (after a minute of sitting there)
+        for (VehicleQuest const& q : VehicleQuests())
+            if ((q.mount || !q.visit.empty()) && base->GetEntry() == q.vehicleEntry && bot->GetQuestStatus(q.questId) != QUEST_STATUS_INCOMPLETE)
+            {
+                if (!t.vehicleCastAt)
+                    t.vehicleCastAt = now;
+                else if (now - t.vehicleCastAt > 60000)
+                {
+                    bot->ExitVehicle();
+                    t.vehicleCastAt = 0;
+                    if (IsWalker(bot))
+                        TC_LOG_INFO("playerbots", "WALK {}: climbs off {} ({}) - no quest for it", bot->GetName(), base->GetName(), base->GetEntry());
+                }
+                return false;
+            }
+    if (bot->GetVehicle() && VehicleQuestAction(bot, t, now))
+        return false;
     if (bot->IsBeingTeleported() || bot->IsInFlight() || bot->InBattleground() || bot->GetVehicle())
         return false;
 
@@ -3816,8 +4012,10 @@ bool BotLifeMgr::IsQuestSupported(Quest const* quest, char const** why)
             }
             // or an area trigger listed for this quest gives it
             if (!ok && !interactable(obj.ObjectID) && !HasQuestHelper(quest, obj.ObjectID)   // (batch 11j: a helper)
-                && !_questTriggers.count(quest->GetQuestId())
-                && quest->GetQuestId() != 14293 /* 8-10 vehiclewait: the horse ride completes it */)
+                && !_questTriggers.count(quest->GetQuestId()) && !ApproachCreditSpawned(obj.ObjectID)
+                && quest->GetQuestId() != 14293 /* 8-10 vehiclewait: the horse ride completes it */
+                && !DriveQuest(quest->GetQuestId()) /* (vehicledrive) followers brought to an NPC give it */
+                && !VisitQuest(quest->GetQuestId()) /* (acceptsummon) the vehicle ride past its creatures gives it */)
                 return no("credit creature that is not fought, talked to or hit by a known spell");
         }
         else if (obj.Type == QUEST_OBJECTIVE_LEARNSPELL)
@@ -3953,6 +4151,11 @@ bool BotLifeMgr::QuestDoable(Player* bot, Quest const* quest)
 {
     if (quest->GetQuestId() == 14293)   // 8-10 vehiclewait
         return true;
+    if (VehicleQuest const* dq = DriveQuest(quest->GetQuestId()))   // (vehicledrive) doable where its vehicle stands
+    {
+        BotLifeSpawn spot;
+        return NearestSpawn(bot, std::vector<uint32>{ dq->vehicleEntry }, false, spot, MAX_TRAVEL_DIST);
+    }
     WalkerAnyPhaseGuard const anyPhase(IsWalker(bot) && bot->GetQuestStatus(quest->GetQuestId()) == QUEST_STATUS_NONE);
     // batch 11z3: a group quest only for a bot in a group of at least the suggested size
     if (quest->GetQuestInfoID() == 1 || quest->GetSuggestedPlayers() > 1)
@@ -3980,6 +4183,8 @@ bool BotLifeMgr::QuestDoable(Player* bot, Quest const* quest)
                     creatures.push_back(src.creature);
             if (AddQuestHelperSpots(quest, obj.ObjectID, creatures, objects))   // (batch 11j)
                 anywhere = true;
+            if (auto ac = _approachCredits.find(obj.ObjectID); ac != _approachCredits.end())   // walk up to it
+                creatures.insert(creatures.end(), ac->second.begin(), ac->second.end());
             auto co = _creditObjects.find(obj.ObjectID);   // (batch 11l: an object to open)
             if (co != _creditObjects.end())
                 objects.insert(objects.end(), co->second.begin(), co->second.end());
@@ -4391,6 +4596,297 @@ bool BotLifeMgr::NearestSpawn(Player* bot, std::vector<uint32> const& entries, b
     return found;
 }
 
+// A quest that is played from a vehicle: the bot uses the vehicle ability on the quest creatures around it. The server scripts do
+// the rest (credit on spell hit, the ride itself). Returns true while the bot is on such a vehicle.
+// Quests played from a vehicle: the vehicle creature, its ability and the quest creatures to use it on. 'mount': the bot has to climb
+// on the vehicle itself (spell click); otherwise the quest script seats it.
+std::vector<BotLifeMgr::VehicleQuest> const& BotLifeMgr::VehicleQuests()
+{
+    static std::vector<VehicleQuest> const quests = {
+        { 14212, 35231, 67063, { 35229, 51277 }, 30.0f, false },   // Sacrifices: Throw Torch at the Bloodfang Stalkers from Crowley's Horse
+        { 14218, 35317, 67279, { 35229, 51277 }, 70.0f, true },    // By Blood and Ash: the Rebel Cannons at the cathedral
+        // The Hungry Ettin: on a Mountain Horse, rope in five others, bring them to Lorna Crowley
+        { 14416, 36540, 68903, { 36540 }, 100.0f, true, true, 36555, 5, 36457 },
+        // Rolling with my Homies: the keys call up the Hot Rod with the bot at the wheel; past the three homies
+        { 14071, 34840, 0, {}, 0.0f, false, false, 0, 0, 0, { 34890, 34892, 34954 }, 46856 },
+        // Young and Vicious: on Swiftclaw (the lasso seats the bot) to Notera at the raptor pens
+        { 24626, 38002, 0, {}, 0.0f, false, false, 0, 0, 0, { 38988 }, 0 },
+    };
+    return quests;
+}
+
+// a quest whose credits come while the bot steers a vehicle past creatures
+bool BotLifeMgr::VisitQuest(uint32 questId)
+{
+    for (VehicleQuest const& q : VehicleQuests())
+        if (q.questId == questId && !q.visit.empty())
+            return true;
+    return false;
+}
+
+// the quest of a vehicle the bot steers to a delivery NPC, or null
+BotLifeMgr::VehicleQuest const* BotLifeMgr::DriveQuest(uint32 questId)
+{
+    for (VehicleQuest const& q : VehicleQuests())
+        if (q.questId == questId && q.deliverEntry)
+            return &q;
+    return nullptr;
+}
+
+// The bot climbs on the vehicle of its vehicle quest (a free seat within 80 yards). True while it is busy with that.
+bool BotLifeMgr::VehicleQuestMount(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    if (!bot->IsAlive())
+        return false;
+    for (VehicleQuest const& q : VehicleQuests())
+    {
+        // not on the vehicle any more: its item calls it up again (not while the item's own objective is
+        // still open - the quest item step uses it then)
+        if (q.summonItem && bot->GetQuestStatus(q.questId) == QUEST_STATUS_INCOMPLETE)
+        {
+            if (now - t.vehicleCastAt < 4000)
+                return true;   // the cast
+            Quest const* quest = sObjectMgr->GetQuestTemplate(q.questId);
+            bool first = true;
+            if (quest)
+                for (QuestObjective const& obj : quest->GetObjectives())
+                {
+                    first = !bot->IsQuestObjectiveComplete(quest, obj);
+                    break;
+                }
+            Item* item = bot->GetItemByEntry(q.summonItem);
+            if (!item || first || bot->IsInCombat() || now - t.vehicleCastAt < 15000)
+                continue;
+            bot->StopMoving();
+            SpellCastTargets targets;
+            bot->CastItemUseSpell(item, targets, 0, 0);
+            t.vehicleCastAt = now;
+            if (IsWalker(bot))
+                TC_LOG_INFO("playerbots", "WALK {} quest {}: calls up its vehicle with item {}", bot->GetName(), q.questId, q.summonItem);
+            return true;
+        }
+        if (!q.mount || bot->GetQuestStatus(q.questId) != QUEST_STATUS_INCOMPLETE)
+            continue;
+        Creature* best = nullptr;
+        float bestDist = 80.0f;
+        std::list<Creature*> list;
+        bot->GetCreatureListWithEntryInGrid(list, q.vehicleEntry, 80.0f);
+        for (Creature* c : list)
+        {
+            Vehicle* kit = c->GetVehicleKit();
+            if (!c->IsAlive() || !kit || !kit->GetAvailableSeatCount() || bot->GetExactDist(c) >= bestDist)
+                continue;
+            if (q.gossipMount && !c->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP))   // (vehicledrive) somebody rides it
+                continue;
+            bestDist = bot->GetExactDist(c);
+            best = c;
+        }
+        if (!best)
+            return false;
+        if (bestDist > 4.0f)
+        {
+            if (bot->IsInCombat())   // (cannonfight) fight it out first; the climb itself is allowed in combat
+                return false;
+            if (!t.hasDest || t.destMap != bot->GetMapId() || std::fabs(t.destX - best->GetPositionX()) > 3.0f || std::fabs(t.destY - best->GetPositionY()) > 3.0f)
+                SetDest(t, bot->GetMapId(), best->GetPositionX(), best->GetPositionY(), best->GetPositionZ(), 3.0f);
+            Travel(bot, t, now);
+            return true;
+        }
+        if (now - t.vehicleCastAt < 3000)
+            return true;
+        bot->StopMoving();
+        if (q.gossipMount)   // (vehicledrive) the script behind the gossip seats the bot
+        {
+            if (!sScriptMgr->OnGossipHello(bot, best))
+                best->AI()->OnGossipHello(bot);
+        }
+        else
+            best->HandleSpellClick(bot);
+        t.vehicleCastAt = now;
+        if (IsWalker(bot))
+            TC_LOG_INFO("playerbots", "WALK {} quest {}: climbs on {} ({})", bot->GetName(), q.questId, best->GetName(), best->GetEntry());
+        return true;
+    }
+    return false;
+}
+
+bool BotLifeMgr::VehicleQuestAction(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    Unit* base = bot->GetVehicleBase();
+    if (!base || base->GetTypeId() != TYPEID_UNIT)
+        return false;
+    std::vector<VehicleQuest> const& quests = VehicleQuests();
+    for (VehicleQuest const& q : quests)
+    {
+        if (base->GetEntry() != q.vehicleEntry || bot->GetQuestStatus(q.questId) != QUEST_STATUS_INCOMPLETE)
+            continue;
+        if (q.deliverEntry)   // (vehicledrive) the bot steers this one itself
+            return VehicleDrive(bot, t, base, q, now);
+        if (!q.visit.empty())   // (vehiclevisit) past the creatures of the quest
+            return VehicleVisit(bot, t, base, q, now);
+        if (now - t.vehicleCastAt < 3000)
+            return true;
+        Creature* best = nullptr; float bestDist = q.range;
+        for (uint32 entry : q.targets)
+            if (Creature* c = bot->FindNearestCreature(entry, q.range, true))
+                if (c->GetDistance(bot) < bestDist)
+                {
+                    best = c;
+                    bestDist = c->GetDistance(bot);
+                }
+        if (best)
+        {
+            base->CastSpell(best->GetPositionX(), best->GetPositionY(), best->GetPositionZ(), q.spellId, false);
+            t.vehicleCastAt = now;
+            if (IsWalker(bot))
+                TC_LOG_INFO("playerbots", "WALK {} quest {}: vehicle ability {} at {} ({:.0f} yd)", bot->GetName(), q.questId, q.spellId, best->GetName(), bestDist);
+        }
+        return true;
+    }
+    return false;
+}
+
+// The bot steers the vehicle past the creatures of the quest, one after the other; the scripts there do
+// the rest (Rolling with my Homies: the Hot Rod picks a homie up as soon as it is near him). True while the bot is busy with it.
+bool BotLifeMgr::VehicleVisit(Player* bot, BotLifeInfo& t, Unit* base, VehicleQuest const& q, uint32 now)
+{
+    if (t.vehicleVisitIdx >= q.visit.size())
+        t.vehicleVisitIdx = 0;
+    uint32 const entry = q.visit[t.vehicleVisitIdx];
+    BotLifeSpawn spot;
+    if (!NearestSpawn(bot, std::vector<uint32>{ entry }, false, spot, MAX_TRAVEL_DIST) || spot.map != bot->GetMapId())
+    {
+        ++t.vehicleVisitIdx;   // not in the world for this bot: the next one
+        return true;
+    }
+    if (base->GetExactDist(spot.x, spot.y, spot.z) > 5.0f)
+    {
+        if (now - t.vehicleMoveAt > 1500)
+        {
+            base->GetMotionMaster()->MovePoint(0, spot.x, spot.y, spot.z, true);
+            t.vehicleMoveAt = now;
+        }
+        std::string const text = "steers to " + std::to_string(entry);
+        if (IsWalker(bot) && text != t.scenarioNote)
+        {
+            t.scenarioNote = text;
+            TC_LOG_INFO("playerbots", "WALK {} quest {}: {} ({:.0f} yd)", bot->GetName(), q.questId, text, base->GetExactDist(spot.x, spot.y, spot.z));
+        }
+        t.vehicleArriveAt = 0;
+        return true;
+    }
+    base->StopMoving();
+    if (!t.vehicleArriveAt)
+    {
+        t.vehicleArriveAt = now;
+        if (IsWalker(bot))
+            TC_LOG_INFO("playerbots", "WALK {} quest {}: vehicle stands at {}", bot->GetName(), q.questId, entry);
+    }
+    else if (now - t.vehicleArriveAt > 4000)   // the script there has had its moment
+    {
+        ++t.vehicleVisitIdx;
+        t.vehicleArriveAt = 0;
+    }
+    return true;
+}
+
+// The bot steers the vehicle itself - it has no client to do that, so the vehicle creature gets the move
+// orders (as the playerbot engine does). With the ability it ropes in followers from the creatures around it, then brings them to the
+// delivery NPC. The Hungry Ettin (14416): Mountain Horses to Lorna Crowley. True while the bot is busy with it.
+bool BotLifeMgr::VehicleDrive(Player* bot, BotLifeInfo& t, Unit* base, VehicleQuest const& q, uint32 now)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(q.questId);
+    if (!quest)
+        return true;
+    uint32 open = 0;
+    for (QuestObjective const& obj : quest->GetObjectives())
+        if (obj.Type == QUEST_OBJECTIVE_MONSTER && !bot->IsQuestObjectiveComplete(quest, obj))
+            open += uint32(std::max<int32>(0, int32(obj.Amount) - int32(bot->GetQuestObjectiveCounter(obj.ID))));
+    open = std::min<uint32>(open ? open : q.followerCount, q.followerCount);
+    // the followers roped in so far: they belong to the bot or to the vehicle it steers
+    uint32 followers = 0;
+    std::list<Creature*> mine;
+    bot->GetCreatureListWithEntryInGrid(mine, q.followerEntry, 80.0f);
+    for (Creature* c : mine)
+    {
+        if (!c->IsAlive())
+            continue;
+        ObjectGuid const summoner = c->ToTempSummon() ? c->ToTempSummon()->GetSummonerGUID() : ObjectGuid::Empty;
+        if (c->GetOwnerGUID() == bot->GetGUID() || c->GetOwnerGUID() == base->GetGUID() || summoner == bot->GetGUID() || summoner == base->GetGUID())
+            ++followers;
+    }
+    auto drive = [&](float x, float y, float z, float stop) -> bool   // true once the vehicle is there
+    {
+        if (base->GetExactDist(x, y, z) <= stop)
+        {
+            base->StopMoving();
+            return true;
+        }
+        if (now - t.vehicleMoveAt > 1500)
+        {
+            base->GetMotionMaster()->MovePoint(0, x, y, z, true);
+            t.vehicleMoveAt = now;
+        }
+        return false;
+    };
+    auto note = [&](std::string const& text)
+    {
+        if (!IsWalker(bot) || text == t.scenarioNote)   // one line per change of step
+            return;
+        t.scenarioNote = text;
+        TC_LOG_INFO("playerbots", "WALK {} quest {}: {} (followers {}/{})", bot->GetName(), q.questId, text, followers, open);
+    };
+    if (followers < open)
+    {
+        Creature* next = nullptr;
+        float nextDist = q.range;
+        for (uint32 entry : q.targets)
+        {
+            std::list<Creature*> list;
+            bot->GetCreatureListWithEntryInGrid(list, entry, q.range);
+            for (Creature* c : list)
+            {
+                if (c == base || !c->IsAlive() || c->GetExactDist(base) >= nextDist)
+                    continue;
+                if (Vehicle* kit = c->GetVehicleKit())
+                    if (kit->GetPassenger(0))
+                        continue;   // somebody rides it
+                nextDist = c->GetExactDist(base);
+                next = c;
+            }
+        }
+        if (!next)
+        {
+            note("no free creature to rope in, waits");
+            return true;
+        }
+        if (!drive(next->GetPositionX(), next->GetPositionY(), next->GetPositionZ(), 6.0f))
+        {
+            note("steers to " + next->GetName());
+            return true;
+        }
+        if (now - t.vehicleCastAt < 3000)
+            return true;
+        base->SetFacingToObject(next);
+        base->CastSpell(next, q.spellId, false);
+        t.vehicleCastAt = now;
+        t.scenarioNote.clear();
+        note("vehicle ability " + std::to_string(q.spellId) + " on " + next->GetName());
+        return true;
+    }
+    BotLifeSpawn spot;
+    if (!NearestSpawn(bot, std::vector<uint32>{ q.deliverEntry }, false, spot, MAX_TRAVEL_DIST) || spot.map != bot->GetMapId())
+    {
+        note("delivery NPC not found");
+        return true;
+    }
+    if (drive(spot.x, spot.y, spot.z, 3.0f))
+        note("stands at the delivery NPC");
+    else
+        note("steers to the delivery NPC");
+    return true;
+}
+
 // can the bot see this creature spawn? In the zone the bot is in the phases have to overlap.
 // Elsewhere on the map the bot gets its phase when it arrives: only the phase 1 spawns count there, as before.
 bool BotLifeMgr::SpawnInPhase(Player* bot, BotLifeSpawn const& spawn) const
@@ -4498,6 +4994,14 @@ bool BotLifeMgr::PickObjectiveDest(Player* bot, BotLifeInfo& t, Quest const* que
         t.questPoint = true;
         return true;
     };
+    if (VehicleQuest const* dq = DriveQuest(quest->GetQuestId()))   // (vehicledrive) to the vehicles; the mount step takes over there
+    {
+        BotLifeSpawn spot;
+        if (!NearestSpawn(bot, std::vector<uint32>{ dq->vehicleEntry }, false, spot, MAX_TRAVEL_DIST))
+            return false;
+        SetDest(t, spot.map, spot.x, spot.y, spot.z, 5.0f);
+        return true;
+    }
     if ((quest->GetObjectives().empty() && quest->GetQuestId() == 14154) || quest->GetQuestId() == 14293)   // 8-10 eventwait2 + vehiclewait: the server completes it, wait here
     {
         // 8-10 eventwait3
@@ -4566,6 +5070,8 @@ bool BotLifeMgr::PickObjectiveDest(Player* bot, BotLifeInfo& t, Quest const* que
                     creatures.push_back(src.creature);
             if (AddQuestHelperSpots(quest, obj.ObjectID, creatures, objects))   // (batch 11j)
                 anywhere = true;
+            if (auto ac = _approachCredits.find(obj.ObjectID); ac != _approachCredits.end())   // walk up to it
+                creatures.insert(creatures.end(), ac->second.begin(), ac->second.end());
             auto co = _creditObjects.find(obj.ObjectID);   // (batch 11l: an object to open)
             if (co != _creditObjects.end())
                 objects.insert(objects.end(), co->second.begin(), co->second.end());
@@ -4708,6 +5214,11 @@ bool BotLifeMgr::EngageQuestCreature(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     Quest const* quest = sObjectMgr->GetQuestTemplate(t.questId);
     if (!quest)
         return false;
+    // cannonfight: a quest played from a vehicle the bot climbs on is never fought on foot - the pack around the
+    // Rebel Cannons killed the bot before it could climb on (the vehicle step runs earlier in the tick)
+    for (VehicleQuest const& q : VehicleQuests())
+        if (q.mount && q.questId == quest->GetQuestId())
+            return false;
 
     Creature* target = t.questTarget.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*bot, t.questTarget);
     if (target && (!target->IsAlive() || target->IsInEvadeMode() || (target->HasLootRecipient() && !target->IsTappedBy(bot))))
@@ -5256,6 +5767,18 @@ bool BotLifeMgr::EquipQuestItem(Player* bot, BotLifeInfo& t, uint32 now)
 }
 
 // batch 11j: where the item that summons the helper of a credit is used; true when anywhere will do
+// A credit the bot gets by walking up to a creature (its script gives it on line of sight): is such a creature spawned?
+bool BotLifeMgr::ApproachCreditSpawned(uint32 credit) const
+{
+    auto ac = _approachCredits.find(credit);
+    if (ac == _approachCredits.end())
+        return false;
+    for (uint32 entry : ac->second)
+        if (_creatureSpawns.count(entry))
+            return true;
+    return false;
+}
+
 bool BotLifeMgr::AddQuestHelperSpots(Quest const* quest, uint32 credit, std::vector<uint32>& creatures, std::vector<uint32>& objects) const
 {
     auto qu = _questUse.find(quest->GetQuestId());
@@ -5740,7 +6263,14 @@ bool BotLifeMgr::InteractQuestCreature(PlayerbotAI* botAI, BotLifeInfo& t, uint3
             if (!src.spell)
             {
                 // a spell click NPC (a corpse to pick up, something to mount) is clicked, the rest is talked to
-                if (target->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+                if (src.emote)   // the text emote its script waits for
+                {
+                    if (CreatureAI* ai = target->AI())
+                        ai->ReceiveEmote(bot, src.emote);
+                    if (IsWalker(bot))
+                        TC_LOG_INFO("playerbots", "WALK {}: text emote {} at {} ({})", bot->GetName(), src.emote, target->GetName(), target->GetEntry());
+                }
+                else if (target->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
                 {
                     bot->TalkedToCreature(target->GetEntry(), target->GetGUID());
                     target->HandleSpellClick(bot);
@@ -6640,14 +7170,27 @@ bool BotLifeMgr::EnsureGear(PlayerbotAI* botAI)
         if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             ++worn;
     bool noSpec = bot->GetLevel() >= 10 && bot->GetSpecialization() == Specializations::SPEC_NONE;
+    // level 86 and up: armor that is far behind the level (the set of level 85 on a bot of 89) is
+    // replaced, also with natural progression - such a bot cannot do the content of its level
+    bool behind = false;
+    if (bot->GetLevel() >= 86 && worn)
+    {
+        uint32 sum = 0;
+        for (uint8 slot : armorSlots)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                sum += item->GetTemplate()->ItemLevel;
+        uint32 const average = sum / worn;
+        uint32 const wanted = bot->GetLevel() >= 90 ? 430 : RandomItemManager::MaxItemLevelForLevel(bot->GetLevel()) - 60;
+        behind = average < wanted;
+    }
     // 
-    if ((worn >= 5 || _naturalProgression) && !noSpec)
+    if ((worn >= 5 || _naturalProgression) && !noSpec && !behind)
         return false;
 
     BotFactory factory(bot, bot->GetLevel());
     if (noSpec)
         factory.InitTalentsTree(false);
-    if (worn < 5 && !_naturalProgression)
+    if ((worn < 5 && !_naturalProgression) || behind)
         factory.InitEquipment(true);
     botAI->ResetStrategies();
     Count(BLC_GEAR_FIX);
@@ -6956,11 +7499,28 @@ void BotLifeMgr::EquipBagUpgrades(Player* bot)
         }
         if (current && !BetterItem(bot, item, current))   // weighted stats (4-10: + random stats)
             continue;
-        if (_debug)
-            TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): equips {} (ilvl {}) over {}", bot->GetName(), uint32(bot->GetLevel()),
-                proto->Name1, proto->ItemLevel, current ? current->GetTemplate()->Name1 : "nothing");
-        bot->SwapItem(item->GetPos(), dest);
-        Count(BLC_GEAR_UPGRADE);
+        {
+            static std::mutex failedLock;
+            static std::unordered_set<ObjectGuid> failedSwaps;
+            {
+                std::lock_guard<std::mutex> guard(failedLock);
+                if (failedSwaps.count(item->GetGUID()))
+                    continue;
+            }
+            if (_debug)
+                TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): equips {} (ilvl {}) over {}", bot->GetName(), uint32(bot->GetLevel()),
+                    proto->Name1, proto->ItemLevel, current ? current->GetTemplate()->Name1 : "nothing");
+            bot->SwapItem(item->GetPos(), dest);
+            if (!item->IsEquipped())
+            {
+                std::lock_guard<std::mutex> guard(failedLock);
+                failedSwaps.insert(item->GetGUID());
+                TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): equip skipped after a failed swap of {} ({}) to slot {}", bot->GetName(), uint32(bot->GetLevel()),
+                    proto->Name1, proto->ItemId, uint32(dest & 255));
+                continue;
+            }
+            Count(BLC_GEAR_UPGRADE);
+        }
     }
 }
 

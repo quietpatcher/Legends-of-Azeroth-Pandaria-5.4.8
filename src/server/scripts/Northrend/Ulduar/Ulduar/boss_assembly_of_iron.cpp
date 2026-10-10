@@ -243,6 +243,18 @@ void RespawnEncounter(InstanceScript* instance, Creature* me)
 
 void ResetEncounter(InstanceScript* instance, Creature* me)
 {
+    // the evade of the other two runs their Reset(), which comes back here for the first boss while it
+    // still counts as in combat: endless recursion, stack overflow. One reset of the encounter at a time.
+    static thread_local bool resetting = false;
+    if (resetting)
+        return;
+    struct ResetGuard
+    {
+        explicit ResetGuard(bool& flag) : _flag(flag) { _flag = true; }
+        ~ResetGuard() { _flag = false; }
+        bool& _flag;
+    } guard(resetting);
+
     ObjectGuid steelbreaker = instance->GetGuidData(BOSS_STEELBREAKER);
     ObjectGuid brundir = instance->GetGuidData(BOSS_BRUNDIR);
     ObjectGuid molgeim = instance->GetGuidData(BOSS_MOLGEIM);

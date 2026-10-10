@@ -1236,7 +1236,7 @@ void Creature::SaveToDB(uint32 mapid, uint16 spawnMask, uint32 phaseMask)
     WorldDatabase.CommitTransaction(trans);
 }
 
-void Creature::SelectLevel(const CreatureTemplate* cinfo)
+void Creature::SelectLevel(const CreatureTemplate* cinfo, uint8 forcedLevel /*= 0*/)
 {
     uint8 dbminlevel = cinfo->minlevel;
     uint8 dbmaxlevel = cinfo->maxlevel;
@@ -1258,6 +1258,8 @@ void Creature::SelectLevel(const CreatureTemplate* cinfo)
     uint8 minlevel = std::min(dbmaxlevel, dbminlevel);
     uint8 maxlevel = std::max(dbmaxlevel, dbminlevel);
     uint8 level = minlevel == maxlevel ? minlevel : urand(minlevel, maxlevel);
+    if (forcedLevel)   // a script asks for a level, kept within the range of the creature
+        level = std::max(minlevel, std::min(maxlevel, forcedLevel));
     SetLevel(level);
     if (GetEntry() == 61716 || GetEntry() == 58998)
         TC_LOG_INFO("playerbots", "LEVELDIAG {} ({}) map {} difficulty {}: level {}", GetName(), GetEntry(), GetMapId(), uint32(GetMap()->GetDifficulty()), uint32(level));

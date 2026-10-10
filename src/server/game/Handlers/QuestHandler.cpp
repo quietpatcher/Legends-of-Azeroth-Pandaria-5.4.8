@@ -149,6 +149,8 @@ void WorldSession::HandleQuestgiverHelloOpcode(WorldPacket& recvData)
         creature->AI()->OnGossipHello(_player);
 }
 
+void CreditQuestOnAccept(Player* player, Quest const* quest);   // acceptcredit: , defined in Player.cpp
+
 void WorldSession::HandleQuestgiverAcceptQuestOpcode(WorldPacket& recvData)
 {
     ObjectGuid guid;
@@ -261,6 +263,7 @@ void WorldSession::HandleQuestgiverAcceptQuestOpcode(WorldPacket& recvData)
         if (_player->CanAddQuest(quest, true))
         {
             _player->AddQuest(quest, object);
+            CreditQuestOnAccept(_player, quest);   // acceptcredit: 
 
             if (quest->HasFlag(QUEST_FLAGS_PARTY_ACCEPT))
             {
@@ -294,12 +297,16 @@ void WorldSession::HandleQuestgiverAcceptQuestOpcode(WorldPacket& recvData)
             switch (object->GetTypeId())
             {
                 case TYPEID_UNIT:
+                    // the hook of the script class as well, as Player::AddQuestAndCheckCompletion does:
+                    // without it the accept scripts of the old kind (escorts, start zone events) never ran for a real player
+                    sScriptMgr->OnQuestAccept(_player, object->ToCreature(), quest);
                     object->ToCreature()->AI()->OnQuestAccept(_player, quest);
                     break;
                 case TYPEID_ITEM:
                 case TYPEID_CONTAINER:
                 {
                     Item* item = (Item*)object;
+                    sScriptMgr->OnQuestAccept(_player, item, quest);
 
                     // destroy not required for quest finish quest starting item
                     bool destroyItem = true;
@@ -340,6 +347,7 @@ void WorldSession::HandleQuestgiverAcceptQuestOpcode(WorldPacket& recvData)
                     break;
                 }
                 case TYPEID_GAMEOBJECT:
+                    sScriptMgr->OnQuestAccept(_player, object->ToGameObject(), quest);
                     object->ToGameObject()->AI()->OnQuestAccept(_player, quest);
                     break;
                 default:
@@ -660,6 +668,9 @@ void WorldSession::HandleQuestConfirmAccept(WorldPacket& recvData)
         if (_player->CanAddQuest(quest, true))
         {
             _player->AddQuest(quest, NULL);                // NULL, this prevent DB script from duplicate running
+            CreditQuestOnAccept(_player, quest);           // acceptcredit: a shared quest as well
+            if (_player->CanCompleteQuest(quest->GetQuestId()))
+                _player->CompleteQuest(quest->GetQuestId());
 
             if (quest->GetSrcSpell() > 0)
                 _player->CastSpell(_player, quest->GetSrcSpell(), true);

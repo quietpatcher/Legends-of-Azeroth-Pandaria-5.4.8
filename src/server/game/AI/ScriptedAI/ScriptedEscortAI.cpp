@@ -174,6 +174,27 @@ void EscortAI::InitializeAI()
 
 void EscortAI::JustAppeared()
 {
+    // The AI object survives a respawn and the state of the previous run with it: after one escort the
+    // NPC came back still "escorting" and never started again ("attempts to Start while already escorting"). The first call after
+    // creation does nothing: InitializeAI just ran, and a script may have started the escort of a fresh summon already.
+    static uint32 const STATE_ESCORT_APPEARED_ONCE = 0x100;
+    if (!HasEscortState(STATE_ESCORT_APPEARED_ONCE))
+    {
+        AddEscortState(STATE_ESCORT_APPEARED_ONCE);
+        return;
+    }
+
+    m_uiEscortState = STATE_ESCORT_APPEARED_ONCE;
+
+    if (!IsCombatMovementAllowed())
+        SetCombatMovement(true);
+
+    m_uiWPWaitTimer = 2500;
+
+    if (me->GetFaction() != me->GetCreatureTemplate()->faction)
+        me->RestoreFaction();
+
+    Reset();
 }
 
 void EscortAI::ReturnToLastPoint()

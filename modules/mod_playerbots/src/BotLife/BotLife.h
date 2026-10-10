@@ -63,6 +63,7 @@ struct BotLifeCreditSource
     bool fight = false;              // the credit comes while fighting it (at a health percentage)
     float visit = 0.0f;              // batch 11k: the credit comes for standing within this range
     bool click = false;              // batch 11o: a click on it hands out an item of the quest
+    uint32 emote = 0;                // the credit comes for this text emote at the creature
     bool follow = false;             // batch 11z: an escort - walk along with it (with visit)
 };
 
@@ -377,6 +378,19 @@ public:
     bool LfgTestLeadTick(Player* bot, BotLifeInfo& t, uint32 now);
     bool IsWalker(Player* bot) const;
     bool SpawnInPhase(Player* bot, BotLifeSpawn const& spawn) const;
+    bool ApproachCreditSpawned(uint32 credit) const;
+    // gossipMount: a gossip puts the bot on it; followerEntry/Count: the ability ropes in that many
+    // followers; deliverEntry: the NPC the bot then steers the vehicle to
+    struct VehicleQuest { uint32 questId; uint32 vehicleEntry; uint32 spellId; std::vector<uint32> targets; float range; bool mount;
+        bool gossipMount = false; uint32 followerEntry = 0; uint32 followerCount = 0; uint32 deliverEntry = 0;
+        std::vector<uint32> visit; uint32 summonItem = 0; };   // creatures to steer to; the item that calls the vehicle up
+    static std::vector<VehicleQuest> const& VehicleQuests();
+    static VehicleQuest const* DriveQuest(uint32 questId);
+    static bool VisitQuest(uint32 questId);
+    bool VehicleDrive(Player* bot, BotLifeInfo& t, Unit* base, VehicleQuest const& q, uint32 now);
+    bool VehicleVisit(Player* bot, BotLifeInfo& t, Unit* base, VehicleQuest const& q, uint32 now);
+    bool VehicleQuestMount(Player* bot, BotLifeInfo& t, uint32 now);
+    bool VehicleQuestAction(Player* bot, BotLifeInfo& t, uint32 now);
     bool WalkAllows(Player* bot, Quest const* quest) const;
     void WalkTick(Player* bot, BotLifeInfo& t, uint32 now);
     bool EnsureWeapon(Player* bot);
@@ -531,6 +545,7 @@ private:
     // targets outside the spawn list, sealed bosses, the state of a run at its end
     Creature* PickUnlistedTarget(Player* bot, BotLifeInfo& t, uint32 now, uint32 tickDelta);
     bool EngageUnlistedTarget(PlayerbotAI* botAI, BotLifeInfo& t, Creature* creature, uint32 now);
+    bool ScenarioLeadTick(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now);
     bool VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 diffBit, uint32 now, uint32 tickDelta);
     void LogRunEnd(BotLifeDungeon const& d, BotLifeParty const& party, Player* leader, char const* result);
     void SkipDungeonTarget(Player* bot, BotLifeInfo& t, char const* reason);
@@ -733,6 +748,7 @@ private:
     std::unordered_map<uint32, std::vector<uint32>> _spellTools;         // spell of a credit -> items that cast it on use (batch 11t)
     void AddToolDropSpots(Player* bot, uint32 credit, std::vector<uint32>& creatures) const;   // batch 11t
     bool EquipQuestItem(Player* bot, BotLifeInfo& t, uint32 now);                      // batch 11m
+    std::unordered_map<uint32, std::vector<uint32>> _approachCredits;   // credit -> creatures whose script gives it to whoever comes near
     std::unordered_map<uint32, std::vector<BotLifeSpawn>> _questTriggers;  // quest -> area triggers that give its explore credit
     std::unordered_map<uint32, std::vector<BotLifeCreditSource>> _creditSources;   // credit entry -> spawned creatures that give it (SmartAI)
     std::unordered_set<uint32> _gossipTalk;   // gossip NPCs where a talk can do something (options, SAI gossip, C++)

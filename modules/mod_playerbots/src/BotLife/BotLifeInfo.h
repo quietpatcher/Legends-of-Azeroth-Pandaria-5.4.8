@@ -111,6 +111,11 @@ struct BotLifeInfo
 
     // death
     uint32 deadSince = 0;
+    uint32 vehicleCastAt = 0;
+    uint32 vehicleVisitIdx = 0;      // which visit creature is next
+    uint32 vehicleArriveAt = 0;      // (vehiclevisit) when the vehicle reached it
+    uint32 vehicleMoveAt = 0;        // the last move order for a vehicle the bot steers
+    std::string scenarioNote;      // last scenario lead note (log throttling)   // last vehicle ability cast (vehicle quests)
     uint32 nextPotion = 0;
     uint32 nextSelfHeal = 0;
     std::unordered_map<uint32, std::pair<uint32, uint32>> deathsBy;   // creature entry -> (count, last ms)

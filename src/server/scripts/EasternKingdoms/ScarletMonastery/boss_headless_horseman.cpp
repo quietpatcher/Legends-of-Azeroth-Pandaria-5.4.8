@@ -44,6 +44,8 @@ enum Misc
     TYPE_STARTER_GUID           = 100,
 
     ACTION_SWITCH_PHASE         = 1,
+
+    POINT_FLAMING_HEAD          = 1,
 };
 
 enum Entries
@@ -52,6 +54,7 @@ enum Entries
     NPC_PULSING_PUMPKIN         = 23694,
     NPC_PUMPKIN_FIEND           = 23545,
     NPC_SIR_THOMAS              = 23904,
+    NPC_FLAMING_HEAD            = 69086,
 
     GO_PUMPKIN_SHRINE           = 186267,
     GO_LOOSELY_TURNED_SOIL      = 186314,
@@ -84,6 +87,13 @@ enum Spells
     SPELL_HEAD_LANDS                                 = 42400,
     //SPELL_CREATE_PUMPKIN_TREATS                      = 42754,
     SPELL_RHYME_BIG                                  = 42909,
+
+    // patch 5.4.0
+    SPELL_SUMMON_FLAMING_HEADS                       = 136387,
+    SPELL_FLAMING_HEAD_VISUALS                       = 136354,
+    SPELL_FLAMING_HEAD_EXPLODE                       = 136356,
+    SPELL_CONFLAGRATED_WEAPON                        = 136528,
+    SPELL_FIERY_CLEAVE                               = 136475,
 };
 
 std::vector<uint32> randomLaugh = { 11965, 11975, 11976 };
@@ -131,6 +141,9 @@ struct boss_headless_horseman : public ScriptedAI
         cleaveTimer = 3*IN_MILLISECONDS;
         summonTimer = 1*IN_MILLISECONDS;
         conflagTimer = 4*IN_MILLISECONDS;
+        weaponTimer = 12*IN_MILLISECONDS;
+        fieryCleaveTimer = 2*IN_MILLISECONDS;
+        headsTimer = 20*IN_MILLISECONDS;
 
         me->SummonGameObject(GO_PUMPKIN_SHRINE, 1099.74f, 612.901f, 2.16763f, 6.14356f, { 0, 0, 0.00518764f, -0.999987f }, 0);
         DoCast(me, SPELL_HEAD, true);
@@ -169,6 +182,9 @@ struct boss_headless_horseman : public ScriptedAI
     void JustSummoned(Creature* summon) override
     {
         _summons.Summon(summon);
+
+        if (summon->GetEntry() == NPC_FLAMING_HEAD)   // it has its own script and does not fight
+            return;
 
         if (summon->GetEntry() == NPC_PULSING_PUMPKIN)
         {
@@ -316,6 +332,43 @@ struct boss_headless_horseman : public ScriptedAI
         else
             cleaveTimer -= diff;
 
+        // patch 5.4.0: his weapon catches fire, Fiery Cleave as long as it burns, flaming heads
+        if (weaponTimer <= diff)
+        {
+            DoCast(me, SPELL_CONFLAGRATED_WEAPON, true);
+            weaponTimer = urand(25 * IN_MILLISECONDS, 30 * IN_MILLISECONDS);
+            fieryCleaveTimer = 2 * IN_MILLISECONDS;
+        }
+        else
+            weaponTimer -= diff;
+
+        if (me->HasAura(SPELL_CONFLAGRATED_WEAPON))
+        {
+            if (fieryCleaveTimer <= diff)
+            {
+                if (!me->HasUnitState(UNIT_STATE_CASTING))
+                {
+                    DoCastVictim(SPELL_FIERY_CLEAVE);
+                    fieryCleaveTimer = 5 * IN_MILLISECONDS;
+                }
+            }
+            else
+                fieryCleaveTimer -= diff;
+        }
+
+        if (headsTimer <= diff)
+        {
+            if (!me->HasUnitState(UNIT_STATE_CASTING))
+            {
+                DoCast(me, SPELL_SUMMON_FLAMING_HEADS);
+                for (uint32 tick = 1; tick <= 5; ++tick)   // the aura ticks every 400 ms for 2 s
+                    me->m_Events.Schedule(tick * 400, [this] { SummonFlamingHead(); });
+                headsTimer = urand(28 * IN_MILLISECONDS, 35 * IN_MILLISECONDS);
+            }
+        }
+        else
+            headsTimer -= diff;
+
         switch (phase)
         {
             case 2:
@@ -343,6 +396,23 @@ struct boss_headless_horseman : public ScriptedAI
         DoMeleeAttackIfReady();
     }
 
+    // one flaming head: it appears around him and moves toward somebody of the party
+    void SummonFlamingHead()
+    {
+        if (phase == 0 || phase > 3 || !me->IsAlive() || !me->IsInCombat() || me->HasAura(SPELL_BODY_REGEN))
+            return;
+        Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, 60.0f, true);
+        if (!target)
+            return;
+        Position const pos = me->GetNearPosition(frand(25.0f, 32.0f), frand(0.0f, float(2 * M_PI)));
+        if (Creature* head = me->SummonCreature(NPC_FLAMING_HEAD, pos, TEMPSUMMON_TIMED_DESPAWN, Milliseconds(15 * IN_MILLISECONDS)))
+        {
+            head->SetWalk(false);
+            head->SetSpeed(MOVE_RUN, 0.6f, true);
+            head->GetMotionMaster()->MovePoint(POINT_FLAMING_HEAD, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+        }
+    }
+
     void PlayerSay(uint32 sayText)
     {
         if (Player* player = ObjectAccessor::GetPlayer(*me, _starterGUID))
@@ -358,6 +428,9 @@ struct boss_headless_horseman : public ScriptedAI
         uint32 cleaveTimer;
         uint32 summonTimer;
         uint32 conflagTimer;
+        uint32 weaponTimer;
+        uint32 fieryCleaveTimer;
+        uint32 headsTimer;
         ObjectGuid _starterGUID;
 };
 
@@ -418,6 +491,52 @@ struct npc_horseman_head : public ScriptedAI
 private:
     uint8 _phase;
     bool _despawn;
+};
+
+// Flaming Head (69086): moves toward the party and bursts on the first player it touches. 
+struct npc_horseman_flaming_head : public ScriptedAI
+{
+    npc_horseman_flaming_head(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFaction(14);
+        me->SetLevel(92);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE);
+        DoCast(me, SPELL_FLAMING_HEAD_VISUALS, true);
+        _checkTimer = 1 * IN_MILLISECONDS;   // it appears first
+        _burst = false;
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type == POINT_MOTION_TYPE && id == POINT_FLAMING_HEAD && !_burst)
+            me->DespawnOrUnsummon(500);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_burst)
+            return;
+        if (_checkTimer > diff)
+        {
+            _checkTimer -= diff;
+            return;
+        }
+        _checkTimer = 250;   // the period of 136369 Flaming Head Periodic
+        if (me->SelectNearestPlayerNotGM(2.5f))
+        {
+            _burst = true;
+            me->StopMoving();
+            DoCast(me, SPELL_FLAMING_HEAD_EXPLODE, true);
+            me->DespawnOrUnsummon(500);
+        }
+    }
+
+    private:
+        uint32 _checkTimer = 0;
+        bool _burst = false;
 };
 
 class go_pumpkin_shrine : public GameObjectScript
@@ -498,6 +617,7 @@ void AddSC_boss_headless_horseman()
 {
     new creature_script<boss_headless_horseman>("boss_headless_horseman");
     new creature_script<npc_horseman_head>("npc_horseman_head");
+    new creature_script<npc_horseman_flaming_head>("npc_horseman_flaming_head");
     new go_pumpkin_shrine();
     new spell_script<spell_sprouting>("spell_sprouting");
 }

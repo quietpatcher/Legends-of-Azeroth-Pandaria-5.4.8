@@ -22,6 +22,7 @@
 #include "SharedDefines.h"
 #include "WorldStateBuilder.h"
 #include "ZoneScript.h"
+#include <mutex>
 
 class GameObject;
 
@@ -255,6 +256,7 @@ class OutdoorPvP : public ZoneScript
         OPvPCapturePointMap m_capturePoints;
 
         PlayerSet m_players[2];
+        mutable std::recursive_mutex m_playersLock;   // m_players is reached from several map threads
 
         uint32 m_TypeId;
 

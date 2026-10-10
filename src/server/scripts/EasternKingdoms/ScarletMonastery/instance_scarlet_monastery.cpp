@@ -111,6 +111,13 @@ class instance_scarlet_monastery : public InstanceMapScript
                                 creature->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_PACIFIED | UNIT_FLAG_IMMUNE_TO_PC);
                                 return;
                             }
+                            // the summoned inhabitants too (Zombified Corpses of the graveyard);
+                            // the Flaming Heads of the Horseman and whatever a player brought along stay
+                            if (creature->GetEntry() != 69086 && !creature->GetCharmerOrOwnerPlayerOrPlayerItself())
+                            {
+                                creature->DespawnOrUnsummon(1);
+                                return;
+                            }
                             break;
                     }
                 }

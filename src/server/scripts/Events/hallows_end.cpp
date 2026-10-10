@@ -15,6 +15,7 @@
 * with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "ObjectMgr.h"
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "Player.h"
@@ -833,6 +834,8 @@ struct npc_start_stink_bombs_away : public ScriptedAI
 
         player->CastSpell(player, stinkBombsAwaySummonBroom[team]);
         Creature* broom = GetClosestCreatureWithEntry(me, stinkBombsAwayBroom[team], 50.0f, true);
+        if (!broom)   // the summon failed: no flight, and no null pointer on the next line
+            return true;
         Creature* starter = broom->SummonCreature(me->GetEntry(), me->GetPosition(), TEMPSUMMON_TIMED_OR_DEAD_DESPAWN, 420000ms);
         ObjectGuid guid = player->GetGUID();
         if (broom && starter && guid)
@@ -1290,7 +1293,19 @@ class at_the_collectors_agent : public AreaTriggerScript
                             Position pos = trigger->ID == 6924 ? Position({ 1579.189f, 61.371f, 62.5377f, 6.26843f }) : Position({ -8496.792f, 758.109f, 72.758f, 2.210720f });
                             if (Creature* uvoid = sanath->SummonCreature(54114, pos, TEMPSUMMON_TIMED_OR_DEAD_DESPAWN, Milliseconds(MINUTE * 2 * IN_MILLISECONDS)))
                                 if (Player* player = ObjectAccessor::GetPlayer(*sanath, guid))
-                                    uvoid->Attack(player, true);
+                                {
+                                    // one level below the player it comes for (its range is 9-84; a
+                                    // random level from that range was trivial or unbeatable), and its AI starts the attack:
+                                    // Attack() alone left it standing where it appeared
+                                    CreatureTemplate const* info = uvoid->GetCreatureTemplate();
+                                    uvoid->SelectLevel(info, uint8(std::max<int32>(1, int32(player->GetLevel()) - 1)));
+                                    if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(uvoid->GetLevel(), info->unit_class))
+                                        uvoid->SetModifierValue(UNIT_MOD_ARMOR, BASE_VALUE, float(stats->GenerateArmor(info)));
+                                    uvoid->UpdateAllStats();
+                                    uvoid->SetFullHealth();
+                                    if (uvoid->AI())
+                                        uvoid->AI()->AttackStart(player);
+                                }
 
                         });
                         sanath->m_Events.Schedule(30000, [sanath]()

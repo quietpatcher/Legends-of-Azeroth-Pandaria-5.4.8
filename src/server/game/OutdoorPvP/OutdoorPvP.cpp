@@ -255,11 +255,13 @@ OutdoorPvP::~OutdoorPvP()
 
 void OutdoorPvP::HandlePlayerEnterZone(Player* player, uint32 /*zone*/)
 {
+    std::lock_guard<std::recursive_mutex> guard(m_playersLock);
     m_players[player->GetTeamId()].insert(player->GetGUID());
 }
 
 void OutdoorPvP::HandlePlayerLeaveZone(Player* player, uint32 /*zone*/)
 {
+    std::lock_guard<std::recursive_mutex> guard(m_playersLock);
     // inform the objectives of the leaving
     for (OPvPCapturePointMap::iterator itr = m_capturePoints.begin(); itr != m_capturePoints.end(); ++itr)
         itr->second->HandlePlayerLeave(player);
@@ -407,6 +409,7 @@ bool OPvPCapturePoint::Update(uint32 diff)
 
 void OutdoorPvP::SendUpdateWorldState(uint32 field, uint32 value)
 {
+    std::lock_guard<std::recursive_mutex> guard(m_playersLock);
     if (m_sendUpdate)
         for (int i = 0; i < 2; ++i)
             for (PlayerSet::iterator itr = m_players[i].begin(); itr != m_players[i].end(); ++itr)
@@ -580,6 +583,7 @@ bool OutdoorPvP::HandleAreaTrigger(Player* /*player*/, uint32 /*trigger*/, bool 
 
 void OutdoorPvP::BroadcastPacket(WorldPacket &data) const
 {
+    std::lock_guard<std::recursive_mutex> guard(m_playersLock);
     // This is faster than sWorld->SendZoneMessage
     for (uint32 team = 0; team < 2; ++team)
         for (PlayerSet::const_iterator itr = m_players[team].begin(); itr != m_players[team].end(); ++itr)
@@ -594,12 +598,14 @@ void OutdoorPvP::RegisterZone(uint32 zoneId)
 
 bool OutdoorPvP::HasPlayer(Player const* player) const
 {
+    std::lock_guard<std::recursive_mutex> guard(m_playersLock);
     PlayerSet const &plSet = m_players[player->GetTeamId()];
     return plSet.find(player->GetGUID()) != plSet.end();
 }
 
 void OutdoorPvP::TeamCastSpell(TeamId team, int32 spellId)
 {
+    std::lock_guard<std::recursive_mutex> guard(m_playersLock);
     if (spellId > 0)
     {
         for (PlayerSet::iterator itr = m_players[team].begin(); itr != m_players[team].end(); ++itr)

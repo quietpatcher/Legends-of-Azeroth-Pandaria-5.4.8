@@ -382,7 +382,7 @@ void BotLifeMgr::LoadDungeons()
         uint32 bit = 1u << d.difficulty;
         uint32 count = 0;
         for (BotLifeInstanceSpawn const& s : it->second)
-            if (!s.spawnMask || (s.spawnMask & bit))
+            if (s.spawnMask & bit)   // spawnMask 0 is never loaded by the core
             {
                 ++count;
                 if (s.boss)
@@ -687,11 +687,11 @@ bool BotLifeMgr::DungeonTargetValid(Player* bot, BotLifeInfo const& t, BotLifeIn
     creature = nullptr;
     if (t.dungeonSkip.count(s.spawnId))
         return false;
-    if (s.spawnMask && !(s.spawnMask & diffBit))
+    if (!(s.spawnMask & diffBit))   // spawnMask 0 is never loaded by the core
         return false;
     creature = SpawnCreature(bot->GetMap(), s.spawnId);
     if (!creature)
-        return true;   // grid not loaded yet: walk there
+        return bot->GetMap()->GetCreatureRespawnTime(s.spawnId) == 0;   // grid not loaded yet: walk there - unless it was killed and its respawn timer runs
     if (!creature->IsAlive() || creature->IsInEvadeMode())
         return false;
     if (creature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
@@ -807,7 +807,7 @@ BotLifeInstanceSpawn const* BotLifeMgr::PickKillGate(Player* bot, BotLifeInfo co
     {
         if (!gate.gateEntries.count(s.entry) || t.dungeonGateSkip.count(s.spawnId))
             continue;
-        if (s.spawnMask && !(s.spawnMask & diffBit))
+        if (!(s.spawnMask & diffBit))   // spawnMask 0 is never loaded by the core
             continue;
         Creature* c = SpawnCreature(map, s.spawnId);
         if (!c)
@@ -1349,7 +1349,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
         std::vector<std::tuple<float, BotLifeInstanceSpawn const*, Creature*>> candidates;
         for (BotLifeInstanceSpawn const& s : spawnsIt->second)
         {
-            if (s.boss && (!s.spawnMask || (s.spawnMask & diffBit)))
+            if (s.boss && (s.spawnMask & diffBit))   // spawnMask 0 is never loaded by the core
                 hasBoss = true;
             Creature* c = nullptr;
             if (!DungeonTargetValid(bot, t, s, diffBit, c))
@@ -1445,7 +1445,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             if (_debug || hasBoss)
                 for (BotLifeInstanceSpawn const& s : spawnsIt->second)
                 {
-                    if (!s.boss || (s.spawnMask && !(s.spawnMask & diffBit)))
+                    if (!s.boss || (!(s.spawnMask & diffBit)))
                         continue;
                     Creature* c = SpawnCreature(map, s.spawnId);
                     TC_LOG_INFO("playerbots", "BotLife {}: map {} boss spawn {} entry {} left: {}", bot->GetName(), map->GetId(), s.spawnId, s.entry,
@@ -1620,6 +1620,184 @@ Creature* BotLifeMgr::PickUnlistedTarget(Player* bot, BotLifeInfo& t, uint32 now
 }
 
 // walks to a creature and pulls it; false when it cannot be reached
+// A scenario played by the lead of a dungeon finder test group. A Brewing Storm (map 1005): three chapters that Brewmaster Blanche
+// starts from her gossip (actions 1001-1003), each one ends by the instance script (chapter data 0, 1, 2 == DONE). Chapter 1: the
+// storm sets kegs on fire - put them out (spell click) and fight the sauroks; chapter 2: follow Blanche on the road; chapter 3:
+// defend the refuge and kill Borokhula (the Boomer Brew Strike button when the script hands it out). True while the lead is busy.
+bool BotLifeMgr::ScenarioLeadTick(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
+{
+    Player* bot = botAI->GetBot();
+    if (bot->GetMapId() != 1005)
+        return false;
+    InstanceScript* script = bot->GetInstanceScript();
+    if (!script)
+        return false;
+    enum { NPC_BLANCHE = 58740, NPC_KEG = 58916, NPC_BOROKHULA = 58739, SPELL_KEG_ON_FIRE = 111995, SPELL_BREW_STRIKE_BUTTON = 115101 };
+    static uint32 const hostiles[] = { 58738, 58737, 71353, 58739 };
+    uint32 const chapter = script->GetData(0) != DONE ? 1 : script->GetData(1) != DONE ? 2 : script->GetData(2) != DONE ? 3 : 4;
+    auto note = [&](std::string const& text)
+    {
+        if (now - t.lastMoveOrder < 15000 && text == t.scenarioNote)
+            return;
+        t.scenarioNote = text;
+        TC_LOG_INFO("playerbots", "SCENARIO {} (map 1005, chapter {}): {}", bot->GetName(), chapter, text);
+    };
+    if (!t.lfgTestAt)
+    {
+        t.lfgTestAt = now + 15000;   // the others come in
+        note("lead in");
+        return true;
+    }
+    if (chapter == 4)
+    {
+        if (t.lfgTestAt != UINT32_MAX)
+        {
+            t.lfgTestAt = UINT32_MAX;
+            note("all chapters done");
+        }
+        return false;
+    }
+    if (now < t.lfgTestAt)
+        return true;
+    // scenariokegs: chapter 1 only ends when the lightning keeps hitting kegs that do not burn (each hit fills the
+    // brew bar) and the saurok waves keep coming until then - so a burning keg goes before the fight, for the member nearest to it
+    if (chapter == 1 && bot->IsInCombat() && bot->GetHealthPct() > 35.0f)
+    {
+        enum { SPELL_EXTINGUISHING = 111961 };
+        Creature* keg = nullptr;
+        float kegDist = 60.0f;
+        std::list<Creature*> kegs;
+        bot->GetCreatureListWithEntryInGrid(kegs, NPC_KEG, 60.0f);
+        for (Creature* k : kegs)
+            if (k->IsAlive() && k->HasAura(SPELL_KEG_ON_FIRE) && bot->GetExactDist(k) < kegDist)
+            {
+                kegDist = bot->GetExactDist(k);
+                keg = k;
+            }
+        bool mine = keg != nullptr;
+        if (keg)
+            if (Group* group = bot->GetGroup())
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                    if (Player* member = ref->GetSource())
+                    {
+                        if (member == bot || !member->IsAlive() || member->GetMapId() != bot->GetMapId() || member->GetHealthPct() <= 35.0f)
+                            continue;
+                        float const d = member->GetExactDist(keg);
+                        if (d < kegDist - 0.5f || (d <= kegDist + 0.5f && member->GetGUID().GetCounter() < bot->GetGUID().GetCounter()))
+                            mine = false;
+                    }
+        if (mine)
+        {
+            if (kegDist > 4.0f)
+            {
+                if (!t.hasDest || t.destMap != bot->GetMapId() || std::fabs(t.destX - keg->GetPositionX()) > 5.0f || std::fabs(t.destY - keg->GetPositionY()) > 5.0f)
+                    SetDest(t, bot->GetMapId(), keg->GetPositionX(), keg->GetPositionY(), keg->GetPositionZ(), 3.0f);
+                Travel(bot, t, now);
+                note("leaves the fight for a burning keg");
+                return true;
+            }
+            bot->StopMoving();
+            bot->CastSpell(keg, SPELL_EXTINGUISHING, true);
+            note("puts out a keg (in combat)");
+            t.lfgTestAt = now + 1500;
+            return true;
+        }
+    }
+    if (bot->IsInCombat())
+    {
+        t.lastCombat = now;
+        return false;   // the engine fights
+    }
+    if (bot->HasUnitState(UNIT_STATE_CASTING))
+        return true;
+    auto travelTo = [&](WorldObject* target, float arrive)
+    {
+        if (!t.hasDest || t.destMap != bot->GetMapId() || std::fabs(t.destX - target->GetPositionX()) > 5.0f || std::fabs(t.destY - target->GetPositionY()) > 5.0f)
+            SetDest(t, bot->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), arrive);
+        Travel(bot, t, now);
+    };
+    // a saurok (or Borokhula) in reach: fight
+    Creature* hostile = nullptr;
+    float bestDist = 35.0f;
+    for (uint32 entry : hostiles)
+        if (Creature* c = bot->FindNearestCreature(entry, 35.0f, true))
+            if (bot->IsValidAttackTarget(c) && bot->GetExactDist(c) < bestDist)
+            {
+                bestDist = bot->GetExactDist(c);
+                hostile = c;
+            }
+    if (hostile)
+    {
+        if (hostile->GetEntry() == NPC_BOROKHULA && bot->HasSpell(SPELL_BREW_STRIKE_BUTTON) && now - t.vehicleCastAt > 6000)
+        {
+            bot->CastSpell(hostile, SPELL_BREW_STRIKE_BUTTON, false);
+            t.vehicleCastAt = now;
+            note("Boomer Brew Strike on Borokhula");
+        }
+        note("engages " + hostile->GetName());
+        return EngageUnlistedTarget(botAI, t, hostile, now);
+    }
+    // chapter 1: a burning keg - put it out
+    if (chapter == 1)
+    {
+        Creature* keg = nullptr;
+        float kegDist = 60.0f;
+        std::list<Creature*> kegs;
+        bot->GetCreatureListWithEntryInGrid(kegs, NPC_KEG, 60.0f);
+        for (Creature* k : kegs)
+            if (k->IsAlive() && k->HasAura(SPELL_KEG_ON_FIRE) && bot->GetExactDist(k) < kegDist)
+            {
+                kegDist = bot->GetExactDist(k);
+                keg = k;
+            }
+        if (keg)
+        {
+            if (kegDist > 4.0f)
+            {
+                travelTo(keg, 3.0f);
+                note("walks to a burning keg");
+                return true;
+            }
+            bot->StopMoving();
+            keg->HandleSpellClick(bot);
+            note("puts out a keg");
+            t.lfgTestAt = now + 2500;
+            return true;
+        }
+    }
+    Creature* blanche = bot->FindNearestCreature(NPC_BLANCHE, 400.0f, true);
+    if (!blanche)
+    {
+        note("no Blanche within 400 yd");
+        t.lfgTestAt = now + 10000;
+        return true;
+    }
+    // Blanche offers the next chapter
+    if (blanche->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP))
+    {
+        if (bot->GetExactDist(blanche) > 6.0f)
+        {
+            travelTo(blanche, 4.0f);
+            note("walks to Blanche for chapter " + std::to_string(chapter));
+            return true;
+        }
+        bot->StopMoving();
+        bool const took = sScriptMgr->OnGossipSelect(bot, blanche, 1, 1000 + chapter);
+        note(std::string("starts chapter ") + std::to_string(chapter) + (took ? " (script took it)" : " (no script answer)"));
+        t.lfgTestAt = now + 5000;
+        return true;
+    }
+    // the chapter runs: stay with Blanche (chapter 2 is her road)
+    if (bot->GetExactDist(blanche) > (chapter == 2 ? 8.0f : 20.0f))
+    {
+        travelTo(blanche, chapter == 2 ? 5.0f : 12.0f);
+        note("follows Blanche");
+        return true;
+    }
+    note("waits with Blanche");
+    return true;
+}
+
 bool BotLifeMgr::EngageUnlistedTarget(PlayerbotAI* botAI, BotLifeInfo& t, Creature* creature, uint32 now)
 {
     Player* bot = botAI->GetBot();
@@ -1673,7 +1851,7 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
             return;
         for (BotLifeInstanceSpawn const& s : it->second)
         {
-            if (!s.boss || (s.spawnMask && !(s.spawnMask & diffBit)) || t.dungeonSealedVisited.count(s.spawnId))
+            if (!s.boss || (!(s.spawnMask & diffBit)) || t.dungeonSealedVisited.count(s.spawnId))
                 continue;
             if (t.dungeonSealedTarget && t.dungeonSealedTarget != s.spawnId)
                 continue;   // finish the one we are on our way to

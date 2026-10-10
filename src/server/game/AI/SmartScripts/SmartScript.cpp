@@ -334,7 +334,7 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                 if (IsPlayer(*itr))
                     if (Quest const* q = sObjectMgr->GetQuestTemplate(e.action.quest.quest))
                     {
-                        (*itr)->ToPlayer()->AddQuest(q, NULL);
+                        (*itr)->ToPlayer()->AddQuestAndCheckCompletion(q, nullptr);   // acceptcredit: no objectives = complete
                         TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_ADD_QUEST: Player guidLow {} add quest {}",
                             (*itr)->GetGUID().GetCounter(), e.action.quest.quest);
                     }

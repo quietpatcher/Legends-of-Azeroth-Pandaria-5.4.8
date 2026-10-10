@@ -16319,25 +16319,32 @@ bool Player::CanRewardQuest(Quest const* quest, uint32 rewardId, bool msg)
     return true;
 }
 
-void Player::AddQuestAndCheckCompletion(Quest const* quest, Object* questGiver)
+// acceptcredit: credits a quest gets the moment it is accepted. Called by every accept path - the quest giver window
+// of a real player (WorldSession::HandleQuestgiverAcceptQuestOpcode) calls AddQuest itself and skipped this until 9-10.
+// (A free function, declared where it is used: a new Player method would rebuild the whole core.)
+void CreditQuestOnAccept(Player* player, Quest const* quest)
 {
-    AddQuest(quest, questGiver);
-
     // "Level Up!" asks for a level 3 battle pet - credit it right away when the journal has one
     for (QuestObjective const& obj : quest->GetObjectives())
     {
         if (obj.Type != QUEST_OBJECTIVE_MONSTER || obj.ObjectID != 65876)
             continue;
-        for (BattlePet* pet : GetBattlePetMgr().BattlePets)
+        for (BattlePet* pet : player->GetBattlePetMgr().BattlePets)
         {
             if (pet && pet->GetLevel() >= 3)
             {
-                KilledMonsterCredit(65876);
+                player->KilledMonsterCredit(65876);
                 break;
             }
         }
         break;
     }
+}
+
+void Player::AddQuestAndCheckCompletion(Quest const* quest, Object* questGiver)
+{
+    AddQuest(quest, questGiver);
+    CreditQuestOnAccept(this, quest);
 
     bool brokenQuest = sObjectMgr->IsBrokenQuest(quest->GetQuestId());
 

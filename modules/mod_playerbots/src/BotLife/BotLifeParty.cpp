@@ -520,6 +520,34 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
     }
     if (anchor && combat && someoneMissing)
     {
+        // somebody is dead or outside and nobody inside fights any more (no victim, no attacker that can be
+        // fought): the combat state lingers. Clear it after 20 s so the dead get up at the anchor - no restart at the entrance and
+        // no wipe counted (a dead leader released outside left the rest standing for two minutes)
+        bool lingering = true;
+        for (Player* p : players)
+            if (p->IsAlive() && p->GetMapId() == d.map && (p->GetVictim() || HasFightableAttackerP(p) || (p->GetPet() && p->GetPet()->GetVictim())))
+                lingering = false;
+        static std::unordered_map<ObjectGuid::LowType, uint32> s_lingerSince;   // leader -> since
+        uint32& lingerSince = s_lingerSince[leader->GetGUID().GetCounter()];
+        if (!lingering)
+            lingerSince = 0;
+        else if (!lingerSince)
+            lingerSince = now;
+        else if (now - lingerSince > 20000)
+        {
+            lingerSince = 0;
+            uint32 cleared = 0;
+            for (Player* p : players)
+                if (p->IsAlive() && p->IsInCombat())
+                {
+                    QueueCombatStop(p);
+                    ++cleared;
+                }
+            party.stuckCombatSince = 0;
+            TC_LOG_INFO("playerbots", "BotLife: lingering combat in {} with members down (leader {}): cleared for {} - the dead get up, no wipe",
+                d.name, leader->GetName(), cleared);
+            return false;
+        }
         if (!party.stuckCombatSince)
             party.stuckCombatSince = now;
         else if (now - party.stuckCombatSince > 120000)
