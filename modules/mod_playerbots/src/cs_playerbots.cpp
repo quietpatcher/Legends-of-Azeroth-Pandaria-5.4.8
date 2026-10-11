@@ -28,6 +28,7 @@
 #include "PathGenerator.h"
 #include <set>
 #include "Player.h"
+#include "Bag.h"
 #include "GossipDef.h"
 #include "ChatPackets.h"
 #include "NPCPackets.h"
@@ -264,12 +265,20 @@ public:
             uint32 dungeon = 0;
             int const n = sscanf(args + 7, "%15s %u", sub, &dungeon);
             std::string result;
-            if (n >= 1 && !strcmp(sub, "status"))
+            char fillName[32] = {0};
+            uint32 fillDungeon = 0;
+            if (sscanf(args + 7, " fill %31s %u", fillName, &fillDungeon) == 2)
+            {
+                Player* lead = ObjectAccessor::FindPlayerByName(fillName);
+                result = lead && lead->GetSession() && lead->GetSession()->IsBot() ? sBotLife->LfgTestFill(lead, fillDungeon)
+                    : std::string("lfgtest fill: no such bot online: ") + fillName;
+            }
+            else if (n >= 1 && !strcmp(sub, "status"))
                 result = sBotLife->LfgTestStatus();
             else if (n == 2 && !strcmp(sub, "queue"))
                 result = sBotLife->LfgTestQueue(dungeon);
             else
-                result = "usage: .botlife lfgtest queue <dungeonId> | status";
+                result = "usage: .botlife lfgtest queue <dungeonId> | fill <bot> <dungeonId> | status";
             std::istringstream lines(result);
             for (std::string line; std::getline(lines, line);)
                 handler->SendSysMessage(line.c_str());
@@ -687,6 +696,26 @@ public:
                 handler->PSendSysMessage("qt: %s did text emote %u at %s (%u) at %.0f yd", name, emote, npc->GetName().c_str(), entry, dist);
                 return true;
             }
+            if (!strcmp(sub, "room"))   // free bag slots, the way BotLife makes room before a hand-in
+            {
+                uint32 slots = 8;
+                sscanf(rest, "%u", &slots);
+                auto freeSlots = [bot]
+                {
+                    uint32 n = 0;
+                    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                            ++n;
+                    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+                        if (Bag* bag = bot->GetBagByPos(bagSlot))
+                            n += bag->GetFreeSlots();
+                    return n;
+                };
+                uint32 const before = freeSlots();
+                sBotLife->TestMakeRoom(bot, slots);
+                handler->PSendSysMessage("qt: %s had %u free bag slots, has %u now (asked for %u)", name, before, freeSlots(), slots);
+                return true;
+            }
             if (!strcmp(sub, "give"))   // an item into the bags of the bot, as .additem does for a selected player
             {
                 uint32 itemId = 0, count = 1;
@@ -1006,7 +1035,7 @@ public:
                     uint32(path.GetPathType()), uint32(points.size()), length);
                 return true;
             }
-            handler->PSendSysMessage("usage: .botlife qt add|accept|take|handin|hello|reward|hold|offer|use|cast|open|give|kill|emote|trigger|click|item|battlepet|gossip|status|near|reset|path <bot> ...");
+            handler->PSendSysMessage("usage: .botlife qt add|accept|take|handin|hello|reward|hold|offer|use|cast|open|give|room|kill|emote|trigger|click|item|battlepet|gossip|status|near|reset|path <bot> ...");
             return true;
         }
         if (args && !strncmp(args, "pathprobe", 9))   // ".botlife pathprobe <map> <x> <y> <z>"

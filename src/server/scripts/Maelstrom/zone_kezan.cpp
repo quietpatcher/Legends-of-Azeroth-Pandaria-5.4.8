@@ -69,9 +69,11 @@ namespace RollingWithMyHomies
 
     Homie const Homies[] =
     {
-        { 34892, 34957, 66597, 66644, 73593, 1 },   // Ace,    invisibility type 7
-        { 34954, 34958, 66599, 66645, 73595, 2 },   // Gobber, invisibility type 8
-        { 34890, 34959, 66600, 66646, 73597, 3 },   // Izzy,   invisibility type 9
+        // the generic detection spells of the three types; 73593 / 73595 / 73597 belong to a quest on
+        // the Lost Isles and cannot be held on Kezan (area requirement), so nobody saw the homies
+        { 34892, 34957, 66597, 66644, 49416, 1 },   // Ace,    invisibility type 7
+        { 34954, 34958, 66599, 66645, 49417, 2 },   // Gobber, invisibility type 8
+        { 34890, 34959, 66600, 66646, 60922, 3 },   // Izzy,   invisibility type 9
     };
 
     Homie const* ByRider(uint32 entry)

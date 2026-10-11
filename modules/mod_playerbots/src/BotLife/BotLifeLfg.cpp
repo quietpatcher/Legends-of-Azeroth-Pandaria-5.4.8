@@ -81,6 +81,8 @@ void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint3
     std::shuffle(bots.begin(), bots.end(), RandomEngine::Instance());
 
     uint32 joined = 0, tries = 0;
+    // a holiday boss is fought at full strength: for those the level 90 bots come first
+    uint8 const firstLevel = (dungeonIds.count(285) || dungeonIds.count(287)) ? uint8(90) : player->GetLevel();
     // bots of the player's own level first, the others within three levels fill what is left
     for (uint32 pass = 0; pass < 2; ++pass)
     {
@@ -94,7 +96,7 @@ void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint3
                 continue;
             if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
                 continue;
-            if ((pass == 0) != (bot->GetLevel() == player->GetLevel()))
+            if ((pass == 0) != (bot->GetLevel() == firstLevel))
                 continue;
             PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
             if (!botAI || botAI->HasRealPlayerMaster())
@@ -334,6 +336,8 @@ void BotLifeMgr::LfgUpdate(uint32 now)
         }
 
         uint32 tries = 0;
+        // a holiday boss is fought at full strength: for those the level 90 bots come first
+        uint8 const firstLevel = (dungeons.count(285) || dungeons.count(287)) ? uint8(90) : player->GetLevel();
         // bots of the player's own level first, the others within three levels fill what is left
         for (uint32 pass = 0; pass < 2; ++pass)
         {
@@ -347,7 +351,7 @@ void BotLifeMgr::LfgUpdate(uint32 now)
                     continue;
                 if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
                     continue;
-                if ((pass == 0) != (bot->GetLevel() == player->GetLevel()))
+                if ((pass == 0) != (bot->GetLevel() == firstLevel))
                     continue;
                 PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
                 if (!botAI || botAI->HasRealPlayerMaster())
@@ -500,6 +504,13 @@ bool BotLifeMgr::LfgTestLeadTick(Player* bot, BotLifeInfo& t, uint32 now)
         return false;   // opened: the fight is the engine's
     if (!t.lfgTestAt)
     {
+        // a stand-in lead who takes over while the boss is fighting: the fight goes on, no new opening
+        if (Creature* boss = bot->FindNearestCreature(dungeon == 285 ? 23682 : 23872, 200.0f))
+            if (boss->IsInCombat() && !boss->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE))
+            {
+                t.lfgTestAt = UINT32_MAX;
+                return false;
+            }
         t.lfgTestAt = now + 20000;   // the others come in and catch up
         TC_LOG_INFO("playerbots", "LFGTEST {} leads in map {} instance {} at {:.0f} {:.0f} {:.0f}", bot->GetName(), bot->GetMapId(),
             bot->GetInstanceId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
@@ -619,6 +630,45 @@ bool BotLifeMgr::LfgTestLeadTick(Player* bot, BotLifeInfo& t, uint32 now)
         started ? "script took it" : "no script answer");
     t.lfgTestAt = UINT32_MAX;
     return true;
+}
+
+// the fill of a player's queue, run for a bot that stands in for the player
+std::string BotLifeMgr::LfgTestFill(Player* lead, uint32 dungeonId)
+{
+    if (!sLFGDungeonStore.LookupEntry(dungeonId))
+        return "lfgtest fill: no dungeon " + std::to_string(dungeonId);
+    if (lead->GetGroup() || WaitingQueue(lead->GetGUID()))
+        return "lfgtest fill: " + lead->GetName() + " is in a group or in the queue already";
+    lfg::LfgDungeonSet dungeons;
+    dungeons.insert(dungeonId);
+    sLFGMgr->JoinLfg(lead, lfg::LfgRoles(lfg::PLAYER_ROLE_DAMAGE), dungeons, "");
+    if (!WaitingQueue(lead->GetGUID()))
+        return "lfgtest fill: " + lead->GetName() + " could not queue for dungeon " + std::to_string(dungeonId) + " (level, lock)";
+    uint32 const queueId = sLFGMgr->GetActiveQueueId(lead->GetGUID());
+    std::set<uint32> ids;
+    ids.insert(dungeonId);
+    FillLfgRolesSync(lead, queueId, ids);
+    std::ostringstream out;
+    out << "lfgtest fill: " << lead->GetName() << " (level " << uint32(lead->GetLevel()) << ", damage) queued for dungeon " << dungeonId << "; taken:";
+    std::vector<ObjectGuid> taken;
+    for (auto const& lb : _lfgBots)
+        if (lb.second.player == lead->GetGUID())
+            taken.push_back(lb.first);
+    for (ObjectGuid const& guid : taken)
+    {
+        if (Player* bot = ObjectAccessor::FindConnectedPlayer(guid))
+        {
+            uint8 const role = _lfgBots[guid].role;
+            out << " " << (role == lfg::PLAYER_ROLE_TANK ? "tank " : role == lfg::PLAYER_ROLE_HEALER ? "healer " : "damage ")
+                << bot->GetName() << " " << uint32(bot->GetLevel());
+            sLFGMgr->LeaveLfg(guid, sLFGMgr->GetActiveQueueId(guid));
+        }
+        _lfgBots.erase(guid);
+    }
+    if (taken.empty())
+        out << " nobody";
+    sLFGMgr->LeaveLfg(lead->GetGUID(), queueId);
+    return out.str();
 }
 
 std::string BotLifeMgr::LfgTestStatus()

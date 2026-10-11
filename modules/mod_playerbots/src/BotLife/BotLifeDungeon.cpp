@@ -899,8 +899,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     if (bot->IsInCombat())
     {
         // in combat for 3 minutes without a victim and without a kill: say who attacks, skip them, clear it
-        static std::unordered_map<ObjectGuid::LowType, std::pair<uint32, uint32>> s_leadCombat;   // leader -> (kills seen, since)
-        auto& lc = s_leadCombat[bot->GetGUID().GetCounter()];
+        auto& lc = t.leadCombat;   // (kills seen, since), per leader
         if (bot->GetVictim() || lc.first != t.dungeonKills || !lc.second)
         {
             lc.first = t.dungeonKills;
@@ -934,8 +933,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     {
         // three minutes of "fighting" without a kill: the fight is stuck (unreachable mob,
         // a member chasing something it cannot hit) - stop it, skip that spawn and go on
-        static std::unordered_map<ObjectGuid::LowType, std::pair<uint32, uint32>> s_noKill;   // leader -> (kills seen, since)
-        auto& nk = s_noKill[bot->GetGUID().GetCounter()];
+        auto& nk = t.noKill;   // (kills seen, since), per leader
         if (nk.first != t.dungeonKills || !nk.second)
         {
             nk.first = t.dungeonKills;

@@ -30,6 +30,10 @@ EndContentData */
 #include "ScriptedCreature.h"
 #include "ScriptedEscortAI.h"
 #include "Player.h"
+#include "SpellInfo.h"
+#include "Vehicle.h"
+#include "ObjectAccessor.h"
+#include "MotionMaster.h"
 
 /*######
 ## npc_deathstalker_erland
@@ -216,8 +220,179 @@ private:
 ## AddSC
 ######*/
 
+/*######
+## Quest 26998: Iterating Upon Success
+######*/
+
+// Bat Handler Maggotbreath lends the player a Forsaken Bat (Summon Forsaken Bat, which seats the
+// player). The bat flies to the Dawning Isles and circles over the Vile Fin dens while the player throws Blight Concoction from
+// its action bar; Go Home (or four minutes in the air) brings it back to Forsaken High Command. The handler himself is the
+// credit "Bat requisitioned". The line of flight is a reconstruction over the places where the murlocs are spawned.
+enum IteratingUponSuccess
+{
+    NPC_BAT_HANDLER_MAGGOTBREATH    = 44825,
+    SPELL_BAT_GO_HOME               = 83594,
+
+    SAY_BAT_ELIMINATE               = 0,
+    SAY_BAT_RETURNING               = 1,
+
+    POINT_BAT_OUT                   = 1,
+    POINT_BAT_LOOP                  = 2,
+    POINT_BAT_HOME                  = 3,
+
+    BAT_OUTBOUND                    = 0,
+    BAT_OVER_THE_ISLES              = 1,
+    BAT_HOMEBOUND                   = 2,
+    BAT_LANDED                      = 3,
+
+    BAT_FLIGHT_TIME                 = 240 * IN_MILLISECONDS   // the summon lasts five minutes
+};
+
+static Position const BatWayOut[] =
+{
+    { 1400.0f, 950.0f, 72.0f, 0.0f }, { 1350.0f, 800.0f, 74.0f, 0.0f }, { 1290.0f, 600.0f, 70.0f, 0.0f },
+    { 1230.0f, 440.0f, 64.0f, 0.0f }, { 1200.0f, 360.0f, 60.0f, 0.0f }
+};
+
+static Position const BatOverTheIsles[] =
+{
+    { 1160.0f, 330.0f, 60.0f, 0.0f }, { 1110.0f, 250.0f, 60.0f, 0.0f }, { 1060.0f, 290.0f, 62.0f, 0.0f }, { 1000.0f, 170.0f, 64.0f, 0.0f },
+    { 920.0f, 170.0f, 64.0f, 0.0f }, { 850.0f, 90.0f, 60.0f, 0.0f }, { 800.0f, 130.0f, 62.0f, 0.0f }, { 800.0f, 210.0f, 64.0f, 0.0f },
+    { 750.0f, 240.0f, 68.0f, 0.0f }, { 740.0f, 290.0f, 62.0f, 0.0f }, { 830.0f, 200.0f, 60.0f, 0.0f }, { 960.0f, 190.0f, 64.0f, 0.0f },
+    { 1080.0f, 300.0f, 62.0f, 0.0f }, { 1190.0f, 390.0f, 60.0f, 0.0f }, { 1200.0f, 360.0f, 60.0f, 0.0f }
+};
+
+static Position const BatWayHome[] =
+{
+    { 1290.0f, 600.0f, 70.0f, 0.0f }, { 1350.0f, 800.0f, 74.0f, 0.0f }, { 1400.0f, 950.0f, 72.0f, 0.0f }, { 1421.0f, 1023.0f, 54.5f, 0.0f }
+};
+
+// Forsaken Bat 44821
+struct npc_silverpine_forsaken_bat : public ScriptedAI
+{
+    npc_silverpine_forsaken_bat(Creature* creature) : ScriptedAI(creature) { }
+
+    ObjectGuid playerGUID;
+    uint32 stage = BAT_OUTBOUND;
+    uint32 flown = 0;
+    bool started = false;
+
+    void InitializeAI() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        me->SetCanFly(true);
+        me->SetDisableGravity(true);
+        me->SetSpeed(MOVE_FLIGHT, 2.0f);
+    }
+
+    void Reset() override { }
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+    void OnCharmed(bool /*apply*/) override { }   // the rider sits on the control seat (for the action bar): this AI stays
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        Player* player = summoner->ToPlayer();
+        if (!player)
+            return;
+        playerGUID = player->GetGUID();
+        player->KilledMonsterCredit(NPC_BAT_HANDLER_MAGGOTBREATH);   // "Bat requisitioned from Bat Handler Maggotbreath"
+    }
+
+    Player* Rider() const
+    {
+        Vehicle* kit = me->GetVehicleKit();
+        Unit* rider = kit ? kit->GetPassenger(0) : nullptr;
+        return rider ? rider->ToPlayer() : nullptr;
+    }
+
+    template <size_t N>
+    void Fly(Position const (&way)[N], uint32 pointId)
+    {
+        std::vector<Position> path;
+        path.push_back(me->GetPosition());
+        path.insert(path.end(), way, way + N);
+        me->GetMotionMaster()->MoveSmoothPath(pointId, path.data(), path.size(), false, true);
+    }
+
+    void PassengerBoarded(Unit* who, int8 /*seatId*/, bool apply) override
+    {
+        Player* player = who->ToPlayer();
+        if (!player)
+            return;
+        if (!apply)
+        {
+            if (stage != BAT_LANDED)
+                me->DespawnOrUnsummon(1 * IN_MILLISECONDS);   // the rider is gone
+            return;
+        }
+        player->SetClientControl(me, false);   // the action bar, not the reins
+        if (!started)
+        {
+            started = true;
+            Fly(BatWayOut, POINT_BAT_OUT);
+        }
+    }
+
+    void GoHome()
+    {
+        if (stage == BAT_HOMEBOUND || stage == BAT_LANDED)
+            return;
+        stage = BAT_HOMEBOUND;
+        if (Player* player = Rider())
+            Talk(SAY_BAT_RETURNING, player);
+        Fly(BatWayHome, POINT_BAT_HOME);
+    }
+
+    void SpellHit(Unit* /*caster*/, SpellInfo const* spell) override
+    {
+        if (spell->Id == SPELL_BAT_GO_HOME)
+            GoHome();
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != EFFECT_MOTION_TYPE)
+            return;
+        switch (id)
+        {
+            case POINT_BAT_OUT:
+                if (stage != BAT_OUTBOUND)
+                    break;
+                stage = BAT_OVER_THE_ISLES;
+                if (Player* player = Rider())
+                    Talk(SAY_BAT_ELIMINATE, player);
+                Fly(BatOverTheIsles, POINT_BAT_LOOP);
+                break;
+            case POINT_BAT_LOOP:
+                if (stage == BAT_OVER_THE_ISLES)
+                    Fly(BatOverTheIsles, POINT_BAT_LOOP);   // round and round until Go Home
+                break;
+            case POINT_BAT_HOME:
+                stage = BAT_LANDED;
+                if (Player* player = Rider())
+                    player->ExitVehicle();
+                me->DespawnOrUnsummon(1 * IN_MILLISECONDS);
+                break;
+            default:
+                break;
+        }
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!started || stage == BAT_HOMEBOUND || stage == BAT_LANDED)
+            return;
+        flown += diff;
+        if (flown >= BAT_FLIGHT_TIME)
+            GoHome();
+    }
+};
+
 void AddSC_silverpine_forest()
 {
     new npc_deathstalker_erland();
     new creature_script<npc_fenwick_thatros>("npc_fenwick_thatros");
+    new creature_script<npc_silverpine_forsaken_bat>("npc_silverpine_forsaken_bat");
 }

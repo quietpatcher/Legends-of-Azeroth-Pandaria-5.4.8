@@ -3088,6 +3088,11 @@ void SpellMgr::LoadSpellInfoCorrections()
                 case 127253: // Lightning Sweep [Geodata Issue, pull throw all map]
                     spellInfo->Effects[EFFECT_1].MiscValue = 25;
                     break;
+                case 96792: // Face Smash of the Mor'shan caravan : the same spell under another id
+                case 65704: // Face Smash : the data aim at a 'nearby entry' at range 0, which finds nobody;
+                    // it lands on its caster (the guard: the spell is cast by the charmer) and spell_caravan_face_smash does the thump 
+                    spellInfo->Effects[EFFECT_0].TargetA = SpellImplicitTargetInfo(TARGET_UNIT_CASTER);
+                    break;
                 case 65580: // Snared Net
                     spellInfo->AttributesEx3 |= SPELL_ATTR3_NO_INITIAL_AGGRO;
                     spellInfo->Effects[EFFECT_1].Effect = 0;

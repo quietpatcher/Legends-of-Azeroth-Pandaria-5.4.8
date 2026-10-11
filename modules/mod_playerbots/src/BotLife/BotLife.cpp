@@ -46,6 +46,7 @@
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "Opcodes.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
@@ -1141,6 +1142,17 @@ void BotLifeMgr::LoadCaches()
                 list.push_back(BotLifeCreditSource{ summoner, 0, true });
     }
     TC_LOG_INFO("playerbots", "BotLife: {} creatures without a spawn that the death of another calls up", deathSummons.size());
+    // the caravan rides: the credit comes at the end of a ride that starts with a word to the caravan
+    // master (Halga Bloodeye, Rocco Whipshank). The ride is in a C++ script, so nothing in the data points at them.
+    // and the Mor'shan caravan: Rocco Whipshank at the Crossroads, Nagala Whipshank at Dreadmist camp
+    for (auto const& ride : { std::pair<uint32, uint32>{ 53613, 34258 }, std::pair<uint32, uint32>{ 65892, 34578 },
+                              std::pair<uint32, uint32>{ 52445, 52220 }, std::pair<uint32, uint32>{ 52303, 52220 },
+                              std::pair<uint32, uint32>{ 52505, 52207 }, std::pair<uint32, uint32>{ 52326, 52207 } })
+    {
+        auto& list = _creditSources[ride.first];
+        if (std::none_of(list.begin(), list.end(), [&](BotLifeCreditSource const& src) { return src.creature == ride.second; }))
+            list.push_back(BotLifeCreditSource{ ride.second, 0 });
+    }
     // credits a C++ script gives for a spell of the player himself (a racial: Gift of the Naaru on the
     // Draenei Survivors). Nothing in the data tells which spell, so a table does: tt_botlife_credit_hint.
     PlayerbotsDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS tt_botlife_credit_hint (credit INT UNSIGNED NOT NULL, creature INT UNSIGNED NOT NULL, "
@@ -1960,6 +1972,12 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     BotLifeInfo& t = botAI->life;
     uint32 now = getMSTime();
 
+    // on the seat of a caravan guard nothing else runs, whatever the bot is (a banker, a party
+    // member): any move of the bot logic would drive the seat off the kodo
+    if (Unit* seat = bot->GetVehicleBase())
+        if ((seat->GetEntry() == 34438 || seat->GetEntry() == 34582 || seat->GetEntry() == 52210 || seat->GetEntry() == 52314 || seat->GetEntry() == 44821) && RideCaravan(bot, t, now))
+            return true;
+
     if (_castDiagLeft.load(std::memory_order_relaxed) > 0 && bot->IsInCombat())
         CastDiag(botAI);
     if (_aggroDiagLeft.load(std::memory_order_relaxed) > 0 && bot->IsInCombat())
@@ -2106,6 +2124,7 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
         bool hasReal = false;
         Player* tank = nullptr;
         Player* first = nullptr;
+        Player* firstHealer = nullptr;
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
             Player* member = ref->GetSource();
@@ -2118,11 +2137,19 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             }
             if (!member->IsInWorld() || member->GetMap() != bot->GetMap())
                 continue;
-            if (!first || member->GetGUID() < first->GetGUID())
+            // the stand-in lead when the tank is not here: not the healer, who would stop healing to lead
+            if (member->GetRoleForGroup() == ROLES_HEALER)
+            {
+                if (!firstHealer || member->GetGUID() < firstHealer->GetGUID())
+                    firstHealer = member;
+            }
+            else if (!first || member->GetGUID() < first->GetGUID())
                 first = member;
             if (member->GetRoleForGroup() == ROLES_TANK && (!tank || member->GetGUID() < tank->GetGUID()))
                 tank = member;
         }
+        if (!first)
+            first = firstHealer;   // only healers here
         if (hasReal || IsLfgTestBot(bot->GetGUID()))
             lfgLeadBot = tank ? tank : first;
     }
@@ -2239,6 +2266,9 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     }
     t.deadSince = 0;
 
+    // a quest that is a ride on a caravan: on the kodo that was called, and shooting from the seat
+    if (RideCaravan(bot, t, now))
+        return true;   // no strategy this tick: the bot logic would drive the seat of the guard off the kodo
     if (!bot->GetVehicle() && VehicleQuestMount(bot, t, now))
         return false;
     if (Unit* base = bot->GetVehicleBase())   // on a quest vehicle without the quest: climb off (after a minute of sitting there)
@@ -2792,6 +2822,9 @@ void BotLifeMgr::DecideNext(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
                 SetDest(t, giver.map, giver.x, giver.y, giver.z, 4.0f);
                 return;
             }
+            // a walker with an empty log and no quest giver of its zones in reach is brought to one
+            if (IsWalker(bot) && !ActiveQuestCount(bot) && BringWalker(bot, t, now))
+                return;
         }
     }
 
@@ -4358,6 +4391,40 @@ bool BotLifeMgr::HasAvailableQuest(Player* bot, BotLifeInfo& t, uint32 entry, bo
     return false;
 }
 
+// a walker outside its quest zones: to a quest giver that has a quest of its zones for it
+bool BotLifeMgr::BringWalker(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    uint32& next = t.nextWalkBring;   // per bot: this runs on the map threads
+    if (next && now < next)
+        return false;
+    next = now + 10 * MINUTE * IN_MILLISECONDS;
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->IsBeingTeleported() || bot->GetGroup() || bot->GetMap()->Instanceable())
+        return false;
+
+    auto plain = [](BotLifeSpawn const& s) { return s.phaseId == 0 && s.phaseMask == 1; };
+    BotLifeSpawn const* best = nullptr;
+    for (auto const& mapGivers : _questGivers)
+    {
+        for (BotLifeSpawn const& s : mapGivers.second)
+        {
+            if (best && (plain(*best) || !plain(s)))
+                continue;   // an unphased spawn first: the phases of the bot are those of the place where it stands now
+            if (HasAvailableQuest(bot, t, s.entry, s.go))
+                best = &s;
+        }
+        if (best && plain(*best))
+            break;
+    }
+    if (!best)
+        return false;
+    TC_LOG_INFO("playerbots", "WALK {} lvl {}: no quest giver of its zones in reach (map {} zone {}), brought to {} {} on map {} at {} {} {}",
+        bot->GetName(), uint32(bot->GetLevel()), bot->GetMapId(), bot->GetZoneId(), best->go ? "object" : "creature", best->entry,
+        uint32(best->map), int32(best->x), int32(best->y), int32(best->z));
+    bot->TeleportTo(best->map, best->x, best->y, best->z + 0.5f, bot->GetOrientation());
+    SetState(bot, t, BotLifeState::IDLE, now, 0);
+    return true;
+}
+
 bool BotLifeMgr::FindQuestGiver(Player* bot, BotLifeInfo& t, BotLifeSpawn& out)
 {
     auto it = _questGivers.find(bot->GetMapId());
@@ -4938,6 +5005,96 @@ bool BotLifeMgr::StartEventCreature(Player* bot, BotLifeInfo& t, uint32 now)
     return false;
 }
 
+// The caravan rides of the Northern Barrens (13949, 13975). The word to the caravan master goes the
+// ordinary way (he is the source of the credit); this takes over from there: the bot climbs on the kodo that was called for it
+// and shoots at the raiders from the seat of the guard. True while the bot is busy with that.
+bool BotLifeMgr::RideCaravan(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    static constexpr uint32 kRides[][2] = { { 13949, 34430 }, { 13975, 34577 }, { 29109, 52209 }, { 29111, 52314 } };   // quest, kodo 
+    static constexpr uint32 kShoot = 65479;
+    if (!bot->IsAlive() || (bot->GetMapId() != 1 && bot->GetMapId() != 0))   // the bat flies on map 0
+        return false;
+    if (Unit* seat = bot->GetVehicleBase())
+    {
+        // on the Forsaken Bat of Iterating Upon Success: the concoction on the murlocs below, and home
+        // when the quest is complete (the bat goes home by itself after four minutes)
+        if (seat->GetEntry() == 44821 && bot->GetMapId() == 0)
+        {
+            if (now - t.vehicleCastAt < 2000)
+                return true;
+            t.vehicleCastAt = now;
+            if (bot->GetQuestStatus(26998) != QUEST_STATUS_INCOMPLETE)
+            {
+                seat->CastSpell(seat, 83594, false);   // Go Home
+                return true;
+            }
+            Creature* target = nullptr;
+            for (uint32 entry : { 1768u, 1908u, 46574u })   // Vile Fin Tidehunter, Vile Fin Oracle
+            {
+                std::list<Creature*> list;
+                seat->GetCreatureListWithEntryInGrid(list, entry, 70.0f);
+                for (Creature* c : list)
+                    if (c->IsAlive() && (!target || seat->GetExactDist(c) < seat->GetExactDist(target)))
+                        target = c;
+            }
+            if (target)
+                seat->CastSpell(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 83573, false);   // Blight Concoction
+            return true;
+        }
+        // Riding Shotgun, The Hotseat, Riding Shotgun of the Mor'shan caravan, the Master Caravan Kodo 
+        if (seat->GetEntry() != 34438 && seat->GetEntry() != 34582 && seat->GetEntry() != 52210 && seat->GetEntry() != 52314)
+            return false;
+        if (now - t.vehicleCastAt < 1500)
+            return true;
+        Creature* target = nullptr;
+        for (uint32 entry : { 34487u, 34594u, 52338u })   // Razormane Raider, Burning Blade Raider, Burning Blade Attacker
+        {
+            std::list<Creature*> list;
+            seat->GetCreatureListWithEntryInGrid(list, entry, 45.0f);
+            for (Creature* c : list)
+                if (c->IsAlive() && seat->IsValidAttackTarget(c) && (!target || seat->GetExactDist(c) < seat->GetExactDist(target)))
+                    target = c;
+        }
+        if (target)
+        {
+            seat->CastSpell(target, kShoot, false);
+            t.vehicleCastAt = now;
+        }
+        return true;
+    }
+    for (auto const& ride : kRides)
+    {
+        if (bot->GetQuestStatus(ride[0]) != QUEST_STATUS_INCOMPLETE)
+            continue;
+        std::list<Creature*> list;
+        bot->GetCreatureListWithEntryInGrid(list, ride[1], 60.0f);
+        Creature* kodo = nullptr;
+        for (Creature* c : list)
+        {
+            TempSummon* summon = c->ToTempSummon();
+            if (c->IsAlive() && summon && summon->GetSummonerGUID() == bot->GetGUID() && c->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+                kodo = c;
+        }
+        if (!kodo)
+            continue;
+        if (bot->GetExactDist(kodo) > 6.0f)
+        {
+            // a few steps from the caravan master: straight to it, the plan of the bot stays as it is
+            if (!bot->isMoving())
+                bot->GetMotionMaster()->MovePoint(0, kodo->GetPositionX(), kodo->GetPositionY(), kodo->GetPositionZ());
+            return true;
+        }
+        bot->StopMoving();
+        bot->SetFacingToObject(kodo);
+        if (IsWalker(bot))
+            TC_LOG_INFO("playerbots", "WALK {} quest {}: climbs on {} ({})", bot->GetName(), ride[0], kodo->GetName(), kodo->GetEntry());
+        kodo->HandleSpellClick(bot);
+        t.interactUntil = now + 3000;
+        return true;
+    }
+    return false;
+}
+
 // encounters whose course depends on a click the player has to make: (quest, spell-click creature).
 // 24814 An Ancient Enemy: the Fires of the Seas (38542) feed Zar'jira; stamping them out (spell click 73296) frees Vol'jin's friends.
 bool BotLifeMgr::ClickEventCreature(Player* bot, BotLifeInfo& t, uint32 now)
@@ -5335,8 +5492,7 @@ bool BotLifeMgr::EngageQuestCreature(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 // why is Zar'jira not chosen?
                 if (entry == 38306)
                 {
-                    static std::unordered_map<ObjectGuid::LowType, uint32> s_zjDiag;
-                    uint32& nextLog = s_zjDiag[bot->GetGUID().GetCounter()];
+                    uint32& nextLog = t.zjDiagNext;
                     if (now >= nextLog)
                     {
                         nextLog = now + 15000;
@@ -6796,16 +6952,77 @@ void BotLifeMgr::LootCorpse(Player* bot, Creature* creature, bool area)
     }
 }
 
+// loot containers without a lock in the bags (Hidden Stash, Plundered Treasure, clams) are opened
+// the way a player opens them: the session handler of the open packet, every loot slot, the money, release
+uint32 BotLifeMgr::OpenLootContainers(Player* bot, uint32 max)
+{
+    if (!bot->IsAlive() || bot->GetLootGUID())
+        return 0;
+    std::vector<Item*> containers;
+    auto consider = [&containers](Item* item)
+    {
+        if (!item)
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (proto && (proto->Flags & ITEM_FLAG_HAS_LOOT) && !proto->LockID && !item->HasFlag(ITEM_FIELD_DYNAMIC_FLAGS, ITEM_FLAG_WRAPPED))
+            containers.push_back(item);
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                consider(bag->GetItemByPos(uint8(slot)));
+
+    uint32 opened = 0;
+    for (Item* item : containers)
+    {
+        if (opened >= max)
+            break;
+        ObjectGuid const guid = item->GetGUID();
+        WorldPacket data(CMSG_OPEN_ITEM, 2);
+        data << uint8(item->GetBagSlot()) << uint8(item->GetSlot());
+        bot->GetSession()->HandleOpenItemOpcode(data);
+        if (bot->GetLootGUID() != guid)
+            continue;   // not opened (a condition of the item, no loot)
+        Loot* loot = &item->loot;
+        uint32 const slots = uint32(loot->items.size() + loot->quest_items.size());
+        for (uint32 slot = 0; slot < slots; ++slot)
+            bot->StoreLootItem(uint8(slot), loot);
+        if (loot->gold)
+        {
+            bot->ModifyMoney(int64(loot->gold), false);
+            loot->gold = 0;
+        }
+        bot->GetSession()->DoLootRelease(guid);   // an emptied container is gone after this
+        ++opened;
+    }
+    if (opened && _debug)
+        TC_LOG_INFO("playerbots", "BotLife {}: opened {} loot containers from its bags", bot->GetName(), opened);
+    return opened;
+}
+
 void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
 {
     // count free slots
-    uint32 freeSlots = 0;
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            ++freeSlots;
-    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
-        if (Bag* bag = bot->GetBagByPos(bagSlot))
-            freeSlots += bag->GetFreeSlots();
+    auto countFree = [bot]
+    {
+        uint32 n = 0;
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                ++n;
+        for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            if (Bag* bag = bot->GetBagByPos(bagSlot))
+                n += bag->GetFreeSlots();
+        return n;
+    };
+    uint32 freeSlots = countFree();
+    // what a loot container holds needs a slot before the container itself goes
+    if (freeSlots && OpenLootContainers(bot, 6))
+    {
+        EquipBagUpgrades(bot);   // what came out is put on at once
+        freeSlots = countFree();
+    }
     if (freeSlots >= minFree)
         return;
 
@@ -6839,6 +7056,83 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
                     consider(bagSlot, uint8(slot), bag->GetItemByPos(uint8(slot)));
     }
 
+    // still too full after the junk: sell what a player sells next. First wear what is better; the
+    // gear that is left in the bags after that is not an upgrade. Then recipes, then food and drink beyond the four best stacks.
+    if (freeSlots < minFree && !bot->IsInCombat())
+    {
+        EquipBagUpgrades(bot);
+        freeSlots = countFree();
+        std::set<uint32> needed;
+        for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            if (Quest const* quest = sObjectMgr->GetQuestTemplate(bot->GetQuestSlotQuestId(slot)))
+                if (quest->GetSrcItemId())
+                    needed.insert(quest->GetSrcItemId());
+        struct BagSlot { uint8 bag; uint8 slot; Item* item; };
+        auto collect = [bot]
+        {
+            std::vector<BagSlot> all;
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    all.push_back({ uint8(INVENTORY_SLOT_BAG_0), slot, item });
+            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+                if (Bag* bag = bot->GetBagByPos(bagSlot))
+                    for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                        if (Item* item = bag->GetItemByPos(uint8(slot)))
+                            all.push_back({ bagSlot, uint8(slot), item });
+            return all;
+        };
+        auto keeps = [&](ItemTemplate const* proto)
+        {
+            return !proto || !proto->SellPrice || proto->StartQuest || proto->Class == ITEM_CLASS_QUEST || proto->Class == ITEM_CLASS_KEY
+                || proto->Class == ITEM_CLASS_CONTAINER || (proto->Flags & ITEM_FLAG_HAS_LOOT) || proto->Quality > ITEM_QUALITY_RARE
+                || needed.count(proto->ItemId) || bot->HasQuestForItem(proto->ItemId);
+        };
+        auto sell = [&](BagSlot const& s)
+        {
+            money += uint64(s.item->GetTemplate()->SellPrice) * s.item->GetCount();
+            bot->DestroyItem(s.bag, s.slot, true);
+            ++freeSlots;
+        };
+        // gear that is not worn, then recipes
+        for (uint32 what = 0; what < 2 && freeSlots < minFree; ++what)
+            for (BagSlot const& s : collect())
+            {
+                if (freeSlots >= minFree)
+                    break;
+                ItemTemplate const* proto = s.item->GetTemplate();
+                if (keeps(proto))
+                    continue;
+                bool const gear = (proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON) && proto->Quality >= ITEM_QUALITY_UNCOMMON
+                    && proto->InventoryType != INVTYPE_NON_EQUIP && proto->InventoryType != INVTYPE_BAG;
+                if (what == 0 ? gear : proto->Class == ITEM_CLASS_RECIPE)
+                    sell(s);
+            }
+        // food and drink: the four best stacks stay
+        if (freeSlots < minFree)
+        {
+            std::vector<BagSlot> food;
+            for (BagSlot const& s : collect())
+            {
+                ItemTemplate const* proto = s.item->GetTemplate();
+                if (!keeps(proto) && proto->Class == ITEM_CLASS_CONSUMABLE && proto->SubClass == ITEM_SUBCLASS_FOOD_DRINK)
+                    food.push_back(s);
+            }
+            std::sort(food.begin(), food.end(), [](BagSlot const& a, BagSlot const& b)
+            {
+                return a.item->GetTemplate()->ItemLevel > b.item->GetTemplate()->ItemLevel;
+            });
+            for (size_t i = 4; i < food.size() && freeSlots < minFree; ++i)
+                sell(food[i]);
+        }
+    }
+
+    // the selling made room: open what is left of the loot containers
+    if (freeSlots && freeSlots < minFree && OpenLootContainers(bot, 6))
+    {
+        EquipBagUpgrades(bot);
+        freeSlots = countFree();
+    }
+
     // still too full. Spare bags are never sold above, and a walker has no town visit to
     // empty its bags: with 40 of 40 slots taken every quest reward was refused ("turn-in refused").
     if (freeSlots < minFree)
@@ -6854,7 +7148,13 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
             if (!item || freeSlots >= minFree)
                 return;
             ItemTemplate const* proto = item->GetTemplate();
-            if (!proto || proto->Class == ITEM_CLASS_QUEST || proto->Class == ITEM_CLASS_KEY || proto->StartQuest
+            // a loot container is there to be opened (it may hold better gear): it only goes when
+            // the bags are completely full, so that nothing it holds would fit - one of them, the slot it frees opens the others
+            bool const container = proto && (proto->Flags & ITEM_FLAG_HAS_LOOT) && !proto->LockID;
+            bool const lootContainer = container && freeSlots == 0;
+            if (container && !lootContainer)
+                return;
+            if (!proto || (proto->Class == ITEM_CLASS_QUEST && !lootContainer) || proto->Class == ITEM_CLASS_KEY || proto->StartQuest
                 || proto->ItemId == 6948 || provided.count(proto->ItemId) || bot->HasQuestForItem(proto->ItemId))
                 return;
             if (Bag* spare = item->ToBag())
@@ -6862,7 +7162,7 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
                 if (!spare->IsEmpty())
                     return;
             }
-            else if (!walker || proto->Quality > ITEM_QUALITY_UNCOMMON)
+            else if (!lootContainer && (!walker || proto->Quality > ITEM_QUALITY_UNCOMMON))
                 return;
             money += uint64(proto->SellPrice) * item->GetCount();
             bot->DestroyItem(bagSlot, slot, true);
@@ -6874,6 +7174,9 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
             if (Bag* bag = bot->GetBagByPos(bagSlot))
                 for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
                     lastResort(bagSlot, uint8(slot), bag->GetItemByPos(uint8(slot)));
+        // with the room that was made: open the loot containers that are left
+        if (countFree() && OpenLootContainers(bot, 6))
+            EquipBagUpgrades(bot);
     }
     if (money)
     {

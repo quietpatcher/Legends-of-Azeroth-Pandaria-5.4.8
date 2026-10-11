@@ -373,6 +373,8 @@ public:
     std::string WalkStatus();
     // dungeon finder test with five bots (holiday dungeons)
     std::string LfgTestQueue(uint32 dungeonId);
+    std::string LfgTestFill(Player* lead, uint32 dungeonId);
+    void TestMakeRoom(Player* bot, uint32 slots) { ManageBags(bot, slots); }   // for .botlife qt room
     std::string LfgTestStatus();
     bool IsLfgTestBot(ObjectGuid guid) const;
     bool LfgTestLeadTick(Player* bot, BotLifeInfo& t, uint32 now);
@@ -488,6 +490,7 @@ private:
     bool QuestDoable(Player* bot, Quest const* quest);
     uint32 ActiveQuestCount(Player* bot) const;
     bool FindQuestGiver(Player* bot, BotLifeInfo& t, BotLifeSpawn& out);
+    bool BringWalker(Player* bot, BotLifeInfo& t, uint32 now);
     bool HasAvailableQuest(Player* bot, BotLifeInfo& t, uint32 entry, bool go = false);
     uint32 AcceptQuests(Player* bot, Creature* npc, BotLifeInfo& t, uint32 now);
     bool FindQuestEnder(Player* bot, uint32 questId, BotLifeSpawn& out);
@@ -512,6 +515,7 @@ private:
     bool UseQuestItem(Player* bot, BotLifeInfo& t, uint32 now);                    // the item of the quest makes / completes
     bool UseCompanionItem(Player* bot, BotLifeInfo& t, uint32 now);   // 6-10 questcompanion2
     bool ClickEventCreature(Player* bot, BotLifeInfo& t, uint32 now);   // 8-10 eventclick
+    bool RideCaravan(Player* bot, BotLifeInfo& t, uint32 now);          // 11-10 caravan
     bool StartEventCreature(Player* bot, BotLifeInfo& t, uint32 now);   // 8-10 eventstart
     bool AddQuestUseSpots(Quest const* quest, uint32 makes, std::vector<uint32>& creatures, std::vector<uint32>& objects, Player* bot = nullptr) const;
     bool AddQuestHelperSpots(Quest const* quest, uint32 credit, std::vector<uint32>& creatures, std::vector<uint32>& objects) const;   // batch 11j
@@ -523,6 +527,7 @@ private:
     bool DoLoot(Player* bot, BotLifeInfo& t, uint32 now, float maxDist = 40.0f, uint32 maxTime = 20000);   // (batch 11g: reach / time)
     void LootCorpse(Player* bot, Creature* creature, bool area = true);   // (batch 11g: area loot as in MoP)
     void ManageBags(Player* bot, uint32 minFree = 4, bool sellMaterials = true);
+    uint32 OpenLootContainers(Player* bot, uint32 max);
     bool BagsFullOfMaterials(Player* bot) const;
     bool DoRest(Player* bot, BotLifeInfo& t, uint32 now);
 

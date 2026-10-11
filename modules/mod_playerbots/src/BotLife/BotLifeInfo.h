@@ -6,6 +6,7 @@
 #ifndef _BOTLIFE_INFO_H
 #define _BOTLIFE_INFO_H
 
+#include <utility>
 #include "Define.h"
 #include "ObjectGuid.h"
 
@@ -238,6 +239,11 @@ struct BotLifeInfo
     std::set<uint32> dungeonSkip;
     bool dungeonDone = false;
     uint32 dungeonKills = 0;
+    // these sat in function-static tables that every map thread wrote to without a lock
+    std::pair<uint32, uint32> leadCombat{0, 0};   // dungeon leader in combat without a victim: (kills seen, since)
+    std::pair<uint32, uint32> noKill{0, 0};       // dungeon leader fighting without a kill: (kills seen, since)
+    uint32 nextWalkBring = 0;                      // walker: the next try to bring it to a quest giver of its zones
+    uint32 zjDiagNext = 0;                         // diagnostics of the Zar'jira fight: the next log line
     uint32 dungeonBosses = 0;
 
     // kill-gate mobs, targets that are not in the spawn list, sealed bosses
