@@ -596,7 +596,9 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
 void Engine::LogAction(char const* format, ...)
 {
-    if (testMode)
+    // (lfg-heal-trace) also for a bot whose master is a real player: kept in memory only, read by the dungeon finder diagnostics
+    bool const traced = !testMode && botAI->HasRealPlayerMaster();
+    if (testMode || traced)
     {
         Player* bot = botAI->GetBot();
         //if (sPlayerbotAIConfig->logInGroupOnly && (!bot->GetGroup() || !botAI->HasRealPlayerMaster()) && !testMode)
@@ -618,6 +620,9 @@ void Engine::LogAction(char const* format, ...)
             lastAction = (pos == std::string::npos ? "" : lastAction.substr(pos));
         }
     
+        if (traced)
+            return;
+
         FILE* file = fopen("test.log", "a");
         fprintf(file, "'%s'", buf);
         fprintf(file, "\n");

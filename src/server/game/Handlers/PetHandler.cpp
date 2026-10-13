@@ -1369,6 +1369,10 @@ void WorldSession::HandlePetCastSpellOpcode(WorldPacket& recvPacket)
     targets.Initialize(targetFlags, targetGUID, itemGUID, transportDstGUID, dstLoc, transportSrcGUID, srcLoc);
     targets.SetElevation(elevation);
     targets.SetSpeed(missileSpeed);
+    if (spellId == 70051)   // (kick-diag) Kick Footbomb: the aim as the client sent it
+        TC_LOG_INFO("scripts", "Fourth and Goal: client sent source {:.1f} {:.1f} {:.1f}, destination {:.1f} {:.1f} {:.1f}, elevation {:.3f}, "
+            "missile speed {:.1f}, target flags {:#x}", srcLoc.GetPositionX(), srcLoc.GetPositionY(), srcLoc.GetPositionZ(),
+            dstLoc.GetPositionX(), dstLoc.GetPositionY(), dstLoc.GetPositionZ(), elevation, missileSpeed, uint32(targetFlags));
     targets.Update(caster);
 
     caster->ClearUnitState(UNIT_STATE_FOLLOW);

@@ -108,6 +108,25 @@ bool CastSpellAction::isPossible()
     return botAI->CanCastSpell(spell, GetTarget());
 }
 
+// (rez-walk-first) the engine runs the prerequisites (the walk to the dead member) only for an action that is possible; a cast
+// on a target out of range or out of sight is not, so the healer stood still. Possible here: the spell is known, the bot is out
+// of combat, and range or line of sight is what stands in the way. The cast itself is checked again when it is made.
+bool ResurrectPartyMemberAction::isPossible()
+{
+    if (CastSpellAction::isPossible())
+        return true;
+
+    Unit* target = GetTarget();
+    if (!target || bot->IsInCombat() || !bot->IsAlive())
+        return false;
+
+    uint32 const spellId = AI_VALUE2(uint32, "spell id", spell);
+    if (!spellId || !bot->HasSpell(spellId))
+        return false;
+
+    return !bot->IsWithinLOSInMap(target) || !bot->IsWithinCombatRange(target, botAI->GetRange("spell"));
+}
+
 bool CastSpellAction::isUseful()
 {
     if (botAI->IsInVehicle() && !botAI->IsInVehicle(false, false, true))

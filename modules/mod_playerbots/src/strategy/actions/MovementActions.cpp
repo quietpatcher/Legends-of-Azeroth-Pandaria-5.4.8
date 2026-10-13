@@ -1265,7 +1265,10 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
     for (ObjectGuid const& guid : triggers)
     {
         Unit* unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsInWorld() || !unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+        if (!unit || !unit->IsInWorld())
+            continue;
+        // (trigger-hazard) not selectable, or an invisible trigger creature
+        if (!unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && !(unit->ToCreature() && unit->ToCreature()->IsTrigger()))
             continue;
         for (AuraType type : { SPELL_AURA_PERIODIC_TRIGGER_SPELL, SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE })
             for (AuraEffect const* aurEff : unit->GetAuraEffectsByType(type))

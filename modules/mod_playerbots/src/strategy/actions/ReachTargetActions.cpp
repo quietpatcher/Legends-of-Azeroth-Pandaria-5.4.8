@@ -60,3 +60,20 @@ ReachPartyMemberToResurrectAction::ReachPartyMemberToResurrectAction(PlayerbotAI
 }
 
 std::string const ReachPartyMemberToResurrectAction::GetTargetName() { return "party member to resurrect"; }
+
+// (rez-no-los) out of range, or in range but out of sight: walk on, up to two yards from the dead member
+bool ReachPartyMemberToResurrectAction::isUseful()
+{
+    if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) != nullptr || bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr)
+        return false;
+    Unit* target = GetTarget();
+    return target && (!bot->IsWithinCombatRange(target, distance) || !bot->IsWithinLOSInMap(target));
+}
+
+bool ReachPartyMemberToResurrectAction::Execute(Event /*event*/)
+{
+    Unit* target = AI_VALUE(Unit*, GetTargetName());
+    if (!target)
+        return false;
+    return ReachCombatTo(target, bot->IsWithinLOSInMap(target) ? distance : 2.0f);
+}

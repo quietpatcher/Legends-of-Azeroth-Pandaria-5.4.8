@@ -106,6 +106,13 @@ class boss_brother_korloff : public CreatureScript
                 me->GetMap()->SetWorldState(WORLDSTATE_BURNING_MAN, 0);
             }
 
+            // (korloff-kill-lines) his two kill lines are for a kill of a player; they were said with every ability
+            void KilledUnit(Unit* victim) override
+            {
+                if (victim && victim->GetTypeId() == TYPEID_PLAYER)
+                    Talk(TALK_SLAY);
+            }
+
             void JustDied(Unit* killer) override
             {
                 _JustDied();
@@ -143,7 +150,6 @@ class boss_brother_korloff : public CreatureScript
             {
                 if (pointId == EVENT_CHARGE)
                 {
-                    Talk(TALK_SLAY);
                     me->AddAura(SPELL_FIRESTORM_KICK, me);
                 }
             }
@@ -210,7 +216,6 @@ class boss_brother_korloff : public CreatureScript
                             if (Unit* target = me->GetVictim())
                                 me->PrepareChanneledCast(me->GetAngle(target), SPELL_BLAZING_FISTS);
 
-                            Talk(TALK_SLAY);
                             events.ScheduleEvent(EVENT_BLAZING_FISTS, 20 * IN_MILLISECONDS);
                             events.ScheduleEvent(EVENT_BLAZING_FIRST_CANCEL,6500);
                             break;

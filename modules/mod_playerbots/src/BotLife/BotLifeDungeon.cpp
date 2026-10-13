@@ -647,6 +647,28 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
         // teleports deferred to each bot own map thread (QueueTeleport) to remove the cross-thread
         // TeleportTo race. The leader-refused-entry abort relied on TeleportTo's immediate bool, which a deferred
         // teleport cannot return; an unenterable dungeon is now pruned by the normal stall/disband + MarkBadDungeon path.
+        // (bot-raid-unbind) a bot keeps no lockout of the instance its party is about to enter. A bot that killed a boss of a raid
+        // stays bound to that instance until the reset; a party of bots bound to different instances was refused at the door
+        // (measured 12-10 in Ahn'Qiraj Ruins: six of ten members bound to five different instances, nobody got in, four
+        // "wipes" in eighty seconds and the party gave up). The dungeon finder side does the same for heroics (lfg-bot-unbind).
+        uint32 released = 0;
+        for (Player* p : all)
+        {
+            if (p->GetMapId() == d.map)
+                continue;
+            bool bound = false;
+            for (uint8 difficulty = 0; difficulty < MAX_DIFFICULTY; ++difficulty)
+                if (p->GetBoundInstance(d.map, Difficulty(difficulty)))
+                {
+                    p->UnbindInstance(d.map, Difficulty(difficulty));   // nothing happens when the bind sits under the other raid size
+                    bound = true;
+                }
+            if (bound)
+                ++released;
+        }
+        if (released)
+            TC_LOG_INFO("playerbots", "BotLife: {} of {} bots released their lockout of {} for the party of {}", released, all.size(), d.name, leader->GetName());
+
         QueueTeleport(leader, d.map, d.x, d.y, d.z, d.o);
         for (Player* member : members)
             QueueTeleport(member, d.map, d.x + frand(-2.0f, 2.0f), d.y + frand(-2.0f, 2.0f), d.z, d.o);
@@ -1184,8 +1206,12 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
         if (Group* group = bot->GetGroup())
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 if (Player* member = ref->GetSource())
-                    if (member != bot && !member->IsAlive() && now - t.lastCombat < 60000
-                        && member->GetSession() && member->GetSession()->IsBot())   // not for real players
+                    // (lfg-rez-wait) also for a real player who lies dead on this map and has not released: the healer's own
+                    // resurrection needs the group to stay; a player who released is not waited for here
+                    if (member != bot && !member->IsAlive() && now - t.lastCombat < 60000 && member->GetSession()
+                        && (member->GetSession()->IsBot()
+                            || (member->FindMap() == bot->FindMap() && member->getDeathState() == DeathState::CORPSE
+                                && !member->HasAuraType(SPELL_AURA_GHOST))))
                     {
                         if (bot->isMoving())
                             bot->StopMoving();

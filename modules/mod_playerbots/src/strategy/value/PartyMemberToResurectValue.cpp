@@ -41,6 +41,16 @@ private:
     IsTargetOfResurrectSpell predicate;
 };
 
+// (rez-no-los) a dead member behind an obstacle is a target too, within sight distance on the same map
+bool PartyMemberToResurrect::Check(Unit* player)
+{
+    if (!player || player->FindMap() != bot->FindMap())
+        return false;
+    if (player->ToPlayer() && player->ToPlayer()->IsGameMaster())
+        return false;
+    return bot->GetDistance(player) < sPlayerbotAIConfig->sightDistance;
+}
+
 Unit* PartyMemberToResurrect::Calculate()
 {
     FindDeadPlayer finder(this);

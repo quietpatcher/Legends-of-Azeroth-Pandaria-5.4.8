@@ -7,6 +7,7 @@
 
 #include "AttackersValue.h"
 #include "CellImpl.h"
+#include "Creature.h"
 #include "DBCStructure.h"
 #include "GridObject.h"
 #include "GridNotifiers.h"
@@ -39,7 +40,8 @@ void PossibleTriggersValue::FindUnits(std::list<Unit*>& targets)
 
 bool PossibleTriggersValue::AcceptUnit(Unit* unit)
 {
-    if (!unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+    // (trigger-hazard) not selectable, or an invisible trigger creature (Scorched Earth of Brother Korloff)
+    if (!unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && !(unit->ToCreature() && unit->ToCreature()->IsTrigger()))
     {
         return false;
     }

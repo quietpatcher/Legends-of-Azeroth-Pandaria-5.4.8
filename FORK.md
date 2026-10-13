@@ -60,6 +60,12 @@ The new configuration options are documented in `modules/mod_playerbots/config/p
 
 As upstream. The branch is based on upstream commit `e3267ed` and is brought up to date with upstream `master` from time to time.
 
+## Credits
+
+Some core and dungeon fixes are taken from the fork of ingussuveiks-dev
+(https://github.com/ingussuveiks-dev/Legends-of-Azeroth-Pandaria-5.4.8, same upstream, GPL v2), adapted to this tree where
+needed. This branch is published as one commit per sync, so the commit message of each sync lists the changes that were taken.
+
 ## License
 
 GPL v2, like upstream.

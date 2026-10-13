@@ -17,6 +17,8 @@
 #include "Creature.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
+#include "LFGMgr.h"
+#include "LastSpellCastValue.h"
 #include "GameObject.h"
 #include "GameObjectAI.h"   // batch 11z2: 
 #include "CellImpl.h"
@@ -1157,16 +1159,31 @@ void BotLifeMgr::LoadCaches()
     // Draenei Survivors). Nothing in the data tells which spell, so a table does: tt_botlife_credit_hint.
     PlayerbotsDatabase.DirectExecute("CREATE TABLE IF NOT EXISTS tt_botlife_credit_hint (credit INT UNSIGNED NOT NULL, creature INT UNSIGNED NOT NULL, "
         "spell INT UNSIGNED NOT NULL, comment VARCHAR(160) NOT NULL DEFAULT '', PRIMARY KEY (credit, creature, spell))");
-    if (QueryResult result = PlayerbotsDatabase.Query("SELECT credit, creature, spell FROM tt_botlife_credit_hint"))
+    // a credit that comes from a scene near a creature (A Daughter's Embrace: the scene at High Priest
+    // Benedictus Voss) is not had by fighting it - the bot killed him and got nothing. The column visit is the range to stand in.
+    if (!PlayerbotsDatabase.Query("SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() "
+        "AND table_name = 'tt_botlife_credit_hint' AND column_name = 'visit'"))
+        PlayerbotsDatabase.DirectExecute("ALTER TABLE tt_botlife_credit_hint ADD COLUMN visit FLOAT NOT NULL DEFAULT 0 AFTER spell");
+    if (QueryResult result = PlayerbotsDatabase.Query("SELECT credit, creature, spell, visit FROM tt_botlife_credit_hint"))
     {
         do
         {
             Field* f = result->Fetch();
             uint32 const credit = f[0].GetUInt32(), creature = f[1].GetUInt32(), spell = f[2].GetUInt32();
+            float const visit = f[3].GetFloat();
             if (!_creatureSpawns.count(creature))
                 continue;
             auto& list = _creditSources[credit];
-            if (std::none_of(list.begin(), list.end(), [&](BotLifeCreditSource const& s) { return s.creature == creature && s.spell == spell; }))
+            if (visit > 0.0f)
+            {
+                // the only way to this credit: what the data made of the creature (a fight) goes
+                list.erase(std::remove_if(list.begin(), list.end(), [&](BotLifeCreditSource const& s) { return s.creature == creature; }), list.end());
+                BotLifeCreditSource src;
+                src.creature = creature;
+                src.visit = std::max(visit, 3.0f);
+                list.push_back(src);
+            }
+            else if (std::none_of(list.begin(), list.end(), [&](BotLifeCreditSource const& s) { return s.creature == creature && s.spell == spell; }))
                 list.push_back(BotLifeCreditSource{ creature, spell });
         } while (result->NextRow());
     }
@@ -1954,6 +1971,155 @@ bool BotLifeMgr::RunPendingActions(PlayerbotAI* botAI)
 
 bool QtIsHeld(uint32 guidLow);   // cs_playerbots.cpp: '.botlife qt hold'
 
+// The Headless Horseman tosses Pulsing Pumpkins that sprout into fiends. Nobody killed them and they
+// piled up on the group (measured: 14 to 23 on the tank while the damage dealers stayed on the boss). Sprouted pumpkins near
+// the bot become its "prioritized targets", which the damage dealers of the engine take before anything else.
+// what a healer does in the fight with the Headless Horseman, every ten seconds: the healer of two
+// lost groups ended the fight with full mana. Diagnostics only.
+static void LfgHealDiag(PlayerbotAI* botAI, Player* bot, uint32 now)
+{
+    // one table for all map threads: the tick of a bot is not always run by the same thread
+    static std::mutex nextLock;
+    static std::unordered_map<ObjectGuid::LowType, uint32> nextAt;
+    {
+        std::lock_guard<std::mutex> guard(nextLock);
+        uint32& next = nextAt[bot->GetGUID().GetCounter()];
+        if (now < next)
+            return;
+        next = now + 10000;
+    }
+    std::ostringstream strategies, actions, group, fight;
+    if (Creature* horseman = bot->FindNearestCreature(23682, 100.0f))
+        fight << "Horseman " << uint32(horseman->GetHealthPct()) << "% of " << horseman->GetMaxHealth();
+    if (Creature* head = bot->FindNearestCreature(23775, 100.0f))
+        fight << ", head " << uint32(head->GetHealthPct()) << "%";
+    {
+        std::list<Creature*> pumpkins;
+        bot->GetCreatureListWithEntryInGrid(pumpkins, 23694, 60.0f);
+        uint32 sprouted = 0, alive = 0;
+        for (Creature* pumpkin : pumpkins)
+            if (pumpkin->IsAlive())
+            {
+                ++alive;
+                if (pumpkin->HasReactState(REACT_AGGRESSIVE))
+                    ++sprouted;
+            }
+        fight << ", pumpkins " << alive << " (" << sprouted << " sprouted)";
+    }
+    for (std::string const& name : botAI->GetStrategies(BOT_STATE_COMBAT))
+        strategies << ' ' << name;
+    Unit* toHeal = botAI->GetAiObjectContext()->GetValue<Unit*>("party member to heal")->Get();
+    Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    // the heal actions of every healing class, and what stands between the healer and its heal
+    static char const* const names[] = { "flash heal on party", "heal on party", "renew on party", "power word: shield on party",
+        "prayer of healing on party", "circle of healing on party", "prayer of mending on party", "flash heal", "renew",
+        "lesser healing wave on party", "healing wave on party", "healing surge on party", "riptide on party", "chain heal on party",
+        "rejuvenation on party", "regrowth on party", "healing touch on party", "swiftmend on party", "wild growth on party",
+        "flash of light on party", "holy light on party", "holy shock on party", "word of glory on party",
+        "soothing mist on party", "surging mist on party", "renewing mist on party", "enveloping mist on party" };
+    if (toHeal && toHeal != bot)
+        fight << "heal target at " << uint32(bot->GetExactDist(toHeal)) << " yd los " << (bot->IsWithinLOSInMap(toHeal) ? 1 : 0) << ", ";
+    {
+        LastSpellCast& last = botAI->GetAiObjectContext()->GetValue<LastSpellCast&>("last spell cast")->Get();
+        fight << "last cast " << last.id << " " << (last.timer ? uint32(time(nullptr) - last.timer) : 0u) << " s ago, ";
+    }
+    for (char const* name : names)
+        if (Action* action = botAI->GetAiObjectContext()->GetAction(name))
+            actions << ' ' << name << ':' << (action->isPossible() ? 'P' : 'p') << (action->isUseful() ? 'U' : 'u');
+    if (Group* g = bot->GetGroup())
+        for (GroupReference* ref = g->GetFirstMember(); ref; ref = ref->next())
+            if (Player* m = ref->GetSource())
+                group << ' ' << m->GetName() << ' ' << (m->IsAlive() ? uint32(m->GetHealthPct()) : 0u) << '%'
+                      << (m->GetMap() == bot->GetMap() ? "" : " (elsewhere)");
+    Spell* cast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    TC_LOG_INFO("playerbots", "BotLife lfghealdiag {}: cls {} spec {}, engine {}, hp {}%, mana {}%, casting {}, moving {} motion {}, "
+        "silenced {} confused {} stunned {}, master {}, target {}, to heal {} {}% | {} | group:{} | strategies:{} | actions:{} | trace:{}",   // (lfg-heal-trace)
+        bot->GetName(), uint32(bot->GetClass()), uint32(bot->GetSpecialization()), uint32(botAI->GetState()), uint32(bot->GetHealthPct()),
+        uint32(bot->GetPowerPct(POWER_MANA)), cast ? cast->GetSpellInfo()->Id : 0u, bot->isMoving() ? 1 : 0,
+        uint32(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+        bot->HasAuraType(SPELL_AURA_MOD_SILENCE) ? 1 : 0, bot->HasUnitState(UNIT_STATE_CONFUSED) ? 1 : 0, bot->HasUnitState(UNIT_STATE_STUNNED) ? 1 : 0,
+        botAI->GetMaster() ? botAI->GetMaster()->GetName() : std::string("-"), target ? target->GetName() : std::string("-"),
+        toHeal ? toHeal->GetName() : std::string("-"), toHeal ? uint32(toHeal->GetHealthPct()) : 0u, fight.str(), group.str(), strategies.str(), actions.str(),
+        [&]{ std::string trace = botAI->GetLastEngineActions();   // with: allowed to act (1/0), lost control (1/0)
+             std::string head = std::string(botAI->AllowActivity() ? "act1 " : "act0 ") + (bot->HasUnitState(UNIT_STATE_LOST_CONTROL) ? "lost1 " : "lost0 ");
+             return head + (trace.size() > 400 ? trace.substr(trace.size() - 400) : trace); }());
+}
+
+// (lfg-rez-diag) a healer bot in a dungeon whose group has a dead real player: every ten seconds what stands between the healer
+// and the resurrection. Diagnostics only.
+static void LfgRezDiag(PlayerbotAI* botAI, Player* bot, Group* group, uint32 now)
+{
+    Player* dead = nullptr;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            if (member != bot && !member->IsAlive() && member->FindMap() == bot->FindMap() && member->GetSession() && !member->GetSession()->IsBot())
+            {
+                dead = member;
+                break;
+            }
+    if (!dead)
+        return;
+    static std::mutex nextLock;
+    static std::unordered_map<ObjectGuid::LowType, uint32> nextAt;
+    {
+        std::lock_guard<std::mutex> guard(nextLock);
+        uint32& next = nextAt[bot->GetGUID().GetCounter()];
+        if (now < next)
+            return;
+        next = now + 10000;
+    }
+    Unit* toRez = botAI->GetAiObjectContext()->GetValue<Unit*>("party member to resurrect")->Get();
+    Spell* cast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    std::string trace = botAI->GetLastEngineActions();
+    if (trace.size() > 300)
+        trace = trace.substr(trace.size() - 300);
+    // (lfg-rez-diag2) the resurrection of each class: possible / useful, the spell id behind the name, known or not
+    {
+        std::ostringstream rez;
+        static char const* const names[] = { "resurrection", "redemption", "revive", "ancestral spirit", "resuscitate" };
+        for (char const* name : names)
+            if (Action* action = botAI->GetAiObjectContext()->GetAction(name))
+            {
+                uint32 const id = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+                rez << ' ' << name << ':' << (action->isPossible() ? 'P' : 'p') << (action->isUseful() ? 'U' : 'u') << " id " << id
+                    << (id && bot->HasSpell(id) ? " known" : " unknown");
+            }
+        Trigger* trigger = botAI->GetAiObjectContext()->GetTrigger("party member dead");
+        rez << " | trigger " << (trigger ? (trigger->IsActive() ? "active" : "not active") : "none") << " | nc:";
+        for (std::string const& name : botAI->GetStrategies(BOT_STATE_NON_COMBAT))
+            rez << ' ' << name;
+        trace = rez.str() + " | " + trace;
+    }
+    TC_LOG_INFO("playerbots", "BotLife lfgrezdiag {}: cls {}, engine {}, in combat {}, casting {}, mana {}%, moving {}, master {} | dead player {}: "
+        "death state {}, ghost {}, resurrection requested {}, GM {}, {:.0f} yd, los {} | value to resurrect {} | trace: act{} {}",
+        bot->GetName(), uint32(bot->GetClass()), uint32(botAI->GetState()), bot->IsInCombat() ? 1 : 0, cast ? cast->GetSpellInfo()->Id : 0u,
+        uint32(bot->GetPowerPct(POWER_MANA)), bot->isMoving() ? 1 : 0, botAI->GetMaster() ? botAI->GetMaster()->GetName() : std::string("-"),
+        dead->GetName(), uint32(dead->getDeathState()), dead->HasAuraType(SPELL_AURA_GHOST) ? 1 : 0, dead->IsRessurectRequested() ? 1 : 0,
+        dead->IsGameMaster() ? 1 : 0, bot->GetExactDist(dead), bot->IsWithinLOSInMap(dead) ? 1 : 0, toRez ? toRez->GetName() : std::string("-"),
+        botAI->AllowActivity() ? 1 : 0, trace);
+}
+
+static void HorsemanPumpkinsFirst(PlayerbotAI* botAI, Player* bot)
+{
+    Value<GuidVector>* value = botAI->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets");
+    std::list<Creature*> pumpkins;
+    bot->GetCreatureListWithEntryInGrid(pumpkins, 23694, 45.0f);
+    GuidVector guids;
+    // his head first: the fight only moves on when the head is brought down while the body
+    // wanders (measured: a group took the body to zero four times and left the head at 99%)
+    if (Creature* head = bot->FindNearestCreature(23775, 80.0f))
+        if (!head->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE) && bot->IsValidAttackTarget(head))
+            guids.push_back(head->GetGUID());
+    if (guids.empty())
+        for (Creature* pumpkin : pumpkins)
+            if (pumpkin->IsAlive() && pumpkin->HasReactState(REACT_AGGRESSIVE) && bot->IsValidAttackTarget(pumpkin))
+                guids.push_back(pumpkin->GetGUID());
+    if (!guids.empty())
+        value->Set(guids);
+    else if (!value->Get().empty())
+        value->Set(GuidVector());
+}
+
 bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
 {
     if (!_enabled || !_loaded || !botAI)
@@ -2118,6 +2284,40 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             MasterQuestSync(bot, master, t, now);
     // inside a 5-man dungeon a group with a real player does not wait for him - the tank bot
     // leads through the dungeon like a bot dungeon party (real players are not waited for), the other bots follow it
+    // a healer of a dungeon finder group keeps the tank within reach and sight while the group
+    // fights, as a healer of a bot party already does (measured twice against the Headless Horseman: the healer stood 20 yd
+    // away without line of sight and ended the fight with full mana)
+    if (group && group->isLFGGroup() && !t.party && bot->IsInWorld() && bot->IsAlive() && bot->IsInCombat() && bot->GetMap()->IsDungeon()
+        && PlayerBotSpec::IsHeal(bot, true) && !bot->HasUnitState(UNIT_STATE_CASTING))
+    {
+        Player* tank = nullptr;
+        for (GroupReference* ref = group->GetFirstMember(); ref && !tank; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member != bot && member->IsAlive() && member->GetMap() == bot->GetMap() && PlayerBotSpec::IsTank(member, true))
+                    tank = member;
+        if (tank && (bot->GetExactDist(tank) > 30.0f || !bot->IsWithinLOSInMap(tank)))
+        {
+            if (!bot->isMoving() || now - t.lastMoveOrder > 1500)
+            {
+                bot->GetMotionMaster()->MoveFollow(tank, 10.0f, float(M_PI));
+                t.lastMoveOrder = now;
+            }
+            return true;
+        }
+    }
+    // in the fight with the Headless Horseman (Scarlet Monastery, map 1004): only while he himself
+    // fights nearby - any other fight in that dungeon keeps the kill order its group has
+    if (group && bot->IsInWorld() && bot->GetMapId() == 1004 && bot->IsAlive() && bot->IsInCombat())
+        if (Creature* horseman = bot->FindNearestCreature(23682, 80.0f))
+            if (horseman->IsInCombat())
+            {
+                HorsemanPumpkinsFirst(botAI, bot);
+                if (PlayerBotSpec::IsHeal(bot, true))
+                    LfgHealDiag(botAI, bot, getMSTime());
+            }
+    // (lfg-rez-diag)
+    if (group && bot->IsInWorld() && bot->IsAlive() && bot->GetMap()->IsDungeon() && PlayerBotSpec::IsHeal(bot, true))
+        LfgRezDiag(botAI, bot, group, getMSTime());
     Player* lfgLeadBot = nullptr;
     if (group && !t.party && bot->IsInWorld() && bot->GetMap()->IsDungeon() && !bot->GetMap()->IsRaid())
     {
@@ -2201,6 +2401,39 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             return true;
         if (IsLfgTestBot(bot->GetGUID()) && _lfgTestDungeon.load() && LfgTestLeadTick(bot, t, now))
             return true;   // the holiday boss event of a dungeon finder test
+        // while the Headless Horseman is up the lead stays with him: in the head phase the body
+        // leaves combat, and the lead then went on with the dungeon and took the group out of the fight
+        // only in his own dungeon (285): during Hallow's End he is spawned in every Scarlet Monastery
+        if (bot->GetMapId() == 1004 && sLFGMgr->GetDungeon(group->GetGUID()) == 285
+            && (bot->FindNearestCreature(23682, 200.0f) || bot->FindNearestCreature(23775, 200.0f)))
+        {
+            // (lfg-shrine-walk) before the Horseman is called (he stands hidden) the lead of a group with a player walks to the
+            // Pumpkin Shrine and waits there; the player calls him. Seen with a real client: the group stayed at the entrance,
+            // 109 yd from the shrine, and the player stood at the shrine alone.
+            if (!IsLfgTestBot(bot->GetGUID()))
+            {
+                Creature* horseman = bot->FindNearestCreature(23682, 200.0f);
+                if (horseman && !horseman->IsVisible() && !bot->GetVictim())
+                    if (bot->FindNearestGameObject(186267, 250.0f))
+                    {
+                        // (lfg-shrine-walk2) on the open ground between the shrine and the spot where the Horseman lands. The shrine
+                        // stands inside a small fence: a near point of it put the lead on that fence, the Horseman could not reach
+                        // his target and stayed at his landing spot, in combat and without a fight
+                        float const waitX = 1082.0f, waitY = 624.5f;
+                        if (bot->GetExactDist2d(waitX, waitY) > 5.0f)
+                        {
+                            if (!bot->isMoving())
+                            {
+                                float waitZ = 2.0f;
+                                bot->UpdateAllowedPositionZ(waitX, waitY, waitZ);
+                                bot->GetMotionMaster()->MovePoint(0, waitX, waitY, waitZ, true);
+                            }
+                            return true;
+                        }
+                    }
+            }
+            return false;
+        }
         return DungeonLeaderUpdate(botAI, t, now);
     }
     if (lfgLeadBot && botAI->GetMaster() != lfgLeadBot)
@@ -2272,8 +2505,15 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     if (!bot->GetVehicle() && VehicleQuestMount(bot, t, now))
         return false;
     if (Unit* base = bot->GetVehicleBase())   // on a quest vehicle without the quest: climb off (after a minute of sitting there)
+    {
+        // a vehicle can serve two quests (Fourth and Goal exists twice): "without the quest" means
+        // that none of them is open
+        bool wanted = false;
         for (VehicleQuest const& q : VehicleQuests())
-            if ((q.mount || !q.visit.empty()) && base->GetEntry() == q.vehicleEntry && bot->GetQuestStatus(q.questId) != QUEST_STATUS_INCOMPLETE)
+            if (base->GetEntry() == q.vehicleEntry && bot->GetQuestStatus(q.questId) == QUEST_STATUS_INCOMPLETE)
+                wanted = true;
+        for (VehicleQuest const& q : VehicleQuests())
+            if (!wanted && (q.mount || !q.visit.empty()) && base->GetEntry() == q.vehicleEntry && bot->GetQuestStatus(q.questId) != QUEST_STATUS_INCOMPLETE)
             {
                 if (!t.vehicleCastAt)
                     t.vehicleCastAt = now;
@@ -2286,6 +2526,7 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
                 }
                 return false;
             }
+    }
     if (bot->GetVehicle() && VehicleQuestAction(bot, t, now))
         return false;
     if (bot->IsBeingTeleported() || bot->IsInFlight() || bot->InBattleground() || bot->GetVehicle())
@@ -3235,14 +3476,17 @@ bool BotLifeMgr::StartTownVisit(Player* bot, BotLifeInfo& t, uint32 now)
     t.craftFailed.clear();
     t.refined = false;
     t.fireMade = false;
-    // arrive next to the first NPC (a hearthstone / portal trip), sell the junk
-    bot->TeleportTo(t.destMap, t.destX, t.destY, t.destZ + 0.5f, frand(0.0f, 2 * float(M_PI)));
+    // the bags and the repair first, the trip last: a teleport to a town on another map takes the
+    // bot out of the world, and an item that is swapped then finds no owner (Item::GetOwner looks among the players in the
+    // world) and asserts - the crash of the live server of 11 October.
     ManageBags(bot, 60, false);   // materials go to the guild bank / auction house this visit, not the vendor
     // at the vendor: repair (paid, like everybody else; broken gear gives no stats)
     // a guild member repairs on the guild's account. The guild bank is shared by all maps, so
     // that happens with the rest of the town business on the world thread (RepairInTown).
     if (!(_guildBank && bot->GetGuildId()))
         bot->DurabilityRepairAll(true, 1.0f, false);
+    // arrive next to the first NPC (a hearthstone / portal trip)
+    bot->TeleportTo(t.destMap, t.destX, t.destY, t.destZ + 0.5f, frand(0.0f, 2 * float(M_PI)));
     Count(BLC_TOWN_VISIT);
     if (_debug)
         TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): town visit, map {} {} {}", bot->GetName(), uint32(bot->GetLevel()), t.destMap, t.destX, t.destY);
@@ -4678,6 +4922,13 @@ std::vector<BotLifeMgr::VehicleQuest> const& BotLifeMgr::VehicleQuests()
         { 14071, 34840, 0, {}, 0.0f, false, false, 0, 0, 0, { 34890, 34892, 34954 }, 46856 },
         // Young and Vicious: on Swiftclaw (the lasso seats the bot) to Notera at the raptor pens
         { 24626, 38002, 0, {}, 0.0f, false, false, 0, 0, 0, { 38988 }, 0 },
+        // Necessary Roughness: the click on the parked Bilgewater Buccaneer calls up the one the bot
+        // rides; Throw Footbomb at the Steamwheedle Sharks in their line-up
+        { 24502, 37179, 69992, { 37114 }, 50.0f, true, false, 0, 0, 0, {}, 0, 48526 },
+        // Fourth and Goal: the same parked Buccaneer calls up the one for the kick
+        // (37213); Kick Footbomb at the goal between the smokestacks (Fourth And Goal Target)
+        { 28414, 37213, 70051, { 37203 }, 200.0f, true, false, 0, 0, 0, {}, 0, 48526 },
+        { 24503, 37213, 70051, { 37203 }, 200.0f, true, false, 0, 0, 0, {}, 0, 48526 },
     };
     return quests;
 }
@@ -4737,11 +4988,13 @@ bool BotLifeMgr::VehicleQuestMount(Player* bot, BotLifeInfo& t, uint32 now)
         Creature* best = nullptr;
         float bestDist = 80.0f;
         std::list<Creature*> list;
-        bot->GetCreatureListWithEntryInGrid(list, q.vehicleEntry, 80.0f);
+        bot->GetCreatureListWithEntryInGrid(list, q.clickEntry ? q.clickEntry : q.vehicleEntry, 80.0f);
         for (Creature* c : list)
         {
             Vehicle* kit = c->GetVehicleKit();
-            if (!c->IsAlive() || !kit || !kit->GetAvailableSeatCount() || bot->GetExactDist(c) >= bestDist)
+            if (!c->IsAlive() || bot->GetExactDist(c) >= bestDist)
+                continue;
+            if (!q.clickEntry && (!kit || !kit->GetAvailableSeatCount()))   // a parked one has no seats
                 continue;
             if (q.gossipMount && !c->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP))   // (vehicledrive) somebody rides it
                 continue;
@@ -7018,7 +7271,7 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
     };
     uint32 freeSlots = countFree();
     // what a loot container holds needs a slot before the container itself goes
-    if (freeSlots && OpenLootContainers(bot, 6))
+    if (freeSlots && bot->IsInWorld() && OpenLootContainers(bot, 6))   // not for a bot on its way to another map
     {
         EquipBagUpgrades(bot);   // what came out is put on at once
         freeSlots = countFree();
@@ -7742,6 +7995,8 @@ static uint32 ClassArmorType(Player* bot)
 
 void BotLifeMgr::EquipBagUpgrades(Player* bot)
 {
+    if (!bot->IsInWorld())   // an item of a player out of the world has no owner to report to
+        return;
     std::vector<Item*> items;
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
         if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))

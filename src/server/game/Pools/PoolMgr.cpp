@@ -21,6 +21,7 @@
 #include "ObjectMgr.h"
 #include "Log.h"
 #include "MapManager.h"
+#include <unordered_set>
 
 ////////////////////////////////////////////////////////////
 // template class ActivePoolData
@@ -456,6 +457,18 @@ void PoolMgr::Initialize()
 
 void PoolMgr::LoadFromDB()
 {
+    // Quest pools share pool_template ids with object pools, but they are
+    // loaded and activated separately by QuestPoolMgr.  Keep them out of the
+    // object-pool empty check and automatic spawn list.
+    std::unordered_set<uint32> questPoolIds;
+    if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT pool_entry FROM pool_quest"))
+    {
+        do
+        {
+            questPoolIds.insert(result->Fetch()[0].GetUInt32());
+        } while (result->NextRow());
+    }
+
     // Pool templates
     {
         uint32 oldMSTime = getMSTime();
@@ -738,6 +751,9 @@ void PoolMgr::LoadFromDB()
 
     for (auto const& [poolId, templateData] : mPoolTemplate)
     {
+        if (questPoolIds.find(poolId) != questPoolIds.end())
+            continue;
+
         if (IsEmpty(poolId))
         {
             TC_LOG_ERROR("sql.sql", "Pool Id {} is empty (has no creatures and no gameobects and either no child pools or child pools are all empty. The pool will not be spawned", poolId);
@@ -769,6 +785,9 @@ void PoolMgr::LoadFromDB()
                 Field* fields = result->Fetch();
                 uint32 pool_entry = fields[0].GetUInt32();
                 uint32 pool_pool_id = fields[1].GetUInt32();
+
+                if (questPoolIds.find(pool_entry) != questPoolIds.end())
+                    continue;
 
                 if (!CheckPool(pool_entry))
                 {

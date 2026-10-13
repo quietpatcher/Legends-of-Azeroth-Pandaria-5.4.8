@@ -290,6 +290,16 @@ class spell_kezan_kick_footbomb : public SpellScript
         Vehicle* kit = caster ? caster->GetVehicleKit() : nullptr;
         Unit* driver = kit ? kit->GetPassenger(FourthAndGoal::SEAT_DRIVER) : nullptr;
         Player* player = driver ? driver->ToPlayer() : nullptr;
+        // (goal-kick-log) where the kick of this player lands, next to the goal (diagnostics)
+        if (player)
+        {
+            Creature* goal = caster->FindNearestCreature(FourthAndGoal::NPC_GOAL_TARGET, 300.0f);
+            TC_LOG_INFO("scripts", "Fourth and Goal: {} kicks from {:.1f} {:.1f} {:.1f} to {:.1f} {:.1f} {:.1f} ({}), goal at {:.1f} yd (2D) of the landing, limit {}, on the quest {}",
+                player->GetName(), caster->GetPositionX(), caster->GetPositionY(), caster->GetPositionZ(),
+                dest ? dest->GetPositionX() : 0.0f, dest ? dest->GetPositionY() : 0.0f, dest ? dest->GetPositionZ() : 0.0f,
+                dest ? "destination" : "no destination", goal && dest ? goal->GetExactDist2d(dest->GetPositionX(), dest->GetPositionY()) : -1.0f,
+                uint32(FourthAndGoal::GOAL_RANGE), FourthAndGoal::OnQuest(player) ? 1 : 0);
+        }
         if (!dest || !player || !FourthAndGoal::OnQuest(player))
             return;
 

@@ -11825,7 +11825,7 @@ void Unit::SetInCombatState(bool PvP, Unit* enemy)
         {
             if (IsAIEnabled)
             {
-                creature->AI()->JustEngagedWith(enemy);
+                creature->AI()->EngageFromCombatState(enemy);   // (engage-once) was a second, direct JustEngagedWith
 
                 if (creature->GetEntry() != 69427 && creature->GetEntry() != 69701 && creature->GetEntry() != 69700 && creature->GetEntry() != 69699 && creature->GetEntry() != 72249 && creature->GetEntry() != 71742 && creature->GetEntry() != 71749 && creature->GetEntry() != 71763)
                     RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC); // unit has engaged in combat, remove immunity so players can fight back
@@ -11845,7 +11845,10 @@ void Unit::SetInCombatState(bool PvP, Unit* enemy)
         if (GetCritterGUID() == it->GetGUID())
             continue;
         it->SetInCombatState(PvP, enemy);
-        it->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
+        // (pet-combat-flag3) on the pet of a player the flag means "going after a target" (the client lights the Attack button
+        // of the pet bar by it): PetAI sets and removes it there
+        if (!(it->GetTypeId() == TYPEID_UNIT && it->ToCreature()->IsPet() && it->IsControlledByPlayer()))
+            it->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
     }
 
     if (Player* player = ToPlayer())
@@ -17384,9 +17387,11 @@ void Unit::SetPhaseMask(uint32 newPhaseMask, bool update)
     // Phase pets and summons
     if (IsInWorld())
     {
-         for (ControlList::const_iterator itr = m_Controlled.begin(); itr != m_Controlled.end(); ++itr)
-            if ((*itr)->GetTypeId() == TYPEID_UNIT)
-                (*itr)->SetPhaseMask(newPhaseMask, true);
+        // (setphased-controlled) as in SetPhased: walk a copy, a unit can leave the control list during its phase change
+        ControlList const controlled = m_Controlled;
+        for (Unit* unit : controlled)
+            if (m_Controlled.find(unit) != m_Controlled.end() && unit->GetTypeId() == TYPEID_UNIT)
+                unit->SetPhaseMask(newPhaseMask, true);
 
         for (uint8 i = 0; i < SUMMON_SLOT_MAX; ++i)
             if (m_SummonSlot [i])
@@ -17417,9 +17422,12 @@ bool Unit::SetPhased(uint32 id, bool update, bool apply)
         GetThreatManager().EvaluateSuppressed(true);
     }
 
-    for (ControlList::const_iterator itr = m_Controlled.begin(); itr != m_Controlled.end(); ++itr)
-        if ((*itr)->GetTypeId() == TYPEID_UNIT)
-            (*itr)->SetPhased(id, true, apply);
+    // (setphased-controlled) the phase change of a controlled unit can end what made it controlled (an aura bound to the other
+    // phase is removed): it then takes itself out of m_Controlled. Walk a copy and skip what is not controlled any more.
+    ControlList const controlled = m_Controlled;
+    for (Unit* unit : controlled)
+        if (m_Controlled.find(unit) != m_Controlled.end() && unit->GetTypeId() == TYPEID_UNIT)
+            unit->SetPhased(id, true, apply);
 
     for (uint8 i = 0; i < SUMMON_SLOT_MAX; ++i)
         if (m_SummonSlot[i])

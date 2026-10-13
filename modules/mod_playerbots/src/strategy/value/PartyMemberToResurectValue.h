@@ -14,6 +14,8 @@ public:
     {
     }
 
+    bool Check(Unit* player) override;   // (rez-no-los) no line of sight needed: the bot walks to a dead member first
+
 protected:
     Unit* Calculate() override;
 };

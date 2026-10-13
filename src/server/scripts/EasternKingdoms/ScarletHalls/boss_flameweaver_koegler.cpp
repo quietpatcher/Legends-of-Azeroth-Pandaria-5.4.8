@@ -51,7 +51,8 @@ enum Yells
     TALK_DRAGON_BREATH               = 2,
     TALK_BOOK_BURNER_ANN             = 3,
     TALK_DRAGON_BREATH_ANN           = 4,
-    TALK_DEATH                       = 5
+    TALK_DEATH                       = 5,
+    TALK_KILL                        = 6    // (koegler-lines) "Burn! BURN!" or "Die in a fire!": he kills a player
 };
 
 // make mercesed spawn
@@ -111,10 +112,6 @@ class boss_flameweaver_koegler : public CreatureScript
             {
                 Intro = false;
                 Reset();
-
-                if (instance)
-                    if (Creature* Crusader = ObjectAccessor::GetCreature(*me, instance->GetGuidData(NPC_HOODED_CRUSADER)))
-                        Crusader->SetVisible(false);
             }
 
             void MoveInLineOfSight(Unit* who) override
@@ -126,6 +123,13 @@ class boss_flameweaver_koegler : public CreatureScript
                 }
 
                 ScriptedAI::MoveInLineOfSight(who);
+            }
+
+            // (koegler-lines)
+            void KilledUnit(Unit* victim) override
+            {
+                if (victim && victim->GetTypeId() == TYPEID_PLAYER)
+                    Talk(TALK_KILL);
             }
 
             void JustDied(Unit* killer) override

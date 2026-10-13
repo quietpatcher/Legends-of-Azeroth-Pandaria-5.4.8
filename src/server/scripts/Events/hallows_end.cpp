@@ -18,6 +18,7 @@
 #include "ObjectMgr.h"
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "GameEventMgr.h"
 #include "Vehicle.h"
@@ -122,7 +123,7 @@ PostionEventoHallowends[] =
      3576,  0,   false,  Position(-4135.257813f, -12495.936523f, 51.745071f,  0.0f),
      3576,  0,   false,  Position(-4135.921387f, -12492.143555f, 48.833118f,  0.0f),
      3576,  0,   false,  Position(-4154.284180f, -12472.077148f, 51.846313f,  0.0f),
-     362,   40,  false,  Position(336.829926f,   -4706.948730f,  16.889151f,  0.0f),
+     362,   44,  false,  Position(336.829926f,   -4706.948730f,  16.889151f,  0.0f),
      362,   0,   false,  Position(339.642456f,   -4708.543945f,  18.006519f,  0.0f),
      362,   0,   false,  Position(342.224396f,   -4710.393066f,  16.818239f,  0.0f),
      362,   0,   false,  Position(344.960907f,   -4709.553711f,  16.890581f,  0.0f),
@@ -133,22 +134,6 @@ PostionEventoHallowends[] =
      362,   0,   false,  Position(356.199799f,   -4698.549805f,  16.764526f,  0.0f),
      362,   0,   false,  Position(358.804993f,   -4696.005371f,  16.734446f,  0.0f),
      362,   0,   false,  Position(360.704559f,   -4694.149902f,  16.711086f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
-     362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
      362,   0,   false,  Position(332.730408f,   -4712.049805f,  15.277740f,  0.0f),
      362,   0,   false,  Position(317.190308f,   -4772.762695f,  27.700096f,  0.0f),
      362,   0,   false,  Position(313.450867f,   -4773.237793f,  27.700096f,  0.0f),
@@ -197,7 +182,7 @@ PostionEventoHallowends[] =
      159,   0,   false,  Position(2243.00f,      245.19f,        45.1917f,    0.0f),
      159,   0,   false,  Position(2255.32f,      227.241f,       43.5516f,    0.0f),
      159,   0,   false,  Position(2253.33f,      231.225f,       43.8722f,    0.0f),
-     3665,  32,  false,  Position(9538.890625f,  -6864.580566f,  32.180435f,  0.0f),
+     3665,  33,  false,  Position(9538.890625f,  -6864.580566f,  32.180435f,  0.0f),
      3665,  0,   false,  Position(9545.317383f,  -6864.680664f,  24.290354f,  0.0f),
      3665,  0,   false,  Position(9539.849609f,  -6863.418945f,  21.899117f,  0.0f),
      3665,  0,   false,  Position(9534.633789f,  -6860.602539f,  20.969927f,  0.0f),
@@ -255,6 +240,9 @@ enum HallowendFire
 #define ACTION_PASS_EVENT       2
 #define ACTION_SAY_1            3
 #define ACTION_SAY_2            4
+#define ACTION_SHADE_SLAIN      11   // (shade-lands) to the controller of a village: the landed Shade was slain
+#define ACTION_BEGIN_BY_QUEST   10   // (fires-start-by-quest) to the controller of a village: a player accepted "Let the Fires Come!"
+#define ACTION_LIGHT_DIRECT     12   // (fire-reach) to a fire point: the throw of the Shade did not reach it, it lights itself
 #define HALLOWEND_FIRE_ADD      1
 #define HALLOWEND_FIRE_REMOVE   2
 
@@ -287,6 +275,7 @@ struct npc_hallowend : public ScriptedAI
     SummonList Fires;
     bool EventProgress;
     bool SaidPhrase[2];
+    uint32 PumpkinCreditTimer = 0;   // (pumpkin-credit)
 
     void Reset() override
     {
@@ -310,7 +299,7 @@ struct npc_hallowend : public ScriptedAI
 
     void EventComplete()
     {
-        me->CastSpell(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + 1, SPELL_HEADLESS_HORSEMAN_LARGE_JACK, true);
+        // (shade-lands) the Large Jack-o'-Lantern appears when the landed Shade is slain (ACTION_SHADE_SLAIN), not here
         DoCastAOE(SPELL_HEADLES_HORSEMAN_QUEST_CREDIT, true);
     }
 
@@ -335,6 +324,9 @@ struct npc_hallowend : public ScriptedAI
         CountPlayersEvent = PlayersCountRange(100.0f);
         if (!PlayersCountRange(100.0f))
             return;
+        // (village-fire-log) diagnostics
+        TC_LOG_INFO("scripts", "Village fires: attack begins in area {} for {} players within 100 yd ({} fire points)", Area, CountPlayersEvent,
+            uint32(PostionEventoHallowends[AreaFire].Area_Count));
         EventProgress = true;
         TimerDuration = 400 * IN_MILLISECONDS;
         for (uint8 j = 0; j < PostionEventoHallowends[AreaFire].Area_Count; j++) 
@@ -346,8 +338,18 @@ struct npc_hallowend : public ScriptedAI
             Fires.Summon(summon);
     }
 
+    // (fires-start-by-quest) the attack starts when a player accepts "Let the Fires Come!" (the Orphan Matron calls this)
+    void DoAction(int32 action) override
+    {
+        if (action == ACTION_BEGIN_BY_QUEST && !EventProgress && IsHolidayActive(HOLIDAY_HALLOWS_END))
+            EventBegin();
+        else if (action == ACTION_SHADE_SLAIN)   // (shade-lands)
+            me->CastSpell(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + 1, SPELL_HEADLESS_HORSEMAN_LARGE_JACK, true);
+    }
+
     void EventEnd(bool eventPassed = false)
     {
+        TC_LOG_INFO("scripts", "Village fires: attack in area {} ends, {}", Area, eventPassed ? "all fires out" : "the village burned");   // (village-fire-log)
         if (!eventPassed)
         {
             Fires.DoAction(NPC_HEADLESS_HORSEMAN_FIRE_DND, ACTION_FAIL_EVENT);
@@ -366,11 +368,21 @@ struct npc_hallowend : public ScriptedAI
         if (!IsHolidayActive(HOLIDAY_HALLOWS_END))
             return;
 
-        // The event begins each 1 / 4 of an hour. if during this process no one is around (10 seconds), the event began
-        // Time Data works.
-        // Example one hour 60 minutes we are starting every 15 minutes is divided in 4 (60 / 4) and this is therefore in seconds multiplied by 60 ((60 / 4) * 60)
-        if (!EventProgress && (time(nullptr) % 900 < 5 || (900 - time(nullptr) % 900) < 5))
-            EventBegin();
+        // (fires-start-by-quest) no start on the clock any more: the attack starts when a player accepts "Let the Fires Come!"
+        // (DoAction above); it ran at every quarter of an hour here
+
+        // (pumpkin-credit) while the Large Jack-o'-Lantern lies in the village, a player who comes into town gets the credit too
+        if (!EventProgress)
+        {
+            if (PumpkinCreditTimer <= diff)
+            {
+                PumpkinCreditTimer = 5 * IN_MILLISECONDS;
+                if (me->FindNearestGameObject(GO_LARGE_JACK, 100.0f))
+                    DoCastAOE(SPELL_HEADLES_HORSEMAN_QUEST_CREDIT, true);
+            }
+            else
+                PumpkinCreditTimer -= diff;
+        }
 
         if (EventProgress)
         {
@@ -482,6 +494,7 @@ struct npc_headless_horseman_fire : public ScriptedAI
     uint32 IncreaseFireTimer;
     bool Fire;
     bool Immuned;
+    bool EverLit = false;   // (fire-reach) lit by the Shade in this attack
     uint8 curRangoFire;
 
     void SetData(uint32 type, uint32 data) override
@@ -489,9 +502,9 @@ struct npc_headless_horseman_fire : public ScriptedAI
         id = data;
     }
 
-    uint32 GetData(uint32 /*type*/) const override
+    uint32 GetData(uint32 type) const override
     {
-        return id;
+        return type == 1 ? uint32(EverLit) : id;   // (fire-reach) 1: lit by the Shade in this attack
     }
 
     void DoAction(int32 action) override
@@ -506,7 +519,16 @@ struct npc_headless_horseman_fire : public ScriptedAI
                 Fire = false;
                 RateFire = 0;
                 curRangoFire = 0;
+                EverLit = false;
                 me->RemoveAllAuras();
+                break;
+            case ACTION_LIGHT_DIRECT:   // (fire-reach)
+                if (EverLit || Immuned || id >= 242)
+                    break;
+                me->AddAura(RangoFire[0], me);
+                PostionEventoHallowends[id].AlreadyFired = true;
+                EverLit = true;
+                TC_LOG_INFO("scripts", "Village fires: fire point {} burns (lit directly: out of reach of the throw)", id);
                 break;
         }
     }
@@ -530,9 +552,15 @@ struct npc_headless_horseman_fire : public ScriptedAI
        {
            FireNodsList.sort(Trinity::ObjectDistanceOrderPred(me));
 
+            // (fire-spreads) the index was a truth value (0 or 1) and the nearest fire point is this one itself
             for (auto* nodeFire : FireNodsList)
-                if (!PostionEventoHallowends[nodeFire && nodeFire->AI()->GetData(0)].AlreadyFired)
+            {
+                if (nodeFire == me || !nodeFire->AI())
+                    continue;
+                uint32 const nodeId = nodeFire->AI()->GetData(0);
+                if (nodeId < 242 && !PostionEventoHallowends[nodeId].AlreadyFired)
                     return nodeFire;
+            }
        }
        return nullptr;
     }
@@ -571,6 +599,8 @@ struct npc_headless_horseman_fire : public ScriptedAI
                 return;
             }
             PostionEventoHallowends[id].AlreadyFired = true;
+            TC_LOG_INFO("scripts", "Village fires: fire point {} burns", id);   // (bucket-diag)
+            EverLit = true;   // (fire-reach)
         }
     }
 
@@ -603,10 +633,11 @@ struct npc_headless_horseman_fire : public ScriptedAI
                         curRangoFire++;
                         me->AddAura(RangoFire[curRangoFire], me);
                     } else
-                        if (Creature * nextFireNode = FireNodeNext())
+                        if (Creature * nextFireNode = Immuned ? nullptr : FireNodeNext())   // (fire-spreads) not after the attack
                         {
                             nextFireNode->AddAura(RangoFire[0], nextFireNode);
                             PostionEventoHallowends[nextFireNode->AI()->GetData(0)].AlreadyFired = true;
+                            TC_LOG_INFO("scripts", "Village fires: fire point {} spreads to fire point {}", id, nextFireNode->AI()->GetData(0));
                         }
                         IncreaseFireTimer = 60000 / RateFire;
                 } else
@@ -691,6 +722,8 @@ enum HorsemanTalk
     HORSEMAN_PASS_EVENT = 2,
     HORSEMAN_SAY_1      = 3,
     HORSEMAN_SAY_2      = 4,
+    HORSEMAN_DEATH      = 5,   // (shade-lands)
+    HORSEMAN_CONFLAG    = 6,
     HORSEMAN_UNUSED     = 5, // NYI
 };
 
@@ -715,6 +748,39 @@ struct npc_shade_of_the_horseman : public ScriptedAI
     uint32 PointFisrtArea;
     bool wp_reached;
     bool MovementFinished;
+    // (shade-lands) after the fires are out
+    enum { POINT_LAND = 1000, SPELL_SHADE_CONFLAGRATION = 42380 };
+    bool Landing = false;
+    bool Landed = false;
+    uint32 ConflagrationTimer = 0;
+    uint32 LeaveTimer = 0;
+    std::vector<ObjectGuid> ThrownAt;   // (fire-reach)
+    uint32 ThrowCheckTimer = 0;
+
+    void Land()
+    {
+        Landing = true;
+        MovementFinished = true;
+        me->SetVisible(true);
+        me->GetMotionMaster()->Clear(false);
+        Position pos = me->GetPosition();
+        if (TempSummon* summon = me->ToTempSummon())
+            if (Unit* controller = summon->GetSummoner())
+                pos = controller->GetPosition();
+        me->GetMotionMaster()->MovePoint(POINT_LAND, pos);
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        if (!Landed)
+            return;
+        Talk(HORSEMAN_DEATH);
+        me->DespawnOrUnsummon(30000);   // a summon without a despawn time: its corpse would stay
+        if (TempSummon* summon = me->ToTempSummon())
+            if (Unit* controller = summon->GetSummoner())
+                if (Creature* c = controller->ToCreature())
+                    c->AI()->DoAction(ACTION_SHADE_SLAIN);
+    }
 
     void FlyMode()
     {
@@ -732,11 +798,12 @@ struct npc_shade_of_the_horseman : public ScriptedAI
         {
             case ACTION_FAIL_EVENT:
                 Talk(HORSEMAN_EVENT_FAIL);
-                me->DisappearAndDie();
+                // (shade-unsummon) DisappearAndDie left a summon that respawned after five minutes, invisible and alive
+                me->DespawnOrUnsummon(2000);
                 break;
             case ACTION_PASS_EVENT:
                 Talk(HORSEMAN_PASS_EVENT);
-                me->DisappearAndDie();
+                Land();   // (shade-lands) he vanished here
                 break;
             case ACTION_SAY_1:
                 Talk(HORSEMAN_SAY_1);
@@ -754,6 +821,17 @@ struct npc_shade_of_the_horseman : public ScriptedAI
         if (Unit * Owner = me->ToTempSummon()->GetSummoner())
             CountFire = Owner->ToCreature()->AI()->GetData(0);
         GetCreatureListWithEntryInGrid(FireNodsList, me, NPC_HEADLESS_HORSEMAN_FIRE_DND, 150.0f);
+        // (fires-own-village) only the fire points of this village (summoned by its controller): the fixed spawns of the practice
+        // quests are the same creature and were thrown at as well
+        if (TempSummon* self = me->ToTempSummon())
+        {
+            ObjectGuid const controller = self->GetSummonerGUID();
+            FireNodsList.remove_if([controller](Creature* node)
+            {
+                TempSummon* summon = node->ToTempSummon();
+                return !summon || summon->GetSummonerGUID() != controller;
+            });
+        }
         uint32 CountFireer = 0;
         if (!FireNodsList.empty())
         {
@@ -764,6 +842,11 @@ struct npc_shade_of_the_horseman : public ScriptedAI
                     break;
                 std::advance(itr, urand(0, FireNodsList.size()-1));
                 me->CastSpell((*itr),SPELL_HEADLESS_HORSEMAN_START_FIRE,true);
+                ThrownAt.push_back((*itr)->GetGUID());   // (fire-reach)
+                ThrowCheckTimer = 5 * IN_MILLISECONDS;
+                TC_LOG_INFO("scripts", "Village fires: the Shade lights fire point {} at {:.1f} {:.1f} {:.1f} (area {}); in combat {}, evading {}, distance {:.1f}",   // (village-fire-log) (light-diag)
+                    (*itr)->AI()->GetData(0), (*itr)->GetPositionX(), (*itr)->GetPositionY(), (*itr)->GetPositionZ(), area,
+                    (*itr)->IsInCombat() ? 1 : 0, (*itr)->IsInEvadeMode() ? 1 : 0, me->GetExactDist(*itr));
                 CountFireer++;
                 FireNodsList.erase(itr);
             }
@@ -773,6 +856,24 @@ struct npc_shade_of_the_horseman : public ScriptedAI
     void MovementInform(uint32 type, uint32 id) override
     {
         if (type != POINT_MOTION_TYPE)
+            return;
+        if (id == POINT_LAND)   // (shade-lands) on the ground: hostile, attackable, three minutes to slay him
+        {
+            Landing = false;
+            Landed = true;
+            me->SetFlying(false);
+            me->SetSpeed(MOVE_WALK, 1.0f, true);
+            me->SetHomePosition(me->GetPosition());
+            me->SetFaction(14);
+            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->SetReactState(REACT_AGGRESSIVE);
+            ConflagrationTimer = urand(6000, 10000);
+            LeaveTimer = 3 * MINUTE * IN_MILLISECONDS;
+            if (Player* player = me->SelectNearestPlayer(60.0f))
+                AttackStart(player);
+            return;
+        }
+        if (Landing || Landed)
             return;
         wp_reached = true;
         if (id == 0)
@@ -794,12 +895,96 @@ struct npc_shade_of_the_horseman : public ScriptedAI
 
     void UpdateAI(uint32 diff) override
     {
+        // (fire-reach) a throw that was out of reach (the spell reaches 25 yards) never lit its fire point
+        if (ThrowCheckTimer)
+        {
+            if (ThrowCheckTimer <= diff)
+            {
+                ThrowCheckTimer = 0;
+                for (ObjectGuid const& guid : ThrownAt)
+                    if (Creature* node = ObjectAccessor::GetCreature(*me, guid))
+                        if (node->AI() && !node->AI()->GetData(1))
+                            node->AI()->DoAction(ACTION_LIGHT_DIRECT);
+                ThrownAt.clear();
+            }
+            else
+                ThrowCheckTimer -= diff;
+        }
+
+        if (Landed)   // (shade-lands)
+        {
+            if (LeaveTimer <= diff)
+            {
+                Landed = false;   // not slain in time: he leaves, no pumpkin
+                me->DespawnOrUnsummon();   // (shade-unsummon)
+                return;
+            }
+            LeaveTimer -= diff;
+
+            if (!me->GetVictim())
+            {
+                if (Player* player = me->SelectNearestPlayer(60.0f))
+                    AttackStart(player);
+                return;
+            }
+
+            if (ConflagrationTimer <= diff)
+            {
+                if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, 30.0f, true))
+                {
+                    Talk(HORSEMAN_CONFLAG);
+                    DoCast(target, SPELL_SHADE_CONFLAGRATION);
+                }
+                ConflagrationTimer = urand(12000, 18000);
+            }
+            else
+                ConflagrationTimer -= diff;
+
+            DoMeleeAttackIfReady();
+            return;
+        }
+        if (Landing)
+            return;
+
         if (wp_reached && !MovementFinished)
         {
             wp_reached = false;
             me->GetMotionMaster()->Clear(false);
             me->GetMotionMaster()->MovePoint(PointCur,WaypointsShadeOfTheHorsemans[PointFisrtArea + PointCur].waypoint);
         }
+    }
+
+    // (shade-lands) on the ground he does not run home and heal when his target is gone: UpdateAI looks for the next player
+    void EnterEvadeMode(EvadeReason /*why*/ = EVADE_REASON_OTHER) override
+    {
+        if (!Landed)
+            return;
+        me->GetThreatManager().ClearAllThreat();
+        me->CombatStop(true);
+    }
+};
+
+// (fires-start-by-quest) Masked Orphan Matron 23973 and Costumed Orphan Matron 24519: a player who accepts "Let the Fires Come!"
+// starts the attack of the Shade of the Horseman on this village
+struct npc_orphan_matron_fires : public ScriptedAI
+{
+    npc_orphan_matron_fires(Creature* creature) : ScriptedAI(creature) { }
+
+    enum
+    {
+        QUEST_LET_THE_FIRES_COME_A = 12135,
+        QUEST_LET_THE_FIRES_COME_H = 12139,
+        NPC_VILLAGE_FIRE_CONTROLLER = 190020,
+    };
+
+    void OnQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() != QUEST_LET_THE_FIRES_COME_A && quest->GetQuestId() != QUEST_LET_THE_FIRES_COME_H)
+            return;
+        if (!player || !player->GetSession() || player->GetSession()->IsBot())
+            return;
+        if (Creature* controller = me->FindNearestCreature(NPC_VILLAGE_FIRE_CONTROLLER, 150.0f))
+            controller->AI()->DoAction(ACTION_BEGIN_BY_QUEST);
     }
 };
 
@@ -1035,8 +1220,45 @@ class spell_bucket_lands : public SpellScript
         }
     }
 
+    // (bucket-diag) where the bucket landed and what it could reach
+    void LogTargets(std::list<WorldObject*>& targets)
+    {
+        WorldLocation const* dest = GetExplTargetDest();
+        Unit* caster = GetCaster();
+        if (!dest || !caster)
+            return;
+        Creature* nearest = nullptr;
+        float best = 1000.0f;
+        std::list<Creature*> nodes;
+        GetCreatureListWithEntryInGrid(nodes, caster, NPC_HEADLESS_HORSEMAN_FIRE_DND, 100.0f);
+        for (Creature* node : nodes)
+        {
+            float d = node->GetExactDist(dest);
+            uint32 const id = node->AI() ? node->AI()->GetData(0) : 0;
+            if (id < 242 && PostionEventoHallowends[id].AlreadyFired)   // what the attack counts as burning
+                if (d < best)
+                {
+                    best = d;
+                    nearest = node;
+                }
+        }
+        uint32 fires = 0;
+        for (WorldObject* t : targets)
+            if (t->GetEntry() == NPC_HEADLESS_HORSEMAN_FIRE_DND)
+                ++fires;
+        if (nearest)
+            TC_LOG_INFO("scripts", "Village fires: bucket of {} lands at {:.1f} {:.1f} {:.1f}; nearest burning point at {:.1f} {:.1f} {:.1f} (flat {:.1f}, height {:.1f}, 3d {:.1f}); "
+                "targets {} ({} fire points); caster to that point {:.1f}", caster->GetName(), dest->GetPositionX(), dest->GetPositionY(), dest->GetPositionZ(),
+                nearest->GetPositionX(), nearest->GetPositionY(), nearest->GetPositionZ(), nearest->GetExactDist2d(dest->GetPositionX(), dest->GetPositionY()),
+                nearest->GetPositionZ() - dest->GetPositionZ(), best, uint32(targets.size()), fires, caster->GetExactDist(nearest));
+        else
+            TC_LOG_INFO("scripts", "Village fires: bucket of {} lands at {:.1f} {:.1f} {:.1f}; no burning point within 100 yd; targets {} ({} fire points)",
+                caster->GetName(), dest->GetPositionX(), dest->GetPositionY(), dest->GetPositionZ(), uint32(targets.size()), fires);
+    }
+
     void Register() override
     {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_bucket_lands::LogTargets, EFFECT_0, TARGET_UNIT_DEST_AREA_ENTRY);   // (bucket-diag)
         OnEffectHitTarget += SpellEffectFn(spell_bucket_lands::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
     }
 };
@@ -1333,6 +1555,7 @@ void AddSC_event_hallows_end()
     new creature_script<npc_kali_remik>("npc_kali_remik");
     new creature_script<npc_headless_horseman_fire>("npc_headless_horseman_fire");
     new creature_script<npc_shade_of_the_horseman>("npc_shade_of_the_horseman");
+    new creature_script<npc_orphan_matron_fires>("npc_orphan_matron_fires");   // (fires-start-by-quest)
     new creature_script<npc_start_stink_bombs_away>("npc_start_stink_bombs_away");
     new go_wickerman_ember;
     new spell_script<spell_halloween_wand>("spell_halloween_wand");

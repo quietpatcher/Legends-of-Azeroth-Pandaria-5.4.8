@@ -79,8 +79,11 @@ enum eActions
 
 enum Durand_Yells
 {
-    DURAND_TALK_INTRO              = 1,
-    DURAND_TALK_SLAY               = 2
+    DURAND_TALK_APPROACH           = 0,   // (durand-lines) the party comes near
+    DURAND_TALK_INTRO              = 1,   // the pull
+    DURAND_TALK_SLAY               = 2,
+    DURAND_TALK_DEATH              = 3,
+    DURAND_TALK_RESURRECTED        = 4
 };
 
 enum Whitemane_Yells
@@ -113,6 +116,7 @@ class boss_commander_durand : public CreatureScript
                 _dashingcheck = false;
                 _fakedeath = false;
                 _restore = false;
+                _approachSaid = false;
             }
 
             void Reset() override
@@ -135,8 +139,27 @@ class boss_commander_durand : public CreatureScript
                 // instance->HandleGameObject(ObjectGuid::Empty, false, ObjectAccessor::GetGameObject(*me, instance->GetGuidData(GO_WHITEMANE_ENTRANCE)));
             }
 
+            // (durand-lines) his intro when the party comes near
+            void MoveInLineOfSight(Unit* who) override
+            {
+                if (!_approachSaid && who && who->GetTypeId() == TYPEID_PLAYER && !who->ToPlayer()->IsGameMaster() && me->IsAlive()
+                    && !me->IsInCombat() && me->IsWithinDistInMap(who, 50.0f) && me->IsWithinLOSInMap(who))
+                {
+                    _approachSaid = true;
+                    Talk(DURAND_TALK_APPROACH);
+                }
+                BossAI::MoveInLineOfSight(who);
+            }
+
+            void KilledUnit(Unit* victim) override
+            {
+                if (victim && victim->GetTypeId() == TYPEID_PLAYER)
+                    Talk(DURAND_TALK_SLAY);   // (durand-lines)
+            }
+
             void JustDied(Unit* killer) override
             {
+                Talk(DURAND_TALK_DEATH);   // (durand-lines)
                 _JustDied();
                 if (instance)
                 {
@@ -169,6 +192,7 @@ class boss_commander_durand : public CreatureScript
                     me->ClearAllReactives();
                     _fakedeath = true;
                     _restore = true;
+                    Talk(DURAND_TALK_DEATH);   // (durand-lines) he falls
                     me->SetHealth(IsHeroic() ? 1000000 : 5000);
                     me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
                     me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
@@ -226,6 +250,7 @@ class boss_commander_durand : public CreatureScript
                 if (_restore && me->GetHealthPct() >= 50)
                 {
                     _restore = false;
+                    Talk(DURAND_TALK_RESURRECTED);   // (durand-lines) "At your side, milady!"
                     events.ScheduleEvent(EVENT_FLASH_OF_STEEL, 9000);
                     events.ScheduleEvent(EVENT_DASHING_STRIKE, urand(24000, 25000));
                     if (Unit* target = SelectTarget(SELECT_TARGET_TOPAGGRO))
@@ -260,8 +285,7 @@ class boss_commander_durand : public CreatureScript
                                 {
                                     me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
                                     DoCast(me, SPELL_DASHING_STRIKE_INVISIBLE);
-                                    _dashingcheck = true;
-                                    Talk(DURAND_TALK_SLAY);
+                                    _dashingcheck = true;   // (durand-lines) his kill line was said here, at every Dashing Strike
                                 }
                                 _dashingcount++;
                                 if (Unit* player = SelectTarget(SELECT_TARGET_RANDOM))
@@ -295,6 +319,7 @@ class boss_commander_durand : public CreatureScript
                 bool _dashingcheck;
                 bool _fakedeath;
                 bool _restore;
+                bool _approachSaid;   // (durand-lines)
 
         };
 
@@ -322,6 +347,10 @@ class boss_high_inqusitior_whitemane : public CreatureScript
                 me->SetPower(POWER_MANA, me->GetMaxPower(POWER_MANA));
                 _switch = false;
                 InRessurection = false;
+
+                // InitializeAI replaces the base hook: retain its living-spawn
+                // Reset so Durand activates a passive boss, even on the first pull.
+                BossAI::InitializeAI();
             }
 
             void DoAction(int32 actionId) override
@@ -400,6 +429,12 @@ class boss_high_inqusitior_whitemane : public CreatureScript
                 me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
             }
 
+            void KilledUnit(Unit* victim) override
+            {
+                if (victim && victim->GetTypeId() == TYPEID_PLAYER)
+                    Talk(WHITEMANE_TALK_SLAY);   // (durand-lines)
+            }
+
             void JustDied(Unit* killer) override
             {
                 Talk(WHITEMANE_TALK_DEATH);
@@ -416,7 +451,6 @@ class boss_high_inqusitior_whitemane : public CreatureScript
                     DoCast(me, SPELL_SUMMON_UNQUENCHABLE);
                     DoCast(me, SPELL_SUMMON_HAND_OF_PROVIDENCE);
                     DoCast(me, SPELL_SUMMON_SOUL_MISSILE);
-                    DoCastAOE(SPELL_WHITEMANE_KILL_CREDIT); // wrong spell
 
                     // Quest Ender
                     if (Creature* HoodedCrusader = ObjectAccessor::GetCreature(*me, instance->GetGuidData(NPC_HOODED_CRUSADER_OUTRO)))
@@ -424,25 +458,8 @@ class boss_high_inqusitior_whitemane : public CreatureScript
                         HoodedCrusader->AI()->DoAction(ACTION_QUEST_EVENT);
                     } 
 
-                    // Hackfix for quest 31514 and 31516
-                    float radius = 50.0f;
-                    std::list<Player*> players;
-                    Trinity::AnyPlayerInObjectRangeCheck checker(me, radius);
-                    Trinity::PlayerListSearcher<Trinity::AnyPlayerInObjectRangeCheck> searcher(me, players, checker);
-                    me->VisitNearbyWorldObject(radius, searcher);
-
-                    for (std::list<Player*>::const_iterator itr = players.begin(); itr != players.end(); ++itr)
-                    {
-                        if (!IsHeroic() && (*itr)->GetQuestStatus(31514) == QUEST_STATUS_INCOMPLETE)
-                        {
-                            (*itr)->KilledMonsterCredit(NPC_Q31514_KILL_CREDIT, ObjectGuid::Empty);
-                        }
-                        if (IsHeroic() && (*itr)->GetQuestStatus(31516) == QUEST_STATUS_INCOMPLETE)
-                        {
-                            (*itr)->KilledMonsterCredit(NPC_Q31516_KILL_CREDIT, ObjectGuid::Empty);
-                        }                        
-                    }
-
+                    // Quest credit is awarded by the blades' DBC send-events
+                    // (33000/33001), after the player uses the provided item.
                 }
             }
 
@@ -651,6 +668,51 @@ class spell_sc_mass_ressurection : public SpellScript
     }
 };
 
+// Blades of the Anointed (87388/87390): validate before the cast item is consumed.
+class spell_sc_blades_of_the_anointed : public SpellScript
+{
+    PrepareSpellScript(spell_sc_blades_of_the_anointed);
+
+    SpellCastResult CheckCast()
+    {
+        Player* player = GetCaster()->ToPlayer();
+        if (!player || player->GetMapId() != 1004)
+            return SPELL_FAILED_BAD_TARGETS;
+
+        bool heroic = GetSpellInfo()->Id == 126843;
+        if (player->GetMap()->GetDifficulty() != (heroic ? DUNGEON_DIFFICULTY_HEROIC : DUNGEON_DIFFICULTY_NORMAL) ||
+            player->GetQuestStatus(heroic ? 31516 : 31514) != QUEST_STATUS_INCOMPLETE)
+            return SPELL_FAILED_CANT_DO_THAT_RIGHT_NOW;
+
+        InstanceScript* instance = player->GetInstanceScript();
+        if (!instance || instance->GetBossState(BOSS_WHITEMANE) != DONE)
+            return SPELL_FAILED_BAD_TARGETS;
+
+        Creature* corpse = ObjectAccessor::GetCreature(*player, instance->GetGuidData(BOSS_WHITEMANE));
+        if (!corpse || corpse->GetEntry() != NPC_HIGH_INQUISITOR_WHITEMANE || !corpse->isDead())
+            return SPELL_FAILED_BAD_TARGETS;
+
+        // These DBC spells use a nearby target and can discard the explicit
+        // unit target. Also check the player's selection: Durand's corpse must
+        // not consume the blades merely because Whitemane's focus is nearby.
+        ObjectGuid target = GetExplTargetUnit() ? GetExplTargetUnit()->GetGUID() : player->GetTarget();
+        if (!target.IsEmpty() && target != corpse->GetGUID())
+            return SPELL_FAILED_BAD_TARGETS;
+
+        if (!player->IsWithinDistInMap(corpse, 10.0f))
+            return SPELL_FAILED_OUT_OF_RANGE;
+
+        // The core additionally requires corpse spell focus 1780. The existing
+        // SEND_EVENT handler awards this user's quest credit after a valid cast.
+        return SPELL_CAST_OK;
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_sc_blades_of_the_anointed::CheckCast);
+    }
+};
+
 // Quest ender for 31514 and 31516
 // RP event https://wowpedia.fandom.com/wiki/Unto_Dust_Thou_Shalt_Return
 // Hooded Crusader says: It is done. You did it, <name>!
@@ -673,7 +735,8 @@ struct npc_hooded_crusader_c64842 : public ScriptedAI
 
     void Reset() override
     {
-        me->SetVisible(false);
+        // A completed instance can be revisited after using the blades.
+        me->SetVisible(instance && instance->GetBossState(BOSS_WHITEMANE) == DONE);
         _events.Reset();
     }
 
@@ -763,5 +826,6 @@ void AddSC_boss_whitemane_and_durand()
     new boss_high_inqusitior_whitemane();
     new spell_script<spell_sc_scarlet_ressurection>("spell_sc_scarlet_ressurection");
     new spell_script<spell_sc_mass_ressurection>("spell_sc_mass_ressurection");
+    new spell_script<spell_sc_blades_of_the_anointed>("spell_sc_blades_of_the_anointed");
     RegisterCreatureAI(npc_hooded_crusader_c64842);
 }

@@ -47,6 +47,27 @@ namespace
         return 0;
     }
 
+    // (lfg-bot-unbind) a bot keeps no lockout for a heroic it is asked to fill. A bot that finished a heroic was bound to it
+    // and locked out of the same heroic until the reset; after a few runs the queue of a player for that heroic found no
+    // healer any more. Releases the bot's own bind of the heroic dungeons in the request and recomputes its lock list.
+    void ReleaseBotLockouts(Player* bot, lfg::LfgDungeonSet const& dungeons)
+    {
+        bool released = false;
+        for (uint32 id : dungeons)
+        {
+            lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(id);
+            if (!dungeon || dungeon->difficulty <= DUNGEON_DIFFICULTY_NORMAL || bot->GetMapId() == dungeon->map)
+                continue;
+            if (bot->GetBoundInstance(dungeon->map, dungeon->difficulty))
+            {
+                bot->UnbindInstance(dungeon->map, dungeon->difficulty);
+                released = true;
+            }
+        }
+        if (released)
+            sLFGMgr->InitializeLockedDungeons(bot);
+    }
+
     uint8 RoleOf(Player* bot)
     {
         if (PlayerBotSpec::IsTank(bot, true))
@@ -91,7 +112,9 @@ void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint3
             if ((!need[0] && !need[1] && !need[2]) || tries >= 40)
                 break;
             if (!bot->IsInWorld() || !bot->IsAlive() || bot->GetGroup() || bot->InBattleground() || bot->InBattlegroundQueue()
-                || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetMap()->Instanceable() || bot->GetTeam() != player->GetTeam()
+                || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetTeam() != player->GetTeam()
+                // (lfg-leftover-bots) a bot without a group in a five-man dungeon is a leftover of a finished run: it can be taken
+                || (bot->GetMap()->Instanceable() && (bot->GetMap()->IsRaid() || bot->GetMap()->IsBattlegroundOrArena()))
                 || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
                 continue;
             if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
@@ -105,8 +128,12 @@ void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint3
             uint32 slot = role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2;
             if (!need[slot])
                 continue;
+            // (holiday-roles-90) the tank and the healer of a holiday boss group are of the top level; the slot waits for one
+            if (slot < 2 && bot->GetLevel() != 90 && (dungeonIds.count(285) || dungeonIds.count(287)))
+                continue;
             ++tries;
             lfg::LfgDungeonSet botDungeons = dungeonIds;
+            ReleaseBotLockouts(bot, botDungeons);   // (lfg-bot-unbind)
             sLFGMgr->JoinLfg(bot, lfg::LfgRoles(role), botDungeons, "");
             if (!WaitingQueue(bot->GetGUID()))
                 continue;   // locked out of these dungeons (level, item level, deserter)
@@ -196,6 +223,9 @@ static void LfgThanksAndLeave(uint32 now)
         if (bot->GetMap()->IsDungeon())
             sLFGMgr->TeleportPlayer(bot, true);
         bot->RemoveFromGroup();
+        // (lfg-leftover-bots) a bot that BotLife brought in has no way out stored: it stayed inside without a group. Home it goes
+        if (bot->IsInWorld() && bot->GetMap()->IsDungeon() && !bot->IsBeingTeleported())
+            sBotLife->QueueTeleport(bot, bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, bot->GetOrientation());
         TC_LOG_INFO("playerbots", "BotLife: {} leaves the finished dungeon finder group of {}", bot->GetName(), player->GetName());
     }
     for (auto itr = s_finishedSince.begin(); itr != s_finishedSince.end();)
@@ -259,9 +289,46 @@ static void LfgBringInBots(uint32 now)
         itr = seen.count(itr->first) ? std::next(itr) : s_outsideSince.erase(itr);
 }
 
+// (lfg-orphan-groups) a dungeon finder group that no player is part of any more (the player left first, or logged out): its bots
+// leave as well and go home, one a round. They stayed grouped inside the instance and were lost for the next queue (world thread)
+static void LfgOrphanGroups(uint32 now)
+{
+    static std::unordered_map<ObjectGuid, uint32> s_since;   // group -> first seen without a player
+    std::unordered_set<ObjectGuid> current;
+    for (auto const& bp : sRandomPlayerbotMgr->GetAllBots())
+    {
+        Player* bot = bp.second;
+        if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported() || bot->IsInCombat())
+            continue;
+        Group* group = bot->GetGroup();
+        if (!group || !group->isLFGGroup() || current.count(group->GetGUID()))
+            continue;
+        bool keep = false;
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
+            if (!sRandomPlayerbotMgr->IsRandomBot(slot.guid.GetCounter()) || sBotLife->IsLfgTestBot(slot.guid))
+                keep = true;   // a player (online or not), or a dungeon finder test that is running
+        if (keep)
+            continue;
+        current.insert(group->GetGUID());
+        uint32& since = s_since[group->GetGUID()];
+        if (!since)
+            since = now;
+        if (now - since < 120 * IN_MILLISECONDS)
+            continue;
+        bool const inside = bot->GetMap()->IsDungeon();
+        bot->RemoveFromGroup();
+        if (inside && bot->IsInWorld() && !bot->IsBeingTeleported())
+            sBotLife->QueueTeleport(bot, bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, bot->GetOrientation());
+        TC_LOG_INFO("playerbots", "BotLife: {} leaves a dungeon finder group without a player{}", bot->GetName(), inside ? " and goes home" : "");
+    }
+    for (auto itr = s_since.begin(); itr != s_since.end();)
+        itr = current.count(itr->first) ? std::next(itr) : s_since.erase(itr);
+}
+
 void BotLifeMgr::LfgUpdate(uint32 now)
 {
     LfgThanksAndLeave(now);
+    LfgOrphanGroups(now);
     LfgBringInBots(now);
 
     // forget bots that are out of the queue (matched into a dungeon, or the player left the queue)
@@ -346,7 +413,9 @@ void BotLifeMgr::LfgUpdate(uint32 now)
                 if ((!need[0] && !need[1] && !need[2]) || tries >= 40)
                     break;
                 if (!bot->IsInWorld() || !bot->IsAlive() || bot->GetGroup() || bot->InBattleground() || bot->InBattlegroundQueue()
-                    || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetMap()->Instanceable() || bot->GetTeam() != player->GetTeam()
+                    || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetTeam() != player->GetTeam()
+                // (lfg-leftover-bots) a bot without a group in a five-man dungeon is a leftover of a finished run: it can be taken
+                || (bot->GetMap()->Instanceable() && (bot->GetMap()->IsRaid() || bot->GetMap()->IsBattlegroundOrArena()))
                     || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
                     continue;
                 if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
@@ -360,8 +429,12 @@ void BotLifeMgr::LfgUpdate(uint32 now)
                 uint32 slot = role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2;
                 if (!need[slot])
                     continue;
+                // (holiday-roles-90) the tank and the healer of a holiday boss group are of the top level; the slot waits for one
+                if (slot < 2 && bot->GetLevel() != 90 && (dungeons.count(285) || dungeons.count(287)))
+                    continue;
                 ++tries;
                 lfg::LfgDungeonSet botDungeons = dungeons;
+                ReleaseBotLockouts(bot, botDungeons);   // (lfg-bot-unbind)
                 sLFGMgr->JoinLfg(bot, lfg::LfgRoles(role), botDungeons, "");
                 if (!WaitingQueue(bot->GetGUID()))
                     continue;   // locked out of these dungeons (level, item level, deserter)
@@ -441,6 +514,9 @@ std::string BotLifeMgr::LfgTestQueue(uint32 dungeonId)
         if (!botAI || botAI->HasRealPlayerMaster())
             continue;
         uint8 const role = RoleOf(bot);
+        // a holiday boss is tuned for the top level: no tank or healer below it in the test
+        if ((dungeonId == 285 || dungeonId == 287) && role != lfg::PLAYER_ROLE_DAMAGE && bot->GetLevel() < dbc->maxlevel)
+            continue;
         pool[bot->GetTeam() == HORDE ? 1 : 0][role == lfg::PLAYER_ROLE_TANK ? 0 : role == lfg::PLAYER_ROLE_HEALER ? 1 : 2].push_back(bot);
     }
     int team = -1;
@@ -462,13 +538,34 @@ std::string BotLifeMgr::LfgTestQueue(uint32 dungeonId)
     }
     else
     {
+        // the holiday bosses are tuned for the top level: a level 89 tank has a third of the health
+        // of one of level 90 (333k against 900k). The faction that has a tank and a healer of the top level goes first, then
+        // the one with the most damage dealers; the tank is one of the highest level there is.
+        auto score = [&](int t)
+        {
+            int points = int(pool[t][2].size());
+            for (int r = 0; r < 2; ++r)
+                if (std::any_of(pool[t][r].begin(), pool[t][r].end(), [&](Player* p) { return p->GetLevel() >= dbc->maxlevel; }))
+                    points += 1000;
+            return points;
+        };
         for (int t = 0; t < 2; ++t)
-            if (!pool[t][0].empty() && !pool[t][1].empty() && pool[t][2].size() >= 3 && (team < 0 || pool[t][2].size() > pool[team][2].size()))
+            if (!pool[t][0].empty() && !pool[t][1].empty() && pool[t][2].size() >= 3 && (team < 0 || score(t) > score(team)))
                 team = t;
         if (team < 0)
             return "lfgtest: not enough idle bots of level " + std::to_string(dbc->minlevel) + "-" + std::to_string(dbc->maxlevel)
-                + " (tank, healer, 3 damage of one faction)";
-        tank = pool[team][0][urand(0, pool[team][0].size() - 1)];
+                + " (tank, healer, 3 damage of one faction); idle now: Alliance " + std::to_string(pool[0][0].size()) + " tank "
+                + std::to_string(pool[0][1].size()) + " healer " + std::to_string(pool[0][2].size()) + " damage, Horde "
+                + std::to_string(pool[1][0].size()) + " tank " + std::to_string(pool[1][1].size()) + " healer "
+                + std::to_string(pool[1][2].size()) + " damage";
+        uint8 top = 0;
+        for (Player* p : pool[team][0])
+            top = std::max<uint8>(top, p->GetLevel());
+        std::vector<Player*> tanks;
+        for (Player* p : pool[team][0])
+            if (p->GetLevel() == top)
+                tanks.push_back(p);
+        tank = tanks[urand(0, tanks.size() - 1)];
     }
     lfg::LfgDungeonSet dungeons = { dungeonId };
     sLFGMgr->JoinLfg(tank, lfg::LfgRoles(dbc->scenario ? lfg::PLAYER_ROLE_DAMAGE : lfg::PLAYER_ROLE_TANK), dungeons, "");
@@ -545,7 +642,17 @@ bool BotLifeMgr::LfgTestLeadTick(Player* bot, BotLifeInfo& t, uint32 now)
             if (!member || member == bot || !member->GetSession())
                 continue;
             if (member->IsInWorld() && member->GetMap() == bot->GetMap() && member->IsAlive())
+            {
+                // alive but not with the lead (measured: the healer stood 96 yd away without line
+                // of sight for the first three and a half minutes of the fight and healed nothing): next to the lead first
+                if (!member->IsBeingTeleported() && (member->GetDistance(bot) > 25.0f || !member->IsWithinLOSInMap(bot)))
+                {
+                    TC_LOG_INFO("playerbots", "LFGTEST {} brought next to the lead (was {:.0f} yd away)", member->GetName(), member->GetDistance(bot));
+                    member->NearTeleportTo(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetOrientation());
+                    ++missing;
+                }
                 continue;
+            }
             static thread_local std::unordered_map<ObjectGuid, uint32> teleportSince;
             if (member->IsBeingTeleported())
             {
@@ -594,6 +701,27 @@ bool BotLifeMgr::LfgTestLeadTick(Player* bot, BotLifeInfo& t, uint32 now)
             why("group members not here yet");
             return true;
         }
+    }
+    // not before the group has its mana back, as players would wait: at most a minute
+    if (Group* group = bot->GetGroup())
+    {
+        static thread_local std::unordered_map<ObjectGuid, uint32> manaWaitSince;
+        uint32& since = manaWaitSince[bot->GetGUID()];
+        if (!since)
+            since = now;
+        bool low = false;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member->IsAlive() && member->GetMap() == bot->GetMap() && member->GetMaxPower(POWER_MANA) > 0
+                    && member->GetPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < 80.0f)
+                    low = true;
+        if (low && now - since < 60000)
+        {
+            why("mana below 80%");
+            t.lfgTestAt = now + 3000;
+            return true;
+        }
+        since = 0;
     }
     WorldObject* starter = nullptr;
     uint32 action = 1000;

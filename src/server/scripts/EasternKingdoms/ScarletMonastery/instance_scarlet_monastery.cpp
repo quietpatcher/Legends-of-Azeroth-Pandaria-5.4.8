@@ -109,6 +109,9 @@ class instance_scarlet_monastery : public InstanceMapScript
                                 creature->SetVisible(false);
                                 creature->SetReactState(REACT_PASSIVE);
                                 creature->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_PACIFIED | UNIT_FLAG_IMMUNE_TO_PC);
+                                // (horseman-no-piles) the aura of a Pile of Corpses kept raising Zombified Corpses
+                                if (creature->GetEntry() == NPC_PILE_OF_CORPSES)
+                                    creature->RemoveAurasDueToSpell(114951);
                                 return;
                             }
                             // the summoned inhabitants too (Zombified Corpses of the graveyard);
@@ -147,7 +150,7 @@ class instance_scarlet_monastery : public InstanceMapScript
                         break;
                     case NPC_HOODED_CRUSADER_OUTRO:
                         HoodedGUID = creature->GetGUID();
-                        creature->SetVisible(false);
+                        creature->SetVisible(GetBossState(BOSS_WHITEMANE) == DONE);
                         break;
                     case NPC_SCARLET_JUDICATOR:
                         if (!creature->HasAura(128800)) // drunked at holl must be neutral [set like default]

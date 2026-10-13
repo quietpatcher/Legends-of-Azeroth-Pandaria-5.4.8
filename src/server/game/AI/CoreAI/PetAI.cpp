@@ -558,6 +558,8 @@ Unit* PetAI::SelectNextTarget(bool allowAutoSelect) const
 
 void PetAI::HandleReturnMovement()
 {
+    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);   // (pet-combat-flag3) returning: not going after a target any more
+
     if (me->HasUnitState(UNIT_STATE_CASTING))
         return;
 
@@ -609,6 +611,7 @@ void PetAI::DoAttack(Unit* target, bool chase)
 
     if (me->Attack(target, true))
     {
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);   // (pet-combat-flag3) going after a target
         if (Unit* owner = me->GetOwner())
             owner->SetInCombatWith(target);
 

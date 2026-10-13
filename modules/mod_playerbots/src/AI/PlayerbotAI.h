@@ -148,6 +148,7 @@ public:
     WorldObject* GetWorldObject(ObjectGuid guid);
     AiObjectContext* GetAiObjectContext();   // out of line, with a thread owner check
     BotState GetState() { return _currentState; };
+    std::string GetLastEngineActions();   // (lfg-heal-trace) the action log of the engine that runs now (diagnostics)
     const NewRpgInfo& GetRpgInfo() { return _rpgInfo; }
     BotLifeInfo life;   // bot life state (BotLife)
     float GetRange(std::string const type);

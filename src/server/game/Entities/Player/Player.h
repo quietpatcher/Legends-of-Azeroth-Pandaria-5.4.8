@@ -2192,6 +2192,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
 
     ActionButton* AddActionButton(uint8 button, uint32 action, uint8 type);
     void RemoveActionButton(uint8 button);
+    uint32 RemoveInvalidSpellActionButtons(bool notifyClient = true);
     ActionButton const* GetActionButton(uint8 button);
     void SendInitialActionButtons() const
     {

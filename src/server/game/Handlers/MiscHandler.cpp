@@ -1907,6 +1907,16 @@ void WorldSession::HandleTimeSyncResp(WorldPacket& recvData)
     _player->m_timeSyncQueue.pop();
 }
 
+void WorldSession::HandleTimeSyncResponseDropped(WorldPacket& recvData)
+{
+    // The client can report a dropped time-sync response after logout has
+    // already destroyed Player. This is a diagnostic notification, not a
+    // successful time sample: consume it without touching Player or its sync
+    // queue (which may now belong to a different character on this session).
+    TC_LOG_DEBUG("network", "WORLD: CMSG_TIME_SYNC_RESPONSE_DROPPED from %s", GetPlayerInfo().c_str());
+    recvData.rfinish();
+}
+
 void WorldSession::HandleResetInstancesOpcode(WorldPacket& /*recvData*/)
 {
     TC_LOG_DEBUG("network", "WORLD: CMSG_RESET_INSTANCES");

@@ -103,6 +103,7 @@ std::vector<uint32> text = { SAY_PLAYER_TEXT_0, SAY_PLAYER_TEXT_1, SAY_PLAYER_TE
 
 struct boss_headless_horseman : public ScriptedAI
 {
+    bool _notHere = false;   // (horseman-hidden-no-fight) hidden: this is not his own version of the dungeon
     boss_headless_horseman(Creature* creature) : ScriptedAI(creature), _summons(me) { }
 
     void SetGUID(ObjectGuid guid, int32 type) override
@@ -115,12 +116,26 @@ struct boss_headless_horseman : public ScriptedAI
     {
         if (me->GetInstanceScript())
         {
-            if (!me->GetMap()->ToInstanceMap()->IsLFGMap())
+            // (horseman-own-version) outside his own version of the dungeon (dungeon finder, Headless Horseman) he is not there:
+            // hidden, passive and untouchable, and no Pumpkin Shrine. He stood in the graveyard of every Scarlet Monastery
+            // during Hallow's End, visible and hostile
+            bool ownVersion = me->GetMap()->ToInstanceMap()->IsLFGMap();
+            if (ownVersion)
+                if (Player* player = me->GetMap()->GetFirstPlayerInInstance())
+                    if (sLFGMgr->GetDungeon(player->GetGroup() ? player->GetGroup()->GetGUID() : player->GetGUID()) != LFG_DUNGEON_HEADLESS_HORSEMAN)
+                        ownVersion = false;
+            if (!ownVersion)
+            {
+                // (horseman-hidden-no-fight) also untouchable for creatures (the pet of a hunter engaged him), and out of any fight
+                _notHere = true;
+                me->SetVisible(false);
+                me->SetReactState(REACT_PASSIVE);
+                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+                me->GetThreatManager().ClearAllThreat();
+                me->CombatStop(true);
                 return;
-
-            if (Player* player = me->GetMap()->GetFirstPlayerInInstance())
-                if (sLFGMgr->GetDungeon(player->GetGroup() ? player->GetGroup()->GetGUID() : player->GetGUID()) != LFG_DUNGEON_HEADLESS_HORSEMAN)
-                    return;
+            }
+            _notHere = false;
         }
 
         _summons.DespawnAll();
@@ -168,6 +183,12 @@ struct boss_headless_horseman : public ScriptedAI
 
     void JustEngagedWith(Unit* /*who*/) override
     {
+        if (_notHere)   // (horseman-hidden-no-fight) hidden in an ordinary Scarlet Monastery: he pulled everybody within 100 yards into combat
+        {
+            me->GetThreatManager().ClearAllThreat();
+            me->CombatStop(true);
+            return;
+        }
         DoZoneInCombat(me, 100.0f);
     }
 
@@ -221,6 +242,11 @@ struct boss_headless_horseman : public ScriptedAI
 
     void DamageTaken(Unit* /*attacker*/, uint32& damage) override
     {
+        if (_notHere)   // (horseman-hidden-no-fight)
+        {
+            damage = 0;
+            return;
+        }
         if (phase > 3)
         {
             me->RemoveAllAuras();
@@ -613,6 +639,24 @@ class spell_sprouting : public SpellScript
     }
 };
 
+// 42380 Conflagration: the value of the periodic damage (10) is a percentage of the target's maximum health
+class spell_horseman_conflagration : public AuraScript
+{
+    PrepareAuraScript(spell_horseman_conflagration);
+
+    void CalculateAmount(AuraEffect const* aurEff, float& amount, bool& canBeRecalculated)
+    {
+        canBeRecalculated = false;
+        if (Unit* target = GetUnitOwner())
+            amount = float(target->CountPctFromMaxHealth(aurEff->GetBaseAmount()));
+    }
+
+    void Register() override
+    {
+        DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_horseman_conflagration::CalculateAmount, EFFECT_0, SPELL_AURA_PERIODIC_DAMAGE);
+    }
+};
+
 void AddSC_boss_headless_horseman()
 {
     new creature_script<boss_headless_horseman>("boss_headless_horseman");
@@ -620,4 +664,5 @@ void AddSC_boss_headless_horseman()
     new creature_script<npc_horseman_flaming_head>("npc_horseman_flaming_head");
     new go_pumpkin_shrine();
     new spell_script<spell_sprouting>("spell_sprouting");
+    new aura_script<spell_horseman_conflagration>("spell_horseman_conflagration");
 }

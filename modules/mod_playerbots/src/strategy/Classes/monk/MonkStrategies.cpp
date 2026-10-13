@@ -111,9 +111,9 @@ void MistweaverMonkStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new NextAction("surging mist on party", ACTION_MEDIUM_HEAL + 3),
         new NextAction("renewing mist on party", ACTION_MEDIUM_HEAL + 2),
         new NextAction("soothing mist on party", ACTION_MEDIUM_HEAL + 1), nullptr)));
+    // (mistweaver-mana) no Surging Mist at medium health: it emptied the mana bar in a hundred seconds of a boss fight
     triggers.push_back(new TriggerNode("party member medium health", NextAction::array(0,
         new NextAction("renewing mist on party", ACTION_LIGHT_HEAL + 6),
-        new NextAction("surging mist on party", ACTION_LIGHT_HEAL + 4),
         new NextAction("soothing mist on party", ACTION_LIGHT_HEAL + 3), nullptr)));
     triggers.push_back(new TriggerNode("party member almost full health", NextAction::array(0,
         new NextAction("renewing mist on party", ACTION_LIGHT_HEAL + 2), nullptr)));

@@ -206,6 +206,14 @@ void ObjectGridUnloader::Visit(GridRefManager<T> &m)
             if (Map* map = obj->FindMap())
                 map->RemoveCustomVisibilityObject(obj, obj->GetCustomVisibilityZoneID());
         obj->CleanupsBeforeDelete();
+
+        // Grid unload bypasses Map::RemoveFromMap. Explicitly unregister custom
+        // visibility objects before deleting them or the map retains a dangling
+        // pointer which a later player visibility scan can dereference.
+        if (obj->HasCustomVisibility())
+            if (Map* map = obj->FindMap())
+                map->RemoveCustomVisibilityObject(obj, obj->GetCustomVisibilityZoneID());
+
         ///- object will get delinked from the manager when deleted
         delete obj;
     }

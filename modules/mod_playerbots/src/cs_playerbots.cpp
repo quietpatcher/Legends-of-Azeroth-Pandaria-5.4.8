@@ -921,6 +921,10 @@ public:
                     npc->AI()->OnGossipSelect(bot, menu, option);
                 handler->PSendSysMessage("qt: %s picked option %u of menu %u at %s (%s)", name, option, menu, npc->GetName().c_str(),
                     shown ? "shown in the open menu" : "NOT in the open menu, sent to the AI directly");
+                // the menu the pick opened, each option with its confirmation text
+                for (auto const& menuItem : bot->PlayerTalkClass->GetGossipMenu().GetMenuItems())
+                    handler->PSendSysMessage("qt:   [%u] %s%s%s", menuItem.first, menuItem.second.Message.substr(0, 70).c_str(),
+                        menuItem.second.BoxMessage.empty() ? "" : " | box: ", menuItem.second.BoxMessage.substr(0, 240).c_str());
                 return true;
             }
             if (!strcmp(sub, "status"))

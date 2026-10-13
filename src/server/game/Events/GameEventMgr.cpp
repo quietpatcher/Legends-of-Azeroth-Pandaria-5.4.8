@@ -538,6 +538,7 @@ void GameEventMgr::LoadFromDB()
         else
         {
             uint32 count = 0;
+            uint32 skipped = 0;   // (event-quest-once)
             do
             {
                 Field* fields = result->Fetch();
@@ -552,6 +553,24 @@ void GameEventMgr::LoadFromDB()
                     continue;
                 }
 
+                // (event-quest-once) already a relation of its own, all year: the event does not add it a second time (the
+                // quest list showed the quest twice while the event ran)
+                {
+                    QuestRelations* always = sObjectMgr->GetCreatureQuestRelationMapHACK();
+                    bool known = false;
+                    for (auto range = always->equal_range(id); range.first != range.second; ++range.first)
+                        if (range.first->second == quest)
+                        {
+                            known = true;
+                            break;
+                        }
+                    if (known)
+                    {
+                        ++skipped;
+                        continue;
+                    }
+                }
+
                 QuestRelList& questlist = mGameEventCreatureQuests[event_id];
                 questlist.push_back(QuestRelation(id, quest));
 
@@ -559,6 +578,8 @@ void GameEventMgr::LoadFromDB()
             }
             while (result->NextRow());
 
+            if (skipped)
+                TC_LOG_INFO("server.loading", ">> Skipped {} rows of `game_event_creature_quest`: the quest is a relation of its own already", skipped);
             TC_LOG_INFO("server.loading", ">> Loaded {} quests additions in game events in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
         }
     }
@@ -575,6 +596,7 @@ void GameEventMgr::LoadFromDB()
         else
         {
             uint32 count = 0;
+            uint32 skipped = 0;   // (event-quest-once)
             do
             {
                 Field* fields = result->Fetch();
@@ -589,6 +611,24 @@ void GameEventMgr::LoadFromDB()
                     continue;
                 }
 
+                // (event-quest-once) already a relation of its own, all year: the event does not add it a second time (the
+                // quest list showed the quest twice while the event ran)
+                {
+                    QuestRelations* always = sObjectMgr->GetGOQuestRelationMapHACK();
+                    bool known = false;
+                    for (auto range = always->equal_range(id); range.first != range.second; ++range.first)
+                        if (range.first->second == quest)
+                        {
+                            known = true;
+                            break;
+                        }
+                    if (known)
+                    {
+                        ++skipped;
+                        continue;
+                    }
+                }
+
                 QuestRelList& questlist = mGameEventGameObjectQuests[event_id];
                 questlist.push_back(QuestRelation(id, quest));
 
@@ -596,6 +636,8 @@ void GameEventMgr::LoadFromDB()
             }
             while (result->NextRow());
 
+            if (skipped)
+                TC_LOG_INFO("server.loading", ">> Skipped {} rows of `game_event_gameobject_quest`: the quest is a relation of its own already", skipped);
             TC_LOG_INFO("server.loading", ">> Loaded {} quests additions in game events in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
         }
     }

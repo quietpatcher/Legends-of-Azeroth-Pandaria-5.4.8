@@ -64,6 +64,8 @@ public:
     ReachPartyMemberToResurrectAction(PlayerbotAI* botAI);
 
     std::string const GetTargetName() override;
+    bool Execute(Event event) override;   // (rez-no-los) also walks while the dead member is out of sight
+    bool isUseful() override;
 };
 
 #endif

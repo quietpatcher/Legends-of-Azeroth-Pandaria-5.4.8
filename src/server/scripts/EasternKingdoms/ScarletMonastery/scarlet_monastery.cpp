@@ -168,43 +168,41 @@ class npc_scm_fuel_tank : public CreatureScript
 
         struct npc_scm_fuel_tankAI : public ScriptedAI
         {
-            npc_scm_fuel_tankAI(Creature* creature) : ScriptedAI(creature), _instance(creature->GetInstanceScript()) { }
-
-            EventMap events;
-
-            void IsSummonedBy(Unit* summoner) override { }
+            npc_scm_fuel_tankAI(Creature* creature) : ScriptedAI(creature) { }
 
             void Reset() override
             {
+                // This is a stationary prop, not a combatant. Evading used to
+                // remove/recast its visual while its AI fought nearby undead.
+                me->SetReactState(REACT_PASSIVE);
+                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
                 me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
-                me->CastSpell(me, SPELL_FUEL_BARREL, false);
+                if (!me->HasAura(SPELL_FUEL_BARREL))
+                    me->CastSpell(me, SPELL_FUEL_BARREL, true);
             }
 
-            void OnSpellClick(Unit* clicker, bool& /*result*/) override
+            void AttackStart(Unit* /*target*/) override { }
+
+            void OnSpellClick(Unit* /*clicker*/, bool& result) override
             {
-                me->CastSpell(me, SPELL_BARREL_EXPLOSION, false);
+                if (!result || !me->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+                    return;
+
+                // npc_spellclick_spells casts the explosion and attributes it
+                // to the clicker. Removing the required aura also rejects any
+                // queued duplicate clicks before their database spell cast.
+                me->RemoveAurasDueToSpell(SPELL_FUEL_BARREL);
                 me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
-                me->DespawnOrUnsummon();
+                // Let the scheduled spell resolve before removing its caster.
+                me->DespawnOrUnsummon(1000);
             }
 
             void DamageTaken(Unit* /*attacker*/, uint32& damage) override
             {
-                if (damage >= me->GetHealth())
-                    damage = 0;
+                damage = 0;
             }
 
-            void UpdateAI(uint32 diff) override
-            {
-                events.Update(diff);
-
-                if (!UpdateVictim())
-                    return;
-
-                DoMeleeAttackIfReady();
-            }
-
-        private:
-            InstanceScript* _instance;
+            void UpdateAI(uint32 /*diff*/) override { }
         };
 
         CreatureAI* GetAI(Creature* creature) const override
@@ -469,20 +467,29 @@ class npc_pile_corpses : public CreatureScript
                 Reset();
             }
 
+            // (horseman-no-piles) the Headless Horseman's version of the dungeon has none of its inhabitants: the instance
+            // hides the pile, and a hidden pile raises no corpses
+            bool HiddenByInstance() const
+            {
+                return !me->IsVisible() && me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
+            }
+
             void Reset() override
             {
                 events.Reset();
                 me->RemoveAllAuras();
                 me->ClearUnitState(UNIT_STATE_ROOT);
                 summons.DespawnAll();
-                DoCast(me, SPELL_PILE_OF_CORPSES);
+                if (!HiddenByInstance())
+                    DoCast(me, SPELL_PILE_OF_CORPSES);
             }
 
             void JustEngagedWith(Unit* /*who*/) override
             {
                 me->SetReactState(REACT_PASSIVE);
                 me->AddUnitState(UNIT_STATE_ROOT);
-                DoCast(me, SPELL_PILE_OF_CORPSES);
+                if (!HiddenByInstance())
+                    DoCast(me, SPELL_PILE_OF_CORPSES);
             }
 
             void JustDied(Unit* /*killer*/) override

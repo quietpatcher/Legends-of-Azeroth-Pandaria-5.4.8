@@ -999,8 +999,14 @@ void PlayerbotAI::DoNextAction(bool min)
     if (master)
         masterBotAI = GET_PLAYERBOT_AI(master);
 
+    // (lfg-master-keep) inside a dungeon of a dungeon finder group BotLife decides who a random bot follows (the tank bot leads,
+    // the others follow it). Handing the bot to a real player here undid that every tick, and every hand-over rebuilt the
+    // engines: no trigger fired, the healer of such a group cast nothing and its tank used no skills
+    bool const botLifeDungeon = group && group->isLFGGroup() && bot->IsInWorld() && bot->GetMap()->IsDungeon() && !bot->GetMap()->IsRaid()
+        && BotLifeMgr::instance()->IsEnabled() && sRandomPlayerbotMgr->IsRandomBot(bot);
+
     // Test BG master set
-    if ((!master || (masterBotAI && !masterBotAI->IsRealPlayer())) && group)
+    if ((!master || (masterBotAI && !masterBotAI->IsRealPlayer())) && group && !botLifeDungeon)
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         if (!botAI)
@@ -3224,4 +3230,10 @@ bool PlayerbotAI::HasAggro(Unit* unit)
         return true;
     }
     return false;
+}
+
+// (lfg-heal-trace) the action log of the engine that runs now (diagnostics)
+std::string PlayerbotAI::GetLastEngineActions()
+{
+    return _currentEngine ? std::string(_currentEngine->GetLastAction()) : std::string();
 }

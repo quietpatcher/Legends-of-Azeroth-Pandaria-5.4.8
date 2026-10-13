@@ -456,7 +456,12 @@ std::string CreatureTextMgr::GetLocalizedChatString(uint32 entry, uint8 gender, 
     BroadcastText const* bct = sObjectMgr->GetBroadcastText(groupItr->BroadcastTextId);
 
     if (bct)
+    {
         baseText = bct->GetText(locale, gender);
+        // a line that only has a text for the other gender came out empty
+        if (baseText.empty())
+            baseText = bct->GetText(locale, gender == GENDER_FEMALE ? GENDER_MALE : GENDER_FEMALE, true);
+    }
     else
         baseText = groupItr->text;
 

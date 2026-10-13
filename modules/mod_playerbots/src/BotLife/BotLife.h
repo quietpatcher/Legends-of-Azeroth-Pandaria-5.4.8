@@ -385,7 +385,8 @@ public:
     // followers; deliverEntry: the NPC the bot then steers the vehicle to
     struct VehicleQuest { uint32 questId; uint32 vehicleEntry; uint32 spellId; std::vector<uint32> targets; float range; bool mount;
         bool gossipMount = false; uint32 followerEntry = 0; uint32 followerCount = 0; uint32 deliverEntry = 0;
-        std::vector<uint32> visit; uint32 summonItem = 0; };   // creatures to steer to; the item that calls the vehicle up
+        std::vector<uint32> visit; uint32 summonItem = 0;
+        uint32 clickEntry = 0; };   // the parked creature whose click calls the vehicle up   // creatures to steer to; the item that calls the vehicle up
     static std::vector<VehicleQuest> const& VehicleQuests();
     static VehicleQuest const* DriveQuest(uint32 questId);
     static bool VisitQuest(uint32 questId);

@@ -1622,6 +1622,11 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
         playerGUID = summoner->GetGUID();
         me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
         me->SummonCreature(delivery ? NPC_MORSHAN_CARAVAN_CART : NPC_CROSSROADS_CARAVAN_CART, me->GetNearPosition(9.0f, float(M_PI)), TEMPSUMMON_MANUAL_DESPAWN);
+        // the summon makes the kodo a guardian of the player, and a guardian walks after its owner: it
+        // stands where the caravan stands until the ride starts
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MoveIdle();
+        me->SetControlled(true, UNIT_STATE_ROOT);
     }
 
     void JustSummoned(Creature* summon) override
@@ -1751,6 +1756,7 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
             return;
         }
         stage = CARAVAN_RIDING;
+        me->SetControlled(false, UNIT_STATE_ROOT);
         me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
         ambushTimer = 20 * IN_MILLISECONDS;
         if (Creature* cart = ObjectAccessor::GetCreature(*me, cartGUID))

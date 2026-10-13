@@ -1801,8 +1801,14 @@ void Spell::SelectImplicitTrajTargets(SpellEffIndex effIndex)
     for (; itr != targets.end(); ++itr)
     {
         if (Unit* unitTarget = (*itr)->ToUnit())
+        {
             if (m_caster == *itr || m_caster->IsOnVehicle(unitTarget) || (unitTarget)->GetVehicle())//(*itr)->IsOnVehicle(m_caster))
                 continue;
+            // only a creature flagged for it stops a missile (type flag 0x00080000, as in TrinityCore)
+            if (Creature* creatureTarget = unitTarget->ToCreature())
+                if (!(creatureTarget->GetCreatureTemplate()->type_flags & CREATURE_TYPEFLAGS_UNK19))
+                    continue;
+        }
 
         const float size = std::max((*itr)->GetObjectSize() * 0.7f, 1.0f); // 1/sqrt(3)
         /// @todo all calculation should be based on src instead of m_caster

@@ -51,9 +51,8 @@ enum Yells
 {
     TALK_INTO,
     TALK_DEATH,
-    TALK_HEROIC_LEAP,
-    TALK_DRAGONS_REACH,
-    TALK_CALL_FOR_HELP,
+    TALK_KILL,                 // (harlan-lines) "Hah-HAH!" or "Tsk! You need more training.": he kills a player
+    TALK_CALL_FOR_HELP = 4,
 };
 
 enum Actions
@@ -92,6 +91,13 @@ class boss_armsmaster_harlan : public CreatureScript
                 targetGuid = ObjectGuid::Empty;
                 wp         = 0;
                 m_bSeats   = 1;
+            }
+
+            // (harlan-lines)
+            void KilledUnit(Unit* victim) override
+            {
+                if (victim && victim->GetTypeId() == TYPEID_PLAYER)
+                    Talk(TALK_KILL);
             }
 
             void JustDied(Unit* killer) override
@@ -201,14 +207,11 @@ class boss_armsmaster_harlan : public CreatureScript
                         case EVENT_DRAGONS_REACH:
                             if (Unit* target = me->GetVictim())
                                 me->CastSpell(target, SPELL_DRAGONS_REACH, false);
-
-                            Talk(TALK_DRAGONS_REACH);
                             events.ScheduleEvent(EVENT_DRAGONS_REACH, urand(5000, 8000));
                             break;
                         case EVENT_HEROIC_LEAP:
                             me->CastSpell(me, SPELL_HEROIC_LEAP_DUMMY, false);
                             me->GetMotionMaster()->MoveJump(JumpPoint, 42.0f, 42.0f, EVENT_JUMP);
-                            Talk(TALK_HEROIC_LEAP);
 
                             if (Unit* vict = me->GetVictim())
                                 targetGuid = vict->GetGUID();

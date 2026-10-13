@@ -282,7 +282,8 @@ struct npc_silverpine_forsaken_bat : public ScriptedAI
         me->SetReactState(REACT_PASSIVE);
         me->SetCanFly(true);
         me->SetDisableGravity(true);
-        me->SetSpeed(MOVE_FLIGHT, 2.0f);
+        me->SetSpeed(MOVE_FLIGHT, 2.4f);
+        me->SetSpeed(MOVE_RUN, 2.4f);   // the path was flown at running speed
     }
 
     void Reset() override { }
@@ -327,7 +328,7 @@ struct npc_silverpine_forsaken_bat : public ScriptedAI
                 me->DespawnOrUnsummon(1 * IN_MILLISECONDS);   // the rider is gone
             return;
         }
-        player->SetClientControl(me, false);   // the action bar, not the reins
+        // the control stays with the rider: without it the client shows no action bar; the spline keeps the reins
         if (!started)
         {
             started = true;

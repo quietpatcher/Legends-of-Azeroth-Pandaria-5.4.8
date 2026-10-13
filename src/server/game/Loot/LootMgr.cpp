@@ -2096,6 +2096,12 @@ void LootTemplate::Process(Loot& loot, bool rate, uint32 lootmode, uint8 groupId
 
         if (item->mincountOrRef < 0 && item->type == LOOT_ITEM_TYPE_ITEM) // References processing
         {
+            // Conditions on the reference belong to the whole referenced pool.
+            // Child LootItems only inherit their own rows' conditions, so this
+            // check must happen before expanding the reference.
+            if (!sConditionMgr->IsObjectMeetToConditions(player, item->conditions))
+                continue;
+
             LootTemplate const* Referenced = LootTemplates_Reference.GetLootFor(-item->mincountOrRef);
             if (!Referenced)
                 continue;                                       // Error message already printed at loading stage

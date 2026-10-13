@@ -22,7 +22,6 @@
 
 static std::vector<DoorData> const doorData =
 {
-    { GO_COMANDER_LINDON_EXIT,   DATA_COMANDER_LINDON,   DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
     { GO_HOUNDMASTER_BRAUN_EXIT, BOSS_HOUNDMASTER_BRAUN, DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
     { GO_ARMSMASTER_HARLAN_EXIT, BOSS_ARMSMASTER_HARLAN, DOOR_TYPE_ROOM,    BOUNDARY_NONE },
 };
@@ -44,6 +43,7 @@ class instance_scarlet_halls : public InstanceMapScript
 
             void Initialize() override
             {
+                lindonState = NOT_STARTED;
                 SetBossNumber(EncounterCount);
                 LoadDoorData(doorData);
 
@@ -77,10 +77,20 @@ class instance_scarlet_halls : public InstanceMapScript
                         break;
                     case NPC_COMANDER_LINDON:
                         LindonGUID = creature->GetGUID();
+                        // Recover the miniboss state from legacy saves while its corpse persists.
+                        if (creature->isDead())
+                            SetData(DATA_COMANDER_LINDON, DONE);
                         break;
                     case NPC_SCARLET_GUARDIAN:
                     case NPC_SERGEANT_VERDONE:
                         creature->SetReactState(REACT_PASSIVE);
+                        // These guards belong to Braun's hound outro, not a later trash pack.
+                        if (GetBossState(BOSS_HOUNDMASTER_BRAUN) == DONE)
+                            creature->DespawnOrUnsummon();
+                        break;
+                    case NPC_OBEDIEND_HOUND:
+                        if (GetBossState(BOSS_HOUNDMASTER_BRAUN) == DONE)
+                            creature->DespawnOrUnsummon();
                         break;
                     case NPC_EXPLODING_SHOT_STALKER:
                         creature->SetDisplayId(11686);
@@ -93,7 +103,10 @@ class instance_scarlet_halls : public InstanceMapScript
                         break;
                     case NPC_HOODED_CRUSADER:
                         if (creature->GetDBTableGUIDLow() == 538235)
+                        {
                             HoodedGUID = creature->GetGUID();
+                            creature->SetVisible(GetBossState(BOSS_FLAMEWEAVER_KOEGLER) == DONE);
+                        }
                         break;
                 }
             }
@@ -103,6 +116,9 @@ class instance_scarlet_halls : public InstanceMapScript
                 switch (go->GetEntry())
                 {
                     case GO_COMANDER_LINDON_EXIT:
+                        LindonDoorGUID = go->GetGUID();
+                        UpdateLindonDoor();
+                        break;
                     case GO_HOUNDMASTER_BRAUN_EXIT:
                     case GO_ARMSMASTER_HARLAN_EXIT:
                         AddDoor(go, true);
@@ -132,7 +148,36 @@ class instance_scarlet_halls : public InstanceMapScript
                 if (!InstanceScript::SetBossState(type, state))
                     return false;
 
+                if (type == BOSS_HOUNDMASTER_BRAUN)
+                    UpdateLindonDoor();
+
+                if (type == BOSS_FLAMEWEAVER_KOEGLER)
+                    if (Creature* crusader = instance->GetCreature(HoodedGUID))
+                        crusader->SetVisible(state == DONE);
+
                 return true;
+            }
+
+            void UpdateLindonDoor()
+            {
+                if (LindonDoorGUID)
+                    HandleGameObject(LindonDoorGUID, lindonState == DONE && GetBossState(BOSS_HOUNDMASTER_BRAUN) != IN_PROGRESS);
+            }
+
+            void SetData(uint32 type, uint32 data) override
+            {
+                if (type != DATA_COMANDER_LINDON || data > DONE || lindonState == data)
+                    return;
+
+                lindonState = EncounterState(data);
+                UpdateLindonDoor();
+                if (lindonState == DONE)
+                    SaveToDB();
+            }
+
+            uint32 GetData(uint32 type) const override
+            {
+                return type == DATA_COMANDER_LINDON ? lindonState : 0;
             }
 
             ObjectGuid GetGuidData(uint32 type) const override
@@ -157,7 +202,7 @@ class instance_scarlet_halls : public InstanceMapScript
             std::string GetSaveData() override
             {
                 std::ostringstream saveStream;
-                saveStream << "S H " << GetBossSaveData();
+                saveStream << "S H " << GetBossSaveData() << uint32(lindonState);
                 return saveStream.str();
             }
 
@@ -171,22 +216,29 @@ class instance_scarlet_halls : public InstanceMapScript
 
                 OUT_LOAD_INST_DATA(in);
 
-                char dataHead1, dataHead2;
+                char dataHead1 = 0, dataHead2 = 0;
                 std::istringstream loadStream(in);
 
                 loadStream >> dataHead1 >> dataHead2;
 
                 if (dataHead1 == 'S' && dataHead2 == 'H')
                 {
-                    for (uint8 i = 0; i < MAX_TYPES; ++i)
+                    for (uint8 i = 0; i < EncounterCount; ++i)
                     {
-                        uint32 tmpState;
-                        loadStream >> tmpState;
-                        if (tmpState == IN_PROGRESS)
+                        uint32 tmpState = NOT_STARTED;
+                        if (!(loadStream >> tmpState))
+                            break;
+                        if (tmpState == IN_PROGRESS || tmpState > DONE)
                             tmpState = NOT_STARTED;
 
                         SetBossState(i, EncounterState(tmpState));
                     }
+
+                    // Older saves contain only the three bosses.
+                    uint32 savedLindonState = NOT_STARTED;
+                    loadStream >> savedLindonState;
+                    lindonState = savedLindonState == DONE || GetBossState(BOSS_HOUNDMASTER_BRAUN) == DONE ? DONE : NOT_STARTED;
+                    UpdateLindonDoor();
                 }
 
                 OUT_LOAD_INST_DATA_COMPLETE;
@@ -198,6 +250,8 @@ class instance_scarlet_halls : public InstanceMapScript
                 ObjectGuid FlameWeaver_KoeglerGUID;
                 ObjectGuid LindonGUID;
                 ObjectGuid HoodedGUID;
+                ObjectGuid LindonDoorGUID;
+                EncounterState lindonState;
         };
 
         InstanceScript* GetInstanceScript(InstanceMap* map) const override

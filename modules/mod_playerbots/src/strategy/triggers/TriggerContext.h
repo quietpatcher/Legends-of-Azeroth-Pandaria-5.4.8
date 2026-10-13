@@ -64,6 +64,7 @@ public:
 
         creators["party member critical health"] = &TriggerContext::PartyMemberCriticalHealth;
         creators["party member low health"] = &TriggerContext::PartyMemberLowHealth;
+        creators["party member dead"] = &TriggerContext::PartyMemberDead;   // (party-member-dead) was never entered: no healer but the monk resurrected
         creators["party member medium health"] = &TriggerContext::PartyMemberMediumHealth;
         creators["party member almost full health"] = &TriggerContext::PartyMemberAlmostFullHealth;
 

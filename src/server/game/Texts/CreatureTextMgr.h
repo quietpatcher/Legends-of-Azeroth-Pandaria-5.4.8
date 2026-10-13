@@ -261,7 +261,12 @@ void CreatureTextMgr::SendChatPacket(WorldObject* source, Builder const& builder
                 if (!whisperTarget || whisperTarget->GetTypeId() != TYPEID_PLAYER)
                     return;
 
-                localizer(const_cast<Player*>(whisperTarget->ToPlayer()));
+                // the builder made this packet for the whisper target: it goes out as built. The
+                // localizer wrote the receiver in again at a fixed distance, which broke the packet for some senders
+                Player* whisperPlayer = const_cast<Player*>(whisperTarget->ToPlayer());
+                WorldPacket whisperData;
+                builder(&whisperData, whisperPlayer->GetSession()->GetSessionDbLocaleIndex());
+                whisperPlayer->SendDirectMessage(&whisperData);
                 return;
             }
             break;

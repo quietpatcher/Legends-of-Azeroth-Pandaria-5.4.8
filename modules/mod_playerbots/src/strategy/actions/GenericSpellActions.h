@@ -192,6 +192,7 @@ public:
     ResurrectPartyMemberAction(PlayerbotAI* botAI, std::string const spell) : CastSpellAction(botAI, spell) {}
 
     std::string const GetTargetName() override { return "party member to resurrect"; }
+    bool isPossible() override;   // (rez-walk-first) out of range or out of sight is not impossible: the walk comes first
     NextAction** getPrerequisites() override
     {
         return NextAction::merge(NextAction::array(0, new NextAction("reach party member to resurrect"), NULL),

@@ -155,6 +155,8 @@ enum CharacterCustomizeFlags
 
 static uint32 copseReclaimDelay[MAX_DEATH_COUNT] = { 30, 60, 120 };
 
+static bool AreaCompanionLost(Player const* player, SpellArea const& row);   // defined at _LoadAuras
+
 uint64 const MAX_MONEY_AMOUNT = 99999999999ULL;
 
 uint32 const MasterySpells[MAX_CLASSES] =
@@ -1403,6 +1405,19 @@ void Player::Update(uint32 p_time)
                 // needed for free far all arenas for example
                 if (m_areaUpdateId != newarea)
                     UpdateArea(newarea);
+                // about every five seconds: the quest companion this area should have at the
+                // player's side (lost by a logout, a restart or its death) is called up again
+                else if (IsAlive() && time_t(time(nullptr) % 5) == time_t(GetGUID().GetCounter() % 5))
+                {
+                    SpellAreaForAreaMapBounds rows = sSpellMgr->GetSpellAreaForAreaMapBounds(newarea);
+                    for (SpellAreaForAreaMap::const_iterator itr = rows.first; itr != rows.second; ++itr)
+                        if (itr->second->autocast && AreaCompanionLost(this, *itr->second)
+                            && itr->second->IsFitToRequirements(this, m_zoneUpdateId, newarea))
+                        {
+                            CastSpell(this, itr->second->spellId, true);
+                            break;   // the cast may change the rows that fit: the next round takes the rest
+                        }
+                }
 
                 m_zoneUpdateTimer = ZONE_UPDATE_INTERVAL;
             }
@@ -4381,6 +4396,11 @@ bool Player::ResetTalents(bool noCost, bool resetTalents, bool resetSpecializati
     _SaveSpells(trans);
     CharacterDatabase.CommitTransaction(trans);
 
+    // A talent or specialization reset can leave spells from the old build on
+    // the active action bar. Remove only invalid buttons from this spec; the
+    // inactive dual-spec action bar must remain untouched.
+    RemoveInvalidSpellActionButtons();
+
     if (!noCost)
     {
         ModifyMoney(-(int64)cost);
@@ -4423,6 +4443,8 @@ bool Player::RemoveTalent(uint32 talentId)
     _SaveTalents(trans);
     _SaveSpells(trans);
     CharacterDatabase.CommitTransaction(trans);
+
+    RemoveInvalidSpellActionButtons();
 
     SendTalentsInfoData();
     return true;
@@ -6713,6 +6735,39 @@ void Player::RemoveActionButton(uint8 button)
         buttonItr->second.uState = ACTIONBUTTON_DELETED;    // saved, will deleted at next save
 
     TC_LOG_DEBUG("entities.player", "Action Button '{}' Removed from Player '{}'", button, GetGUID().GetCounter());
+}
+
+uint32 Player::RemoveInvalidSpellActionButtons(bool notifyClient)
+{
+    std::vector<uint8> invalidButtons;
+
+    for (ActionButtonList::const_iterator itr = m_actionButtons.begin(); itr != m_actionButtons.end(); ++itr)
+    {
+        ActionButton const& actionButton = itr->second;
+        if (actionButton.uState == ACTIONBUTTON_DELETED || actionButton.GetType() != ACTION_BUTTON_SPELL)
+            continue;
+
+        uint32 spellId = actionButton.GetAction();
+        if (!sSpellMgr->GetSpellInfo(spellId) || !HasSpell(spellId))
+            invalidButtons.push_back(itr->first);
+    }
+
+    if (invalidButtons.empty())
+        return 0;
+
+    for (uint8 button : invalidButtons)
+        RemoveActionButton(button);
+
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    _SaveActions(trans);
+    CharacterDatabase.CommitTransaction(trans);
+
+    if (notifyClient && IsInWorld() && GetSession() && !GetSession()->PlayerLoading())
+        SendActionButtons(1);
+
+    TC_LOG_INFO("entities.player", "Removed %u invalid spell action button(s) for player %s (GUID: %u), spec %u",
+        uint32(invalidButtons.size()), GetName().c_str(), GetGUID().GetCounter(), GetActiveSpec());
+    return uint32(invalidButtons.size());
 }
 
 ActionButton const* Player::GetActionButton(uint8 button)
@@ -15947,6 +16002,11 @@ void Player::SendPreparedQuest(WorldObject* source)
 
                 if (quest->IsTurnIn() && quest->IsRepeatable() && !quest->IsDailyOrWeekly())
                     PlayerTalkClass->SendQuestGiverRequestItems(quest, source->GetGUID(), CanCompleteRepeatableQuest(quest), true);
+                // (turnin-single) a quest of the turn-in type that the player does not have yet opens on its completion page, as it
+                // does when the client asks for it from a list (HandleQuestgiverQueryQuestOpcode): a candy bucket is one click
+                else if (quest->GetQuestType() == QUEST_TYPE_TURNIN && !sWorld->getBoolConfig(CONFIG_QUEST_IGNORE_AUTO_COMPLETE)
+                    && !quest->IsDailyOrWeekly() && GetQuestStatus(questId) == QUEST_STATUS_NONE && CanTakeQuest(quest, false))
+                    PlayerTalkClass->SendQuestGiverRequestItems(quest, source->GetGUID(), CanCompleteQuest(questId), true);
                 else
                     PlayerTalkClass->SendQuestGiverQuestDetails(quest, source->GetGUID(), true);
             }
@@ -19558,6 +19618,76 @@ void Player::_LoadActions(PreparedQueryResult result)
     }
 }
 
+// an aura an area casts by itself (spell_area, autocast) and whose spell also summons a quest
+// companion as a guardian or minion of the player (73306 Summon Lilian Voss, the men of Bravo Company, Zen'Kiki). The guardian
+// is unsummoned when the player leaves the game, the saved aura stayed: back in the game he had the aura and nobody at his
+// side, and the area did not cast again because of the aura. The rule for "guardian or minion" is the one of
+// Map::SummonCreature; a summon that is not bound to the player may still stand in the world, so those are left alone.
+static uint32 AreaCompanionEntry(SpellInfo const* spellInfo)
+{
+    uint32 companion = 0;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)   // (Effects[] is the table this core fills; GetEffects() gives an empty one)
+    {
+        SpellEffectInfo const& eff = spellInfo->Effects[i];
+        if (eff.Effect != SPELL_EFFECT_SUMMON)
+            continue;
+        SummonPropertiesEntry const* props = sSummonPropertiesStore.LookupEntry(eff.MiscValueB);
+        if (!props)
+            continue;
+        if (props->Category == SUMMON_CATEGORY_PET)
+            companion = uint32(eff.MiscValue);
+        else if (props->Category == SUMMON_CATEGORY_ALLY)
+            switch (props->Type)
+            {
+                case SUMMON_TYPE_MINION:
+                case SUMMON_TYPE_GUARDIAN:
+                case SUMMON_TYPE_GUARDIAN2:
+                case SUMMON_TYPE_MINIPET:
+                    companion = uint32(eff.MiscValue);
+                    break;
+                case SUMMON_TYPE_NONE:
+                    if (props->Flags & (512 | 2))
+                        companion = uint32(eff.MiscValue);
+                    break;
+                default:
+                    break;
+            }
+    }
+    if (!companion)
+        return 0;
+    SpellAreaMapBounds bounds = sSpellMgr->GetSpellAreaMapBounds(spellInfo->Id);
+    for (SpellAreaMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
+        if (itr->second.autocast)
+            return companion;
+    return 0;
+}
+
+static bool IsAreaCompanionSpell(SpellInfo const* spellInfo)
+{
+    return AreaCompanionEntry(spellInfo) != 0;
+}
+
+// The companion of a row of spell_area is lost: the player controls no living creature of the
+// kind its spell calls up. Not loading the saved aura (above) was not enough - measured after a restart: the cast at login gave
+// the aura and the guardian was not there afterwards. Only while the quest of the row still runs (Lilian Voss must not come
+// back after her scene, when the quest is complete), or for a row that keeps its companion after a quest is done (start
+// status "rewarded" only: the men of Bravo Company).
+static bool AreaCompanionLost(Player const* player, SpellArea const& row)
+{
+    if (!row.questStart || !player->IsInWorld() || !player->IsAlive() || player->IsBeingTeleported())
+        return false;
+    if (player->GetQuestStatus(row.questStart) != QUEST_STATUS_INCOMPLETE && row.questStartStatus != (1u << QUEST_STATUS_REWARDED))
+        return false;
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(row.spellId);
+    uint32 const entry = spellInfo ? AreaCompanionEntry(spellInfo) : 0;
+    if (!entry)
+        return false;
+    for (Unit* controlled : player->m_Controlled)
+        if (controlled->GetEntry() == entry && controlled->IsAlive())
+            return false;
+    return true;
+}
+
 void Player::_LoadAuras(PreparedQueryResult result, PreparedQueryResult effectResult, uint32 timediff)
 {
     TC_LOG_DEBUG("entities.player.loading", "Loading auras for player {}", GetGUID().GetCounter());
@@ -19623,6 +19753,10 @@ void Player::_LoadAuras(PreparedQueryResult result, PreparedQueryResult effectRe
                 TC_LOG_ERROR("entities.player", "Unknown aura (spellid {}), ignore.", spellid);
                 continue;
             }
+
+            // not loaded: the area casts the spell again, which brings the companion back
+            if (IsAreaCompanionSpell(spellInfo))
+                continue;
 
             // negative effects should continue counting down after logout
             if (remaintime != -1 && !spellInfo->IsPositive())
@@ -26457,9 +26591,11 @@ void Player::UpdateForQuestWorldObjects()
             {
                 if (sConditionMgr->GetConditionsForSpellClickEvent(obj->GetEntry(), _itr->second.spellId))
                 {
-                    obj->BuildValuesUpdateBlockForPlayer(&udata, this);
+                    // (quest-click-refresh) a values update only carries changed fields and the NPC flags did not change:
+                    // mark the field, the next update of the creature works it out again for every player who sees it
+                    obj->ForceValuesUpdateAtIndex(UNIT_FIELD_NPC_FLAGS);
                     break;
-                }                
+                }
             }
         }
     }
@@ -27064,7 +27200,7 @@ void Player::UpdateAreaDependentAuras(uint32 newArea)
     SpellAreaForAreaMapBounds saBounds = sSpellMgr->GetSpellAreaForAreaMapBounds(newArea);
     for (SpellAreaForAreaMap::const_iterator itr = saBounds.first; itr != saBounds.second; ++itr)
         if (itr->second->autocast && itr->second->IsFitToRequirements(this, m_zoneUpdateId, newArea))
-            if (!HasAura(itr->second->spellId))
+            if (!HasAura(itr->second->spellId) || AreaCompanionLost(this, *itr->second))
                 CastSpell(this, itr->second->spellId, true);
 
     if (newArea == 4273 && GetVehicleCreatureBase() && GetPositionX() > 400) // Ulduar
@@ -28417,7 +28553,13 @@ bool Player::CanSeeSpellClickOn(Creature const* c) const
 
     SpellClickInfoMapBounds clickPair = sObjectMgr->GetSpellClickInfoMapBounds(c->GetEntry());
     if (clickPair.first == clickPair.second)
+    {
+        // a vehicle gets the flag by itself (Vehicle::Install). Without a click spell, without the flag
+        // in its own data and without a script that could answer the click, nothing happens: no gear cursor for nothing
+        if (!(c->GetCreatureTemplate()->npcflag & UNIT_NPC_FLAG_SPELLCLICK) && c->GetAIName().empty() && !c->GetScriptId())
+            return false;
         return true;
+    }
 
     for (SpellClickInfoContainer::const_iterator itr = clickPair.first; itr != clickPair.second; ++itr)
     {

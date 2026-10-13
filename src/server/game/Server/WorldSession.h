@@ -966,6 +966,7 @@ class TC_GAME_API WorldSession
         void HandleMoveSetCanFlyAckOpcode(WorldPacket& recvData);
         void HandleRealmSplitOpcode(WorldPacket& recvData);
         void HandleTimeSyncResp(WorldPacket& recvData);
+        void HandleTimeSyncResponseDropped(WorldPacket& recvData);
         void HandleWhoisOpcode(WorldPacket& recvData);
         void HandleResetInstancesOpcode(WorldPacket& recvData);
         void HandleHearthAndResurrect(WorldPacket& recvData);
