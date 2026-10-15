@@ -217,6 +217,7 @@ enum eActions
     ACTION_COUNTINUE_MOVE               = 6,
     ACTION_ALEXEI                       = 7,
     ACTION_CANDLESTICK_DEATH            = 8,
+    ACTION_PLAYER_DIED                  = 9,   // (scholo-kills) a player died while the fight of this boss is in progress
 };
 
 enum eGameObjects

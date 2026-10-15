@@ -420,7 +420,10 @@ class boss_ming_the_cunning : public CreatureScript
                 me->AttackStop();
                 me->CastStop();
                 events.Reset();
-                events.ScheduleEvent(EVENT_BOSS_RETIRE, 11000);
+                // (trial-next) the timer to the next lord runs on the creature itself: a lord who gave up has no victim, and his AI
+                // resets (and clears its own event list) when he reaches his place
+                if (InstanceScript* inst = instance)
+                    me->m_Events.Schedule(11000, 10, [inst]() { inst->SetData(TYPE_SHUFFLE_ORDER, 0); });
                 if (instance)
                     instance->SetData(TYPE_MING_RETIRED, 0);
 
@@ -900,7 +903,10 @@ class boss_kuai_the_brute : public CreatureScript
                 me->GetMotionMaster()->MoveTargetedHome();
                 me->AttackStop();
                 events.Reset();
-                events.ScheduleEvent(EVENT_BOSS_RETIRE, 11000);
+                // (trial-next) the timer to the next lord runs on the creature itself: a lord who gave up has no victim, and his AI
+                // resets (and clears its own event list) when he reaches his place
+                if (InstanceScript* inst = instance)
+                    me->m_Events.Schedule(11000, 10, [inst]() { inst->SetData(TYPE_SHUFFLE_ORDER, 0); });
                 if (instance)
                     instance->SetData(TYPE_KUAI_RETIRED, 0);
 
@@ -1188,7 +1194,10 @@ class boss_haiyan_the_unstoppable : public CreatureScript
                 me->GetMotionMaster()->MoveTargetedHome();
                 me->AttackStop();
                 events.Reset();
-                events.ScheduleEvent(EVENT_BOSS_RETIRE, 11000);
+                // (trial-next) the timer to the next lord runs on the creature itself: a lord who gave up has no victim, and his AI
+                // resets (and clears its own event list) when he reaches his place
+                if (InstanceScript* inst = instance)
+                    me->m_Events.Schedule(11000, 10, [inst]() { inst->SetData(TYPE_SHUFFLE_ORDER, 0); });
                 if (instance)
                     instance->SetData(TYPE_HAIYAN_RETIRED, 0);
 

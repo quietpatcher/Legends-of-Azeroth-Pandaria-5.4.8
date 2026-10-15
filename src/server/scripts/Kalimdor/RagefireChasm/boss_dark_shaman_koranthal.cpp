@@ -63,6 +63,7 @@ class boss_dark_shaman_koranthal : public CreatureScript
             {
                 // @TODO: Set in combat for other protectors
                 _JustEngagedWith();
+                Talk(0);   // (koranthal-lines) "The power of the Dark Shaman will overwhelm you!"
 
                 if (instance)
                 {
@@ -77,6 +78,7 @@ class boss_dark_shaman_koranthal : public CreatureScript
             void JustDied(Unit* /*killer*/) override
             {
                 _JustDied();
+                Talk(1);   // (koranthal-lines) "My death... means... nothing..."
 
                 if (instance)
                 {

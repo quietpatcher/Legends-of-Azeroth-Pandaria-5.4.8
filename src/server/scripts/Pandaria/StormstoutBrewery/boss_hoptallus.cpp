@@ -359,7 +359,7 @@ class boss_hoptallus : public CreatureScript
             void MoveInLineOfSight(Unit* who) override
             {
                 if (!introStarted && who) // Small hack to make sure boss isn't triggered from behind
-                    if (who->GetTypeId() == TYPEID_PLAYER && who->GetDistance(me) < 20.f && who->GetPositionX() > -705.f)
+                    if (who->GetTypeId() == TYPEID_PLAYER && who->GetDistance(me) < 35.f && who->GetPositionX() > -705.f)   // (hop-start) was 20: never possible
                         InitJump();
 
                 ScriptedAI::MoveInLineOfSight(who);
@@ -478,8 +478,30 @@ class boss_hoptallus : public CreatureScript
                     summons.Summon(summon);
             }
 
+            uint32 _startCheck = 1000;   // (hop-start)
+
             void UpdateAI(uint32 diff) override
             {
+                // (hop-start) look once a second for a player in his room (MoveInLineOfSight alone did not start him)
+                if (!introStarted)
+                {
+                    if (_startCheck > diff)
+                        _startCheck -= diff;
+                    else
+                    {
+                        _startCheck = 1000;
+                        std::list<Player*> players;
+                        me->GetPlayerListInGrid(players, 35.0f);
+                        for (Player* player : players)
+                            if (player->IsAlive() && !player->IsGameMaster() && player->GetPositionX() > -705.f)
+                            {
+                                TC_LOG_INFO("scripts", "Stormstout Brewery: Hoptallus bursts out of his keg (instance {})", me->GetInstanceId());
+                                InitJump();
+                                break;
+                            }
+                    }
+                }
+
                 if (me->HasAura(SPELL_FURLWIND) || me->HasAura(SPELL_CARROT_BREATH) || me->HasUnitState(UNIT_STATE_CASTING))
                     return;
 

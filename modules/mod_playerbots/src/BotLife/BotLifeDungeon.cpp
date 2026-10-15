@@ -184,6 +184,10 @@ bool BotLifeDungeonHandInPending(Player* leader)
 // ---------------------------------------------------------------------------------------------
 // caches
 
+// (real-bosses) the maps on which a boss that is only an encounter credit counts, and the spawns that belong to a game event
+static std::map<uint32, std::set<uint32>> s_encounterBossMaps;
+static std::set<uint32> s_eventSpawnIds;
+
 void BotLifeMgr::LoadDungeons()
 {
     _dungeons.clear();
@@ -230,15 +234,32 @@ void BotLifeMgr::LoadDungeons()
     s_finalBossSpawns.clear();
     if (QueryResult result = WorldDatabase.Query("SELECT lastEncounterDungeon, creditEntry FROM instance_encounters WHERE creditType = 0 AND lastEncounterDungeon > 0"))
         do { s_finalBoss[result->Fetch()[0].GetUInt32()] = result->Fetch()[1].GetUInt32(); } while (result->NextRow());
-    if (QueryResult result = WorldDatabase.Query("SELECT creditEntry FROM instance_encounters WHERE creditType = 0"))
-        do { _bossEntries.insert(result->Fetch()[0].GetUInt32()); } while (result->NextRow());
+    // (real-bosses) a boss only through instance_encounters counts on the maps of those encounters (DungeonEncounter.dbc):
+    // High Inquisitor Fairbanks is credit of encounter 449 of the old Scarlet Monastery (map 189) and no boss on map 1004
+    s_encounterBossMaps.clear();
+    if (QueryResult result = WorldDatabase.Query("SELECT entry, creditEntry FROM instance_encounters WHERE creditType = 0"))
+        do
+        {
+            uint32 const credit = result->Fetch()[1].GetUInt32();
+            _bossEntries.insert(credit);
+            DungeonEncounterEntry const* de = sDungeonEncounterStore.LookupEntry(result->Fetch()[0].GetUInt32());
+            s_encounterBossMaps[credit].insert(de ? de->mapId : 0u);
+        } while (result->NextRow());
     for (auto const& ctPair : *sObjectMgr->GetCreatureTemplates())
     {
         CreatureTemplate const& ct = ctPair.second;
-        if (ct.rank == CREATURE_ELITE_WORLDBOSS || (ct.flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS)
-            || sObjectMgr->GetScriptName(ct.ScriptID).rfind("boss_", 0) == 0)
+        bool const ownBoss = ct.rank == CREATURE_ELITE_WORLDBOSS || sObjectMgr->GetScriptName(ct.ScriptID).rfind("boss_", 0) == 0;
+        if (ownBoss || (ct.flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS))
             _bossEntries.insert(ct.Entry);
+        // (real-bosses) a boss by itself counts on every map; the dungeon-boss flag does not say so: the core sets it on every
+        // encounter credit (High Inquisitor Fairbanks)
+        if (ownBoss)
+            s_encounterBossMaps.erase(ct.Entry);
     }
+    // (real-bosses) spawns of a game event (the Headless Horseman in Scarlet Monastery, Hallow's End) are no boss of the dungeon
+    s_eventSpawnIds.clear();
+    if (QueryResult result = WorldDatabase.Query("SELECT guid FROM game_event_creature"))
+        do { s_eventSpawnIds.insert(result->Fetch()[0].GetUInt32()); } while (result->NextRow());
 
     std::set<uint32> maps;
     for (uint32 i = 0; i < sLFGDungeonStore.GetNumRows(); ++i)
@@ -346,6 +367,15 @@ void BotLifeMgr::LoadDungeons()
                 s.y = f[5].GetFloat();
                 s.z = f[6].GetFloat();
                 s.boss = _bossEntries.count(ct->Entry) > 0;
+                // (real-bosses) only on the maps of its encounters, and never a spawn of a game event
+                if (s.boss)
+                {
+                    auto em = s_encounterBossMaps.find(ct->Entry);
+                    if (em != s_encounterBossMaps.end() && !em->second.count(mapId) && !em->second.count(0u))
+                        s.boss = false;
+                    if (s_eventSpawnIds.count(s.spawnId))
+                        s.boss = false;
+                }
                 FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(ct->faction);
                 bool const pullTarget = !ct->npcflag
                     && ct->type != CREATURE_TYPE_CRITTER && ct->type != CREATURE_TYPE_NON_COMBAT_PET && ct->type != CREATURE_TYPE_TOTEM
@@ -901,9 +931,39 @@ static bool PartyMemberAttacked(Player* bot)
     return false;
 }
 
+// (bot-areatrigger) the area triggers with a script, per map (built once)
+static std::vector<AreaTriggerEntry const*> const& ScriptedAreaTriggers(uint32 mapId)
+{
+    static std::map<uint32, std::vector<AreaTriggerEntry const*>> s_byMap;
+    static bool s_built = false;
+    if (!s_built)
+    {
+        s_built = true;
+        for (uint32 i = 0; i < sAreaTriggerStore.GetNumRows(); ++i)
+            if (AreaTriggerEntry const* at = sAreaTriggerStore.LookupEntry(i))
+                if (sObjectMgr->GetAreaTriggerScriptId(at->ID))
+                    s_byMap[at->ContinentID].push_back(at);
+    }
+    static std::vector<AreaTriggerEntry const*> const s_none;
+    auto it = s_byMap.find(mapId);
+    return it == s_byMap.end() ? s_none : it->second;
+}
+
 bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
 {
     Player* bot = botAI->GetBot();
+    // (bot-areatrigger) a client sends the scripted area triggers its player walks into; a bot has none, so do it here
+    if (now >= t.areaTriggerCheck && bot->IsAlive() && bot->GetMap()->IsDungeon())
+    {
+        t.areaTriggerCheck = now + 1000;
+        for (AreaTriggerEntry const* at : ScriptedAreaTriggers(bot->GetMapId()))
+            if (!t.areaTriggersFired.count(at->ID) && bot->IsInAreaTrigger(at))
+            {
+                t.areaTriggersFired.insert(at->ID);
+                TC_LOG_INFO("playerbots", "BotLife {}: sets off area trigger {} on map {}", bot->GetName(), at->ID, bot->GetMapId());
+                sScriptMgr->OnAreaTrigger(bot, at, true);
+            }
+    }
     // a boss that does not die by a player's hand never counted (Wise Mari ends herself, councils,
     // bosses that give up): what the instance itself books as done during this run counts as well
     if (InstanceMap* instanceMap = bot->GetMap()->ToInstanceMap())

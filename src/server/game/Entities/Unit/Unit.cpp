@@ -11811,6 +11811,11 @@ void Unit::SetInCombatState(bool PvP, Unit* enemy)
     if (IsInCombat() || HasUnitState(UNIT_STATE_EVADE))
         return;
 
+    // (engage-alive) the blow that killed the last enemy does not start a new fight with the corpse: the script of a boss
+    // was told that a fight began and repeated its pull line while the party lay dead
+    if (enemy && !enemy->IsAlive() && GetTypeId() == TYPEID_UNIT && !IsControlledByPlayer())
+        return;
+
     SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IN_COMBAT);
 
     if (Creature* creature = ToCreature())

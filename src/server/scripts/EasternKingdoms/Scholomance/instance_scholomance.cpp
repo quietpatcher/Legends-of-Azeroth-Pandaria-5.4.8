@@ -163,6 +163,15 @@ class instance_scholomance : public InstanceMapScript
 
             void OnUnitDeath(Unit* unit) override
             {
+                // (scholo-kills) a player who dies during the fight with Instructor Chillheart or Jandice Barov: the boss has
+                // a line for it, whichever of her spells or summons dealt the blow
+                if (unit->GetTypeId() == TYPEID_PLAYER)
+                    for (uint32 type : { uint32(DATA_INSTRUCTOR_CHILLHEART), uint32(DATA_JANDICE_BAROV) })
+                        if (m_auiEncounter[type] == IN_PROGRESS)
+                            if (Creature* boss = instance->GetCreature(GetGuidData(type)))
+                                if (boss->IsAlive() && boss->AI())
+                                    boss->AI()->DoAction(ACTION_PLAYER_DIED);
+
                 if (instance->IsChallengeDungeon() && !IsChallengeModeCompleted())
                     if (Creature* creature = unit->ToCreature())
                         UpdateConditionInfo(creature,  ENEMIES_COUNT);
@@ -222,9 +231,8 @@ class instance_scholomance : public InstanceMapScript
                                 TalkingSkull->AI()->Talk(TALK_CHILLHEART_DEATH);
                             break;
                         case DATA_JANDICE_BAROV:
-                            if (Creature* Gandling = instance->GetCreature(GetGuidData(DATA_GRANDMASTER_GANDLING_INTRO)))
-                                Gandling->AI()->DoAction(ACTION_INTRO);
-
+                            // (chamber-intro) the scene of Gandling and Lilian Voss starts when the party comes to the
+                            // Chamber of Summoning (npc_gandling_at_rattlegore)
                             if (Creature* TalkingSkull = instance->GetCreature(GetGuidData(NPC_TALKING_SKULL)))
                                 TalkingSkull->AI()->Talk(TALK_JANDICE_DEATH);
                             break;
@@ -235,9 +243,7 @@ class instance_scholomance : public InstanceMapScript
                         case DATA_LILIAN_VOSS:
                             if (GameObject* Chest = GetGameObjectFromStorage(instance->IsHeroic() ? GO_COFFER_OF_FORGOTTEN_SOULS_HC : GO_COFFER_OF_FORGOTTEN_SOULS))
                                 Chest->RemoveFlag(GAMEOBJECT_FIELD_FLAGS, GO_FLAG_INTERACT_COND);
-
-                            if (Creature* TalkingSkull = instance->GetCreature(GetGuidData(NPC_TALKING_SKULL)))
-                                TalkingSkull->AI()->Talk(TALK_LILIAN_DEFEAT);
+                            // (skull-lines) the Talking Skull says its line when Gandling flees (scholomance.cpp)
                             break;
                         case DATA_GRANDMASTER_GANDLING:
 

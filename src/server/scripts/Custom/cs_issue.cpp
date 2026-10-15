@@ -13,6 +13,8 @@
  * The lines for the addons start with "TGM^" and use ^ as separator; the addons hide and parse them.
  */
 
+#include <unordered_map>   // (bugmore)
+#include <ctime>
 #include "ScriptMgr.h"
 #include "Chat.h"
 #include "Creature.h"
@@ -35,6 +37,31 @@ namespace
     uint32 const MINE_LIMIT           = 15;     // points in .bugmine
     size_t const REPORT_TEXT_MAX      = 255;
     size_t const REPORT_CATEGORY_MAX  = 20;
+    size_t const REPORT_LONG_MAX      = 1000;   // (bugmore) a report or answer sent in parts
+    time_t const MORE_KEEP_SECONDS    = 180;    // (bugmore) parts that wait longer are forgotten
+
+    // (bugmore) the parts of a long text per account, until the report or answer arrives
+    std::unordered_map<uint32, std::pair<std::string, time_t>> moreParts;
+
+    // the parts sent before, in front of the last part; the parts are used up
+    std::string TakeMore(ChatHandler* handler, std::string const& last)
+    {
+        WorldSession* session = handler->GetSession();
+        if (!session)
+            return last;
+        auto it = moreParts.find(session->GetAccountId());
+        if (it == moreParts.end())
+            return last;
+        std::string text = it->second.first;
+        bool fresh = time(nullptr) - it->second.second <= MORE_KEEP_SECONDS;
+        moreParts.erase(it);
+        if (!fresh || text.empty())
+            return last;
+        text += " " + last;
+        if (text.size() > REPORT_LONG_MAX)
+            text.resize(REPORT_LONG_MAX);
+        return text;
+    }
 
     // text inside a protocol line: no separator, no client escape codes, no line breaks
     std::string Clean(std::string text)
@@ -118,6 +145,7 @@ public:
             { "bugreport",  &HandleBugReport,   RBAC_PERM_COMMAND_BUGREPORT, Trinity::ChatCommands::Console::Yes },
             { "bugmine",    &HandleBugMine,     RBAC_PERM_COMMAND_BUGREPORT, Trinity::ChatCommands::Console::Yes },
             { "bugreply",   &HandleBugReply,    RBAC_PERM_COMMAND_BUGREPORT, Trinity::ChatCommands::Console::Yes },
+            { "bugmore",    &HandleBugMore,     RBAC_PERM_COMMAND_BUGREPORT, Trinity::ChatCommands::Console::No },   // (bugmore)
         };
         return commandTable;
     }
@@ -197,6 +225,41 @@ public:
         return true;
     }
 
+    // (bugmore) .bugmore <part>: one part of a long report or answer, kept until the .bugreport or .bugreply that
+    // follows. Without a part it only answers. Answers TGM^O^<characters kept>^<maximum>, TGM^X^long when it is full.
+    static bool HandleBugMore(ChatHandler* handler, char const* args)
+    {
+        WorldSession* session = handler->GetSession();
+        if (!session)
+            return false;
+        std::string part = Trim(Clean(args ? args : ""));
+        uint32 account = session->GetAccountId();
+        time_t now = time(nullptr);
+        auto it = moreParts.find(account);
+        if (it != moreParts.end() && now - it->second.second > MORE_KEEP_SECONDS)
+        {
+            moreParts.erase(it);
+            it = moreParts.end();
+        }
+        size_t kept = it == moreParts.end() ? 0 : it->second.first.size();
+        if (!part.empty())
+        {
+            if (part.size() > REPORT_TEXT_MAX || kept + 1 + part.size() > REPORT_LONG_MAX)
+            {
+                handler->SendSysMessage("TGM^X^long");
+                return true;
+            }
+            std::string& text = moreParts[account].first;
+            text = text.empty() ? part : text + " " + part;
+            moreParts[account].second = now;
+            kept = text.size();
+        }
+        std::ostringstream answer;
+        answer << "TGM^O^" << kept << "^" << REPORT_LONG_MAX;
+        handler->SendSysMessage(answer.str().c_str());
+        return true;
+    }
+
     // .bugreport #place^category^#quest^text: the report for every player. place 1 = send my position, zone and
     // target along, 0 = leave them out (a remark on an older report, or not at the spot where it happens).
     // Answers TGM^A, or TGM^X^wait^seconds / TGM^X^limit when a player account reports too often.
@@ -241,6 +304,7 @@ public:
             }
         }
 
+        text = TakeMore(handler, text);   // (bugmore)
         StoreReport(handler, withPlace, category, quest, text);
         handler->SendSysMessage("TGM^A");
         return true;
@@ -332,6 +396,7 @@ public:
             }
         }
 
+        text = TakeMore(handler, text);   // (bugmore)
         CharacterDatabase.EscapeString(name);
         CharacterDatabase.EscapeString(text);
         CharacterDatabase.PExecute("INSERT INTO todo_replies (issue, account, name, text) VALUES ({}, {}, '{}', '{}')", id, account, name, text);

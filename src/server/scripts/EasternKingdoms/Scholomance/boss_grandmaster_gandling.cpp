@@ -52,6 +52,7 @@ enum Texts
     TALK_SLAY,
     TALK_DEATH,
     TALK_HARSH_LESSON,
+    TALK_INTRO,   // (scholo-lines) 4
 };
 
 enum RoomTriggersGUID
@@ -147,6 +148,20 @@ class boss_grandmaster_gandling : public CreatureScript
                     Talk(TALK_SLAY);
             }
 
+            // (scholo-lines) his line when the party comes near, once
+            void MoveInLineOfSight(Unit* who) override
+            {
+                if (!_introSaid && who && who->GetTypeId() == TYPEID_PLAYER && !who->ToPlayer()->IsGameMaster() && me->IsAlive()
+                    && !me->IsInCombat() && me->IsWithinDistInMap(who, 50.0f) && me->IsWithinLOSInMap(who))
+                {
+                    _introSaid = true;
+                    Talk(TALK_INTRO);
+                }
+                BossAI::MoveInLineOfSight(who);
+            }
+
+            bool _introSaid = false;
+
             ObjectGuid RoomController()
             {
                 std::list <Creature*> Controllers;
@@ -194,7 +209,7 @@ class boss_grandmaster_gandling : public CreatureScript
                                 break;
 
                             if (Unit* controller = ObjectAccessor::GetUnit(*me, RoomController()))
-                                if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, NonTankTargetSelector(me)))
+                                if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, 0.0f, true))   // (gandling-lesson) any player, the tank too
                                 {
                                     me->CastSpell(target, SPELL_HARSH_LESSON, false);
                                     Talk(TALK_HARSH_LESSON, target);

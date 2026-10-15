@@ -66,6 +66,7 @@ enum ScholoEvents
     EVENT_CHECK_BONEWEAVER                 = 127,
     EVENT_ESCORT                           = 128,
     EVENT_FINALY_FORM                      = 129,
+    EVENT_SKULL_PREPARE                    = 130,   // (gandling-outro)
 };
 
 enum Yells
@@ -952,6 +953,7 @@ class npc_gandling_at_rattlegore : public CreatureScript
             EventMap nonCombatEvents;
             float PosY;
             bool AtRattlegore, _introDone;
+            uint32 _introCheck = 0;   // (chamber-intro)
 
             void IsSummonedBy(Unit* summoner) override { }
 
@@ -1008,6 +1010,10 @@ class npc_gandling_at_rattlegore : public CreatureScript
                 {
                     case 0:
                         Talk(TALK_7);
+                        // (skull-lines) (skull-after) he leaves with Lilian Voss: "NO! Get back here coward!"
+                        if (_instance)
+                            if (Unit* TalkingSkull = ObjectAccessor::GetUnit(*me, _instance->GetGuidData(NPC_TALKING_SKULL)))
+                                TalkingSkull->ToCreature()->AI()->Talk(TALK_GANDLING_LEAVE);
                         me->CastSpell(me, SPELL_TELEPORT_VISUAL, false);
                         me->SetAnimTier(AnimTier::Fly);
                         me->OverrideInhabitType(INHABIT_AIR);
@@ -1026,6 +1032,25 @@ class npc_gandling_at_rattlegore : public CreatureScript
             void UpdateAI(uint32 diff) override
             {
                 nonCombatEvents.Update(diff);
+
+                // (chamber-intro) "My dear, it appears we have visitors!": once, when a player comes to the chamber after
+                // Jandice Barov is defeated (the doorway trigger of the client lies 48 yards from him); looked at once a second
+                if (!_introDone && _instance)
+                {
+                    if (_introCheck > diff)
+                        _introCheck -= diff;
+                    else
+                    {
+                        _introCheck = 1000;
+                        if (_instance->GetBossState(DATA_JANDICE_BAROV) == DONE)
+                            if (Player* player = me->FindNearestPlayer(50.0f))
+                                if (!player->IsGameMaster())
+                                {
+                                    _introDone = true;
+                                    DoAction(ACTION_INTRO);
+                                }
+                    }
+                }
 
                 if (!me->HasAura(SPELL_BONE_ARMOR_VISUAL) && !AtRattlegore)
                     me->AddAura(SPELL_BONE_ARMOR_VISUAL, me);
@@ -1079,7 +1104,7 @@ class npc_gandling_at_rattlegore : public CreatureScript
                         case EVENT_TALK_9:
                             Talk(TALK_12);
                             if (Unit* TalkingSkull = ObjectAccessor::GetUnit(*me, _instance->GetGuidData(NPC_TALKING_SKULL)))
-                                TalkingSkull->ToCreature()->AI()->Talk(TALK_GANDLING_LEAVE);
+                                TalkingSkull->ToCreature()->AI()->Talk(TALK_LILIAN_DEFEAT);   // (skull-lines) "Stop him! Forget about her!"
 
                             me->SetAnimTier(AnimTier::Ground);
                             me->OverrideInhabitType(INHABIT_GROUND);
@@ -1181,7 +1206,8 @@ class npc_talking_skull : public CreatureScript
                         me->GetMotionMaster()->Clear();
                         break;
                     case 29:
-                        Talk(TALK_GANDLING_ENTRANCE);
+                        Talk(12);   // (gandling-outro) "Finally."
+                        nonCombatEvents.ScheduleEvent(EVENT_SKULL_PREPARE, 6000);
                         AtGandling = true;
                         me->GetMotionMaster()->Clear();
                         break;
@@ -1206,7 +1232,16 @@ class npc_talking_skull : public CreatureScript
                         break;
                     case EVENT_FINALY_FORM:
                         if (Creature* Alexi = me->SummonCreature(NPC_ALEXIY_BAROV, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), me->GetOrientation(), TEMPSUMMON_MANUAL_DESPAWN))
+                        {
+                            // (gandling-outro) "It's over. The curse is lifted. Thank you, <name>. Thank you!"
+                            if (Player* player = Alexi->FindNearestPlayer(100.0f))
+                                if (Alexi->AI())
+                                    Alexi->AI()->Talk(0, player);
                             me->DespawnOrUnsummon();
+                        }
+                        break;
+                    case EVENT_SKULL_PREPARE:   // (gandling-outro)
+                        Talk(TALK_GANDLING_ENTRANCE);
                         break;
                     }
                 }

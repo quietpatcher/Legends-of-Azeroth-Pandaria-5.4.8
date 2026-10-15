@@ -233,6 +233,7 @@ class npc_uncle_gao : public CreatureScript
             {
                 encounterStarted = true;
                 encounterStage = 0;
+                TC_LOG_INFO("scripts", "Stormstout Brewery: Uncle Gao starts the brewing (instance {})", me->GetInstanceId());   // (gao-start)
 
                 for (int i = 3; i < 5 + 1; i++)
                     addStore[i - 3] = GetAddToSummonEntry(i);
@@ -385,6 +386,7 @@ class npc_uncle_gao : public CreatureScript
             bool AdvanceEncounter()
             {
                 events.CancelEvent(EVENT_UPDATE_ENCOUNTER);
+                TC_LOG_INFO("scripts", "Stormstout Brewery: Uncle Gao stage {} (adds {} {} {})", encounterStage, addStore[0], addStore[1], addStore[2]);   // (gao-log)
 
                 switch (encounterStage)
                 {
@@ -438,12 +440,34 @@ class npc_uncle_gao : public CreatureScript
 
             void DoTalk(uint8 id)
             {
+                TC_LOG_INFO("scripts", "Stormstout Brewery: Uncle Gao says line {}", uint32(id));   // (gao-log)
                 Talk(id);
                 events.ScheduleEvent(EVENT_HANDLE_CRAFT_ANIMATION, 2100);
             }
 
+            uint32 _startCheck = 1000;   // (gao-start)
+
             void UpdateAI(uint32 diff) override
             {
+                // (gao-start) MoveInLineOfSight alone did not start him: look once a second for a player within 30 yards above z 160
+                if (!encounterStarted)
+                {
+                    if (_startCheck > diff)
+                        _startCheck -= diff;
+                    else
+                    {
+                        _startCheck = 1000;
+                        std::list<Player*> players;
+                        me->GetPlayerListInGrid(players, 30.0f);
+                        for (Player* player : players)
+                            if (player->IsAlive() && !player->IsGameMaster() && player->GetPositionZ() > 160.f)
+                            {
+                                StartEncounter();
+                                break;
+                            }
+                    }
+                }
+
                 events.Update(diff);
 
                 while (uint32 eventId = events.ExecuteEvent())
@@ -497,6 +521,7 @@ class npc_uncle_gao : public CreatureScript
                             me->GetMotionMaster()->MovePoint(waypoint, gaoWaypoints[waypoint]);
                             break;
                         case EVENT_HANDLE_SUMMONING:
+                            TC_LOG_INFO("scripts", "Stormstout Brewery: Uncle Gao summons for stage {} (alive list {})", encounterStage - 1, uint32(currentStageGuidList.size()));   // (gao-log)
                             events.ScheduleEvent(EVENT_UPDATE_ENCOUNTER, 3000);
 
                             switch (encounterStage - 1)

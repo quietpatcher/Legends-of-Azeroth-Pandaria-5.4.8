@@ -174,6 +174,8 @@ struct BotLifeInfo
     uint32 lfgTestAt = 0;              // dungeon finder test - when the lead opens the event (0: done / not yet in)
     uint32 lfgLeadInstance = 0;        // instance this bot leads a group with a real player through
     std::set<uint32> gossipUsed;       // event NPCs (spawn ids) this run already talked to
+    std::set<uint32> areaTriggersFired;   // (bot-areatrigger) scripted area triggers this run already set off
+    uint32 areaTriggerCheck = 0;          // (bot-areatrigger) next check (ms, game time)
     std::set<uint32> eventFarVisited;  // far event NPCs the leader already walked up to this run
     ObjectGuid escortNpc;              // event NPC we started and now stay with (escort)
     uint32 escortUntil = 0;
@@ -278,6 +280,7 @@ struct BotLifeInfo
         // the event NPCs of the last run (the spawn ids are the same in every instance)
         dungeonSkipWhy.clear();
         gossipUsed.clear();
+        areaTriggersFired.clear();   // (bot-areatrigger)
         gossipEmpty.clear();
         gossipApproachKey = 0;
         gossipApproachSince = 0;

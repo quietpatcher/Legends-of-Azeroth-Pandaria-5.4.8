@@ -514,6 +514,15 @@ bool CreatureAI::UpdateVictim()
                         uint32(me->HasLootRecipient()));
                 EnterEvadeMode();
             }
+            // (guardian-return) a guardian or minion of a player that is not a pet (Lilian Voss of A Daughter's Embrace): PetAI
+            // brings a pet back to its owner, nothing did that for these. No evade (it would take the auras away): it lets go
+            // of its target and follows its owner again.
+            else if (me->IsAlive() && !me->IsInEvadeMode() && !me->IsPet() && !me->IsCharmed() && me->GetOwnerGUID().IsPlayer())
+            {
+                me->AttackStop();
+                me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
+                me->GetMotionMaster()->MoveTargetedHome();
+            }
         }
         return false;
     }

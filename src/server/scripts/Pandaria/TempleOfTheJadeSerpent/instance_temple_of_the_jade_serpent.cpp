@@ -562,6 +562,12 @@ class instance_temple_of_jade_serpent : public InstanceMapScript
 
                             suns.clear();
 
+                            // (sun-triggers) the hostile sun triggers go with the encounter
+                            for (auto guid : sunTriggers)
+                                if (Creature* creature = instance->GetCreature(guid))
+                                    creature->DespawnOrUnsummon();
+                            sunTriggers.clear();
+
                             for (auto guid : shaSummoned)
                             {
                                 if (Creature* creature = instance->GetCreature(guid))
@@ -580,6 +586,20 @@ class instance_temple_of_jade_serpent : public InstanceMapScript
                         {
                             if (Creature* osong = instance->GetCreature(osongGUID))
                                 osong->DespawnOrUnsummon(1.5 * IN_MILLISECONDS);
+
+                            // (sun-triggers) the hostile sun triggers (and any sun left over) go with the encounter: they kept the
+                            // party in combat after Zao Sunseeker died
+                            for (auto guid : sunTriggers)
+                                if (Creature* creature = instance->GetCreature(guid))
+                                    creature->DespawnOrUnsummon();
+                            sunTriggers.clear();
+                            for (auto guid : suns)
+                                if (Creature* creature = instance->GetCreature(guid))
+                                {
+                                    creature->GetInstanceScript()->SendEncounterUnit(ENCOUNTER_FRAME_DISENGAGE, creature);
+                                    creature->DespawnOrUnsummon();
+                                }
+                            suns.clear();
 
                             if (Creature* lorewalker = instance->GetCreature(lorewalkerGUID))
                             {

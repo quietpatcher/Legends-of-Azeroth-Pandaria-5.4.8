@@ -15,6 +15,7 @@
 * with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <cmath>
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "Vehicle.h"
@@ -65,6 +66,8 @@ enum Yells
     TALK_DEATH,
     TALK_WAVE_OF_ICE,
     TALK_ESCAPE,
+    TALK_KILL,   // (scholo-lines) 7
+    TALK_WIPE,   // 8
 };
 
 class boss_instructor_chillheart : public CreatureScript
@@ -77,6 +80,7 @@ class boss_instructor_chillheart : public CreatureScript
             boss_instructor_chillheartAI(Creature* creature) : BossAI(creature, DATA_INSTRUCTOR_CHILLHEART) { }
 
             bool fake, canDie;
+            bool _introSaid = false;   // (chill-intro-once)
 
             void Reset() override
             {
@@ -154,8 +158,13 @@ class boss_instructor_chillheart : public CreatureScript
                     }
             }
 
+            bool _engaged = false;   // (scholo-lines) the fight began: leaving it alive is a wipe of the party
+
             void EnterEvadeMode(EvadeReason why = EVADE_REASON_OTHER) override
             {
+                if (_engaged && me->IsAlive())
+                    Talk(TALK_WIPE);
+                _engaged = false;
                 BossAI::EnterEvadeMode();
                 if (instance)
                 {
@@ -169,7 +178,9 @@ class boss_instructor_chillheart : public CreatureScript
             void JustEngagedWith(Unit* /*who*/) override
             {
                 _JustEngagedWith();
+                me->InterruptNonMeleeSpells(false);   // (scholo-kills) her cosmetic channel kept her script waiting
                 Talk(TALK_AGGRO);
+                _engaged = true;
                 events.ScheduleEvent(EVENT_ICE_WRATH, urand(6500, 8000));
                 events.ScheduleEvent(EVENT_FRIGID_GRASP, urand(10000, 15000));
                 events.ScheduleEvent(EVENT_TOUCH_OF_THE_GRAVE, 1000);
@@ -207,8 +218,15 @@ class boss_instructor_chillheart : public CreatureScript
 
             void DoAction(int32 actionId) override
             {
-                if (actionId == ACTION_INTRO)
+                // (scholo-kills) told by the instance: a player died during her fight (not while she lies as dead)
+                if (actionId == ACTION_PLAYER_DIED && _engaged && !fake && me->IsAlive())
+                    Talk(TALK_KILL);
+
+                if (actionId == ACTION_INTRO && !_introSaid)   // (chill-intro-once) the click on the gate arrives twice
+                {
+                    _introSaid = true;
                     Talk(TALK_INTRO);
+                }
 
                 switch (actionId)
                 {
@@ -399,9 +417,14 @@ class npc_ice_wall_stalker : public CreatureScript
 
             void IsSummonedBy(Unit* /*summoner*/) override { }
 
-            void Reset() override { }
+            // (wall-stays) the stalker lays the wall and does nothing else: it does not fight, chase or turn
+            void Reset() override { me->SetReactState(REACT_PASSIVE); }
 
-            void InitializeAI() override { }
+            void InitializeAI() override { me->SetReactState(REACT_PASSIVE); }
+
+            void AttackStart(Unit* /*who*/) override { }
+
+            void MoveInLineOfSight(Unit* /*who*/) override { }
 
             void JustSummoned(Creature* summon) override
             {
@@ -414,11 +437,17 @@ class npc_ice_wall_stalker : public CreatureScript
                 switch (actionId)
                 {
                     case ACTION_ACTIVATE:
+                    {
+                        // (wall-stays) the wall starts at the stalker's own place, facing the room
+                        Position const& home = me->GetHomePosition();
+                        if (me->GetExactDist2d(&home) > 0.5f || std::fabs(me->GetOrientation() - home.GetOrientation()) > 0.1f)
+                            me->NearTeleportTo(home.GetPositionX(), home.GetPositionY(), home.GetPositionZ(), home.GetOrientation());
                         me->CastSpell(me, SPELL_ICE_WALL_DUMMY_1, false);
                         CreateTriggerWall(me->GetGUID());
                         PosY = me->GetPositionY() + 4.0f;
                         nonCombatEvents.ScheduleEvent(EVENT_MOVE_WALL, 7000);
                         break;
+                    }
                     case ACTION_DESTROY_WALL:
                         nonCombatEvents.Reset();
                         PosY = me->GetPositionY() + 4.0f;
@@ -457,7 +486,8 @@ class npc_ice_wall_stalker : public CreatureScript
                 {
                     if (eventId == EVENT_MOVE_WALL)
                     {
-                        if (Creature* IceWallTrigger = me->SummonCreature(NPC_ICE_WALL_MOVE, me->GetPositionX(), me->GetPositionY() + PosY, me->GetPositionZ(), me->GetOrientation(), TEMPSUMMON_MANUAL_DESPAWN))
+                        Position const& home = me->GetHomePosition();   // (wall-stays) not where a fight may have taken the stalker
+                        if (Creature* IceWallTrigger = me->SummonCreature(NPC_ICE_WALL_MOVE, home.GetPositionX(), home.GetPositionY() + PosY, home.GetPositionZ(), home.GetOrientation(), TEMPSUMMON_MANUAL_DESPAWN))
                         {
                             IceWallTrigger->CastSpell(IceWallTrigger, SPELL_ICE_WALL_DUMMY_1);
                             CreateTriggerWall(IceWallTrigger->GetGUID());
@@ -722,8 +752,32 @@ class sat_ice_wall : public SpellAreaTriggerScript
                 if (!player)
                     return false;
 
-                return player->IsAlive() && (m_target->GetExactDist2d(player) < m_range);
+                if (!player->IsAlive() || m_target->GetExactDist2d(player) >= m_range)
+                    return false;
+
+                // (wall-touch) in front of the row is not touching it: the piece of the wall that made this area, the way it faces
+                if (_hasRow)
+                {
+                    float const ahead = (player->GetPositionX() - _row.GetPositionX()) * std::cos(_row.GetOrientation())
+                        + (player->GetPositionY() - _row.GetPositionY()) * std::sin(_row.GetOrientation());
+                    if (ahead > 2.0f)
+                        return false;
+                }
+                return true;
             }
+
+            // (wall-touch) where the piece stood and which way it faced when it made the area
+            void OnInit() override
+            {
+                if (m_caster)
+                {
+                    _row = m_caster->GetPosition();
+                    _hasRow = true;
+                }
+            }
+
+            Position _row;
+            bool _hasRow = false;
 
             void OnTrigger(WorldObject* triggering) override
             {

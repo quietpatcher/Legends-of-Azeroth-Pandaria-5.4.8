@@ -67,13 +67,14 @@ class boss_rattlegore : public CreatureScript
             std::list <Creature*> Stalker;
             std::list<ObjectGuid> m_uSoul;
             EventMap nonCombatEvents;
+            bool _assembled = false;   // (rattle-hidden) the bone storm has ended: he is visible and can be fought
 
             void Reset() override
             {
                 _Reset();
                 events.Reset();
                 me->setRegeneratingHealth(true);
-                me->SetReactState(REACT_AGGRESSIVE);
+                me->SetReactState(_assembled ? REACT_AGGRESSIVE : REACT_PASSIVE);   // (rattle-hidden)
 
                 if (instance)
                     instance->DoRemoveAurasDueToSpellOnPlayers(SPELL_BONE_ARMOR);
@@ -148,6 +149,7 @@ class boss_rattlegore : public CreatureScript
             {
                 _JustEngagedWith();
                 SetBonePile(true);
+                Talk(TALK_SUMMONED);   // (rattle-aggro) "RATTLEGORE!"
                 Talk(TALK_BONE_PILE_ANN);
                 if (instance)
                 {
@@ -195,6 +197,7 @@ class boss_rattlegore : public CreatureScript
                             nonCombatEvents.ScheduleEvent(EVENT_SPECIAL, 5000);
                             break;
                         case EVENT_SPECIAL:
+                            _assembled = true;   // (rattle-hidden)
                             me->RemoveAllAuras();
                             me->SetReactState(REACT_AGGRESSIVE);
                             me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE);

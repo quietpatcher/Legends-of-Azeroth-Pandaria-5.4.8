@@ -2504,8 +2504,28 @@ class spell_q12641_recall_eye_of_acherus : public SpellScript
     }
 };
 
+// (lilian-leaves) 73306 - Summon Lilian Voss (Guardian), quest 25046 A Daughter's Embrace: she leaves with the aura
+class spell_q25046_summon_lilian_voss : public AuraScript
+{
+    PrepareAuraScript(spell_q25046_summon_lilian_voss);
+
+    enum { NPC_LILIAN_VOSS_GUARDIAN = 66185 };
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Unit* target = GetTarget())
+            target->RemoveAllMinionsByEntry(NPC_LILIAN_VOSS_GUARDIAN);
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(spell_q25046_summon_lilian_voss::HandleRemove, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 void AddSC_quest_spell_scripts()
 {
+    new aura_script<spell_q25046_summon_lilian_voss>("spell_q25046_summon_lilian_voss");   // (lilian-leaves)
     new spell_q55_sacred_cleansing();
     new spell_q2203_thaumaturgy_channel();
     new spell_q5206_test_fetid_skull();

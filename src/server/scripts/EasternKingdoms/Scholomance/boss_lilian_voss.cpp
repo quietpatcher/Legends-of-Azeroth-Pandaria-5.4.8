@@ -74,6 +74,8 @@ enum Yells
     TALK_11                   = 10,
     TALK_12                   = 11,
     TALK_13                   = 12,
+    TALK_14                   = 13,   // (chamber-intro) "I will not let you curse another soul with this nightmare."
+    TALK_15_ANN               = 14,   // "Defeat the Boneweavers to aid Lilian Voss!"
 };
 
 class boss_lilian_voss : public CreatureScript
@@ -87,6 +89,8 @@ class boss_lilian_voss : public CreatureScript
 
             EventMap nonCombatEvents;
             bool IsSoul, Gandling, fict;
+            bool said75 = false;   // (lilian-lines)
+            bool _over = false;    // (lilian-over) her fight ended at 1 percent; not cleared by Reset()
 
             void Reset() override
             {
@@ -96,6 +100,7 @@ class boss_lilian_voss : public CreatureScript
                 me->SetReactState(REACT_AGGRESSIVE);
                 IsSoul   = false;
                 Gandling = false;
+                said75   = false;
             }
 
             void InitializeAI() override
@@ -124,6 +129,8 @@ class boss_lilian_voss : public CreatureScript
 
             void EnterEvadeMode(EvadeReason why = EVADE_REASON_OTHER) override
             {
+                if (_over)   // (lilian-ends) her fight ended at 1 percent: that is not a failed attempt
+                    return;
                 BossAI::EnterEvadeMode();
                 if (instance)
                 {
@@ -186,7 +193,7 @@ class boss_lilian_voss : public CreatureScript
                 {
                     me->CastSpell(me, SPELL_SHADOW_SHIV, false);
 
-                    if (Gandling)
+                    if (Gandling || _over)   // (lilian-ends)
                         nonCombatEvents.ScheduleEvent(EVENT_PURIFIED, 9000);
                 }
 
@@ -195,7 +202,6 @@ class boss_lilian_voss : public CreatureScript
 
                 if (pointId == 0)
                 {
-                    Talk(TALK_11);
                     me->CastSpell(me, SPELL_SHADOW_STEP_VISUAL, false);
                     me->NearTeleportTo(me->GetPositionX(), me->GetPositionY() + 10.0f, me->GetPositionZ(), me->GetOrientation());
                     nonCombatEvents.ScheduleEvent(EVENT_SPECIAL, 1500);
@@ -204,7 +210,7 @@ class boss_lilian_voss : public CreatureScript
 
             void DamageTaken(Unit* /*attacker*/, uint32& damage) override
             {
-                if (Gandling)
+                if (Gandling || _over)   // (lilian-over)
                 {
                     damage = 0;
                     return;
@@ -212,6 +218,14 @@ class boss_lilian_voss : public CreatureScript
 
                 if (!fict)
                     return;
+
+                // (lilian-lines) 75 percent: Gandling "I can feel her will breaking! Her soul burns so brightly."
+                if (!said75 && !IsSoul && HealthBelowPct(75))
+                {
+                    said75 = true;
+                    if (Creature* gandling = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_GRANDMASTER_GANDLING_INTRO)))
+                        gandling->AI()->Talk(12);
+                }
 
                 if (!IsSoul && HealthBelowPct(50))
                 {
@@ -227,12 +241,12 @@ class boss_lilian_voss : public CreatureScript
                         Gandling->AI()->DoAction(ACTION_DIFF_INTRO);
 
                     events.ScheduleEvent(EVENT_SOUL_DISMISS, 9000);
-                    Talk(TALK_3);
                 }
                 if (IsSoul && !Gandling && me->GetHealth() <= damage)
                 {
                     damage = 0;
                     Gandling = true;
+                    _over = true;   // (lilian-over)
                     events.Reset();
                     me->RemoveAllAuras();
                     me->AttackStop();
@@ -258,6 +272,7 @@ class boss_lilian_voss : public CreatureScript
                     {
                         case EVENT_TALK_1:
                             Talk(TALK_7_ANN);
+                            Talk(TALK_15_ANN);   // (chamber-intro)
                             nonCombatEvents.ScheduleEvent(EVENT_TALK_2, 10000);
                             break;
                         case EVENT_TALK_2:
@@ -270,7 +285,15 @@ class boss_lilian_voss : public CreatureScript
                             break;
                         case EVENT_TALK_4:
                             Talk(TALK_10);
-                            nonCombatEvents.ScheduleEvent(EVENT_TALK_5, 18000);
+                            nonCombatEvents.ScheduleEvent(EVENT_TALK_6, 10000);
+                            break;
+                        case EVENT_TALK_6:   // (chamber-intro) "You'll pay for your tongue.", before Gandling's "My dear, you should embrace..."
+                            Talk(TALK_11);
+                            nonCombatEvents.ScheduleEvent(EVENT_TALK_7, 6000);
+                            break;
+                        case EVENT_TALK_7:   // (chamber-intro) after it
+                            Talk(TALK_14);
+                            nonCombatEvents.ScheduleEvent(EVENT_TALK_5, 3000);
                             break;
                         case EVENT_TALK_5:
                             Talk(TALK_12);
@@ -300,12 +323,12 @@ class boss_lilian_voss : public CreatureScript
                             me->SetFaction(14);
                             break;
                         case EVENT_PURIFIED:
+                            Talk(TALK_6);   // (lilian-ends) "Leave me...to die...alone...please..."
                             JustDied(me);
                             break;
                         case EVENT_DIE_NECROMANCE:
                             if (Creature* Gandling = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_GRANDMASTER_GANDLING_INTRO)))
                             {
-                                Gandling->AI()->Talk(TALK_4);
                                 me->GetMotionMaster()->MoveJump(Gandling->GetPositionX(), Gandling->GetPositionY(), 107.76f, 20.0f, 30.0f, EVENT_JUMP);
                                 Gandling->AI()->DoAction(ACTION_REMOVE_LILIAN_SOUL);
                             }
@@ -333,6 +356,7 @@ class boss_lilian_voss : public CreatureScript
                             events.ScheduleEvent(EVENT_SHADOW_SHIV, urand(16700, 20000));
                             break;
                         case EVENT_DEATHS_GRASP:
+                            Talk(TALK_3);   // (lilian-lines) "It burns...my soul...it burns!"
                             DoCast(me, SPELL_DEATHS_GRASP);
                             events.ScheduleEvent(EVENT_DARK_BLAZE, 3500);
                             events.ScheduleEvent(EVENT_DEATHS_GRASP, 40000);
@@ -341,11 +365,12 @@ class boss_lilian_voss : public CreatureScript
                             DoCastAOE(SPELL_DARK_BLAZE);
                             break;
                         case EVENT_SUMMON_SOUL:
+                            if (Creature* gandling = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_GRANDMASTER_GANDLING_INTRO)))   // (lilian-lines)
+                                gandling->AI()->Talk(13);              // "YOUR SOUL IS MINE!"
                             me->SummonCreature(NPC_LILIAN_SOUL, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), me->GetOrientation(), TEMPSUMMON_MANUAL_DESPAWN);
                             break;
                         case EVENT_SOUL_DISMISS:
                             Talk(TALK_4);
-                            Talk(TALK_13);
                             me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE);
                             me->SetStandState(UNIT_STAND_STATE_DEAD);
                             events.ScheduleEvent(EVENT_SUMMON_SOUL, 4000);
@@ -417,6 +442,15 @@ class npc_lilian_soul : public CreatureScript
                     me->SetReactState(REACT_PASSIVE);
                     me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE);
                     events.ScheduleEvent(EVENT_RESSURECT, 5000);
+
+                    // (lilian-lines) the soul fades: the emote of Lilian Voss and one of the three lines of Gandling
+                    if (instance)
+                    {
+                        if (Creature* lilian = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_LILIAN_VOSS)))
+                            lilian->AI()->Talk(TALK_13);
+                        if (Creature* gandling = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_GRANDMASTER_GANDLING_INTRO)))
+                            gandling->AI()->Talk(14);
+                    }
                 }
             }
 

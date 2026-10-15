@@ -1062,6 +1062,8 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
     ObjectGuid playerGUID;
     ObjectGuid packGUID;
     Movement::PointsArray route;
+    uint32 packTimer = 0;               // (caravan-gap) the pack kodo starts this much after the lead kodo
+    Movement::PointsArray packPoints;   // (caravan-gap) its road
     uint32 stage = CARAVAN_WAITING;
     uint32 timer = 35 * IN_MILLISECONDS;   // waiting: as long as Calling the Caravan lasts on the player
     uint32 rideTime = 0;
@@ -1108,6 +1110,9 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
             return;
         playerGUID = summoner->GetGUID();
         me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+        // (caravan-road) the caravan of Halga Bloodeye comes up the road to the player beside her and waits there
+        if (!delivery)
+            me->GetMotionMaster()->MovePoint(1, 318.5f, -3677.0f, 27.19f);
         DoCast(me, delivery ? SPELL_CALL_A_PACK_KODO_2 : SPELL_CALL_A_PACK_KODO, true);
     }
 
@@ -1120,7 +1125,9 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
             case NPC_CROSSROADS_CARAVAN_KODO:
                 packGUID = summon->GetGUID();
                 summon->SetReactState(REACT_PASSIVE);
-                summon->SetSpeed(MOVE_RUN, 1.4f);   // keeps up behind the lead kodo
+                summon->SetSpeed(MOVE_RUN, me->GetSpeedRate(MOVE_RUN));   // (caravan-road) the speed of the lead kodo: faster made it stop and start
+                if (!delivery)
+                    summon->GetMotionMaster()->MoveFollow(me, 9.0f, float(M_PI));   // up the road to the player with the lead kodo
                 break;
             case NPC_RAZORMANE_RAIDER:
                 // no leash: they stay on the caravan until the minute of their summon spell is up
@@ -1238,8 +1245,53 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
             me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
         ambushTimer = (delivery ? 21 : 15) * IN_MILLISECONDS;
         if (Creature* pack = ObjectAccessor::GetCreature(*me, packGUID))
-            pack->GetMotionMaster()->MoveFollow(me, 6.0f, float(M_PI));
+            PreparePack(pack);
+        // (caravan-road) "Defend the Caravan Kodo!"
+        if (!delivery)
+            if (Player* player = ObjectAccessor::GetPlayer(*me, playerGUID))
+                Talk(0, player);
         Launch();
+    }
+
+    // (caravan-road) the pack kodo runs the same road as the lead kodo, from where it stands, at the speed of the lead kodo, and
+    // stops 9 yards short of the end
+    void PreparePack(Creature* pack)
+    {
+        packPoints.clear();
+        if (route.size() < 2)
+            return;
+        G3D::Vector3 const here(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ());
+        size_t nearest = 0;
+        for (size_t i = 1; i < route.size(); ++i)
+            if ((route[i] - here).squaredLength() < (route[nearest] - here).squaredLength())
+                nearest = i;
+        Movement::PointsArray& points = packPoints;
+        points.push_back(G3D::Vector3(pack->GetPositionX(), pack->GetPositionY(), pack->GetPositionZ()));
+        points.push_back(here);
+        for (size_t i = nearest + 1; i < route.size(); ++i)
+            points.push_back(route[i]);
+        while (points.size() > 2 && (points.back() - route.back()).length() < 9.0f)
+            points.pop_back();
+        pack->GetMotionMaster()->MoveIdle();
+        pack->StopMoving();
+        pack->SetSpeed(MOVE_RUN, me->GetSpeedRate(MOVE_RUN));
+        // (caravan-gap) nine yards behind the lead kodo: it starts as much later as it stands too close
+        float const gap = pack->GetExactDist2d(me);
+        float const speed = me->GetSpeed(MOVE_RUN);
+        packTimer = (gap < 9.0f && speed > 0.1f) ? uint32((9.0f - gap) / speed * 1000.0f) : 0;
+        if (!packTimer)
+            LaunchPack(pack);
+    }
+
+    void LaunchPack(Creature* pack)
+    {
+        if (packPoints.size() < 2)
+            return;
+        Movement::MoveSplineInit init(pack);
+        init.MovebyPath(packPoints);
+        init.SetUncompressed();
+        init.SetWalk(false);
+        init.Launch();
     }
 
     void Ambush(uint32 diff)
@@ -1298,7 +1350,10 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
         timer = delay;
         me->StopMoving();
         if (Creature* pack = ObjectAccessor::GetCreature(*me, packGUID))
+        {
+            pack->StopMoving();   // (caravan-road) it runs a path of its own
             pack->GetMotionMaster()->MoveIdle();
+        }
         for (ObjectGuid const& guid : summons)
         {
             Creature* summon = ObjectAccessor::GetCreature(*me, guid);
@@ -1362,6 +1417,13 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
                         master->AI()->Talk(delivery ? SAY_ROCCO_RIDE_HARD : SAY_HALGA_MOVE_OUT);
                 }
                 Ambush(diff);
+                if (packTimer)   // (caravan-gap)
+                {
+                    packTimer -= std::min(packTimer, diff);
+                    if (!packTimer)
+                        if (Creature* pack = ObjectAccessor::GetCreature(*me, packGUID))
+                            LaunchPack(pack);
+                }
                 launchTimer -= std::min(launchTimer, diff);
                 if (me->movespline->Finalized())
                 {

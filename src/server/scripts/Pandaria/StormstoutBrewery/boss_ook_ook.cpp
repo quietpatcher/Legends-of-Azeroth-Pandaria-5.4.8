@@ -101,7 +101,8 @@ class boss_ook_ook : public CreatureScript
             TALK_AGGRO,
             TALK_SPELL,
             EMOTE_GOING_BANANAS,
-            TALK_DEATH
+            TALK_DEATH,
+            TALK_KILL   // (ook-lines) "In the dooker!"
         };
 
         struct boss_ook_ook_AI : public BossAI
@@ -214,9 +215,16 @@ class boss_ook_ook : public CreatureScript
                     JustReachedHome();
             }
 
+            void KilledUnit(Unit* victim) override
+            {
+                if (victim->GetTypeId() == TYPEID_PLAYER)
+                    Talk(TALK_KILL);   // (ook-lines)
+            }
+
             void JustDied(Unit* /*killer*/) override
             {
                 _JustDied();
+                Talk(TALK_DEATH);   // (ook-lines) "Ook! Oooook!!"
 
                 if (instance)
                     instance->SendEncounterUnit(ENCOUNTER_FRAME_DISENGAGE, me);
@@ -252,7 +260,7 @@ class boss_ook_ook : public CreatureScript
                                 targetGuid = vict->GetGUID();
                                 me->PrepareChanneledCast(me->GetAngle(vict), SPELL_GROUND_POUND);
                             }
-                            Talk(TALK_SPELL);
+                            // (ook-lines) no line here: his three lines belong to Going Bananas
                             events.ScheduleEvent(EVENT_GROUND_POUND_CANCEL, 5 * IN_MILLISECONDS);
                             events.ScheduleEvent(EVENT_GROUND_POUND, urand(10000, 14000));
                             break;

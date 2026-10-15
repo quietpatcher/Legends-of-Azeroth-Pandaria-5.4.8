@@ -45,6 +45,8 @@ enum Yells
     TALK_DEATH                     = 1,
     TALK_RAPIDITY                  = 2,
     TALK_ILLUSION                  = 3,
+    TALK_KILL                      = 4,   // (scholo-lines)
+    TALK_WIPE                      = 5,
 };
 
 enum Phases
@@ -127,8 +129,20 @@ class boss_jandice_barov : public CreatureScript
                 }
             }
 
+            // (scholo-lines) (scholo-kills) told by the instance: a player died during her fight
+            void DoAction(int32 actionId) override
+            {
+                if (actionId == ACTION_PLAYER_DIED && _engaged && me->IsAlive())
+                    Talk(TALK_KILL);
+            }
+
+            bool _engaged = false;   // (scholo-lines) the fight began: leaving it alive is a wipe of the party
+
             void EnterEvadeMode(EvadeReason why = EVADE_REASON_OTHER) override
             {
+                if (_engaged && me->IsAlive())
+                    Talk(TALK_WIPE);
+                _engaged = false;
                 BossAI::EnterEvadeMode();
                 if (instance)
                 {
@@ -158,6 +172,8 @@ class boss_jandice_barov : public CreatureScript
 
             void JustEngagedWith(Unit* /*who*/) override
             {
+                if (_engaged)   // (scholo-kills) once per fight: killing the last player began the fight anew for one tick
+                    return;
                 _JustEngagedWith();
                 //Talk(TALK_INTO);
                 if (instance)
@@ -167,6 +183,7 @@ class boss_jandice_barov : public CreatureScript
                 }
                 GetEvents();
                 Talk(TALK_AGGRO);
+                _engaged = true;
                 HandleDoors();
 
                 if (Unit* TalkingSkull = ObjectAccessor::GetUnit(*me, instance->GetGuidData(NPC_TALKING_SKULL)))
@@ -192,7 +209,7 @@ class boss_jandice_barov : public CreatureScript
                     phase = PHASE_ILLUSIONS;
                     events.Reset();
                     me->CastSpell(me, SPELL_FLASH_BANG, true);
-                    Talk(TALK_ILLUSION);
+                    Talk(urand(0, 1) ? TALK_ILLUSION : TALK_RAPIDITY);   // (jandice-whirl) one of her two lines for Whirl of Illusion
                     me->RemoveAllAuras();
 
                     me->SetVisible(false);
@@ -259,7 +276,6 @@ class boss_jandice_barov : public CreatureScript
                         {
                             if (Unit* vic = me->GetVictim())
                             {
-                                Talk(TALK_RAPIDITY);
                                 me->PrepareChanneledCast(me->GetAngle(vic), SPELL_WONDROUS_RAPIDITY);
                                 events.ScheduleEvent(EVENT_WONDROUS_RAPIDITY_CANCEL, 7700);
                                 events.ScheduleEvent(EVENT_WONDROUS_RAPIDITY, urand(18000, 22000));
