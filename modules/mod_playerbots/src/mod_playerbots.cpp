@@ -17,6 +17,7 @@
 #include "WorldSocket.h"
 
 #include "Playerbots.h"
+#include "BotLife.h"   // (bot-duels)
 #include "PlayerbotAIConfig.h"
 #include "RandomPlayerbotMgr.h"
 #include "RandomItemManager.h"
@@ -205,6 +206,12 @@ public:
                 ChatHandler(player->GetSession()).SendSysMessage(std::string("Playerbots: bot initialization at server startup takes about '" + roundedTime + "' minutes.").c_str());
             }
         }
+    }
+
+    // (bot-duels) count and log the end of a duel a bot took part in
+    void OnDuelEnd(Player* winner, Player* loser, DuelCompleteType type) override
+    {
+        sBotLife->NoteDuelEnd(winner, loser, uint8(type));
     }
 
     void OnAfterUpdate(Player* player, uint32 diff) override

@@ -139,6 +139,7 @@ class boss_echo_of_sylvanas : public CreatureScript
             void Reset() override
             {
                 _Reset();
+                me->SetControlled(false, UNIT_STATE_ROOT);   // (sylvanas-rooted)
                 if (me->GetVehicleBase())
                     me->ExitVehicle();
                 me->SetReactState(REACT_AGGRESSIVE);
@@ -310,8 +311,11 @@ class boss_echo_of_sylvanas : public CreatureScript
                             events.CancelEvent(EVENT_SHRIEK_OF_THE_HIGHBORNE);
                             me->SetReactState(REACT_PASSIVE);
                             me->AttackStop();
+                            me->GetMotionMaster()->Clear();   // (sylvanas-stays) no chase after the old victim during the calling
+                            me->StopMoving();
                             me->InterruptNonMeleeSpells(false);
                             DoCast(me, SPELL_TELEPORT, true);
+                            me->SetControlled(true, UNIT_STATE_ROOT);   // (sylvanas-rooted) until the ghouls are done
                             events.ScheduleEvent(EVENT_TELEPORT_1, 2000);
                             break;
                         case EVENT_TELEPORT_1:
@@ -340,6 +344,7 @@ class boss_echo_of_sylvanas : public CreatureScript
                             break;
                         }
                         case EVENT_START:
+                            me->SetControlled(false, UNIT_STATE_ROOT);   // (sylvanas-rooted)
                             me->RemoveAura(SPELL_CALL_OF_THE_HIGHBORNE);
                             me->SetReactState(REACT_AGGRESSIVE);
                             me->GetMotionMaster()->MoveChase(me->GetVictim());

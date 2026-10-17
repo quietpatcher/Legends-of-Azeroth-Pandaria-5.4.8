@@ -619,6 +619,11 @@ void WorldSession::LogoutPlayer(bool save)
             }
 
             _player->CombatStop();
+            // (logout-no-pve-kill) only creatures attack: no death at logout (retail has none); the fight just stops
+            if (attackers.empty() && !_player->IsCharmed())
+                _player->GetThreatManager().RemoveMeFromThreatLists();
+            else
+            {
             _player->RemoveAllAurasOnDeath();
             _player->SetPvPDeath(!attackers.empty());
             _player->KillPlayer();
@@ -634,6 +639,7 @@ void WorldSession::LogoutPlayer(bool save)
             if (!attackers.empty())
                 if (Battleground *bg = _player->GetBattleground())
                     bg->HandleKillPlayer(_player, *attackers.begin());
+            }
         }
         else if (_player->HasAuraType(SPELL_AURA_SPIRIT_OF_REDEMPTION))
         {

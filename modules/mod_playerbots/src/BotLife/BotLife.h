@@ -141,6 +141,7 @@ struct BotLifeInstanceSpawn
     float y = 0.0f;
     float z = 0.0f;
     bool boss = false;
+    uint32 area = 0;                 // (wing-area) creature.areaId
 };
 
 struct BotLifeDungeon
@@ -154,6 +155,8 @@ struct BotLifeDungeon
     int32 faction = -1;              // -1 both, 0 horde, 1 alliance
     float x = 0.0f, y = 0.0f, z = 0.0f, o = 0.0f;
     uint32 bosses = 0;
+    uint32 wingArea = 0;             // (wing-area) a wing of a shared map with an area of its own (AreaTable): the run keeps to it
+    bool wingList = false;           // (wing-area) a wing of a shared map from a boss list: the run keeps to its spawns
     std::string name;
 };
 
@@ -331,6 +334,12 @@ enum BotLifeCounter : uint8
     BLC_DK_EYE,                // Eye of Acherus taken for Death Comes From On High
     BLC_DK_EYE_SIPHON,         // a building of New Avalon siphoned through the eye
     // dungeon leader opened a closed door the encounter script did not open (etc, see history)
+    BLC_DUEL_REQUESTED,        // (bot-duels) a bot challenged another bot
+    BLC_DUEL_ACCEPTED,
+    BLC_DUEL_DECLINED,
+    BLC_DUEL_WON,
+    BLC_DUEL_LOST,
+    BLC_LEVEL_BALANCE,         // (level-balance) a bot moved to an empty level band
     BLC_MAX
 };
 
@@ -424,6 +433,12 @@ public:
 
     // bot AI hook: returns true when this system handled the bot this tick
     bool UpdateBot(PlayerbotAI* botAI, uint32 elapsed);
+    // (bot-duels) answer / count down / fight a duel (true: hold still this tick), challenge another bot, count the end
+    bool DuelTick(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now);
+    void DuelChallenge(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now);
+    void NoteDuelEnd(Player* winner, Player* loser, uint8 type);
+    // (level-balance) world thread: spread the online random bots over the level bands
+    void BalanceLevels(uint32 now);
 
     // cross-thread-safe bot actions. World-thread formation code queues; the bot runs them on its own
     // map thread from RunPendingActions (called every tick in UpdateAIInternal, before the minimal gate).
@@ -701,6 +716,11 @@ private:
     bool _raidsEnabled = true;
     uint32 _raidParties = 1;
     uint32 _raidSize = 10;
+    bool _duels = true;                  // (bot-duels) BotLife.Duels
+    uint32 _duelChallengeMinutes = 45;   // (bot-duels) BotLife.DuelChallengeMinutes, 0 = bots never challenge
+    bool _levelBalance = true;           // (level-balance) BotLife.LevelBalance
+    uint32 _levelBalanceMoves = 10;      // (level-balance) BotLife.LevelBalanceMoves: bots moved per round (ten minutes)
+    uint32 _nextLevelBalance = 0;
     uint32 _raidMinutes = 75;
     uint32 _maxQuests = 3;
     uint32 _questTimeout = 25 * 60 * 1000;

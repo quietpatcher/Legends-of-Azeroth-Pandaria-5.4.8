@@ -4,6 +4,7 @@
  */
 
 #include "AttackersValue.h"
+#include "BotLife.h"   // (avoid-in-dungeon)
 
 #include "CellImpl.h"
 #include "GridObject.h"
@@ -143,6 +144,9 @@ bool AttackersValue::IsPossibleTarget(Unit* attacker, Player* bot, float range)
     Creature* c = attacker->ToCreature();
     // a training dummy never dies: no target for a bot (Scarlet Monastery zealots train on them)
     if (c && (c->GetName().find("Dummy") != std::string::npos || sObjectMgr->GetScriptName(c->GetCreatureTemplate()->ScriptID) == "npc_training_dummy"))
+        return false;
+    // (avoid-in-dungeon) a foe the party leaves alone for now (one that cannot be hurt yet, Raigonn before Ri'mok): no target
+    if (c && bot->GetMap()->IsDungeon() && sBotLife->IsAvoidedTarget(bot, c))
         return false;
     bool rti = false;
     if (attacker && bot->GetGroup())

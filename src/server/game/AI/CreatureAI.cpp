@@ -72,6 +72,18 @@ bool ShouldFollowOnSpawn(SummonPropertiesEntry const* properties)
         case SUMMON_CATEGORY_WILD:
         case SUMMON_CATEGORY_ALLY:
         case SUMMON_CATEGORY_UNK:
+            // (totem-stays) a totem, lightwell or statue stays where it was put, whatever its flags say
+            // (the Searing Totem's SummonProperties 3211 carries flag 0x200 and walked after the shaman)
+            switch (static_cast<SummonType>(properties->Type))
+            {
+                case SUMMON_TYPE_TOTEM:
+                case SUMMON_TYPE_LIGHTWELL:
+                case SUMMON_TYPE_STATUE:
+                    return false;
+                default:
+                    break;
+            }
+
             if (properties->Flags & SUMMON_PROP_FLAG_UNK10)
                 return true;
 

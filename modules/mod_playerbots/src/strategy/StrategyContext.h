@@ -41,6 +41,7 @@ public:
         creators["move from group"] = &StrategyContext::move_from_group;
 
         creators["tank face"] = &StrategyContext::tank_face;
+        creators["avoid aoe"] = &StrategyContext::avoid_aoe;   // (avoid-aoe-registered) added by name in AiFactory
         creators["threat"] = &StrategyContext::threat;
         // -- temp
         creators["say hello"] = &StrategyContext::say_hello;
@@ -64,6 +65,7 @@ private:
     static Strategy* move_from_group(PlayerbotAI* botAI) { return new MoveFromGroupStrategy(botAI); }
 
     static Strategy* tank_face(PlayerbotAI* botAI) { return new TankFaceStrategy(botAI); }
+    static Strategy* avoid_aoe(PlayerbotAI* botAI) { return new AvoidAoeStrategy(botAI); }   // (avoid-aoe-registered)
     static Strategy* threat(PlayerbotAI* botAI) { return new ThreatStrategy(botAI); }
 };
 

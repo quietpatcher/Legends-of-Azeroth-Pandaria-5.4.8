@@ -677,6 +677,18 @@ void BotLifeMgr::WorldUpdate(uint32 diff)
         }
     }
 
+    // (level-balance) every ten minutes, the first round ten minutes after the start (the bots are logged in by then)
+    if (_levelBalance && _levelBalanceMoves)
+    {
+        if (!_nextLevelBalance)
+            _nextLevelBalance = now + 10 * MINUTE * IN_MILLISECONDS;
+        else if (now >= _nextLevelBalance)
+        {
+            _nextLevelBalance = now + 10 * MINUTE * IN_MILLISECONDS;
+            BalanceLevels(now);
+        }
+    }
+
     std::vector<BotLifePendingChat> due;
     {
         std::lock_guard<std::mutex> guard(_lock);

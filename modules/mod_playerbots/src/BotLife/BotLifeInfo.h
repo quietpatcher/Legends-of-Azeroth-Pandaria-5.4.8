@@ -74,6 +74,7 @@ struct BotLifeInfo
     bool teleQueued = false;
     bool resetQueued = false;
     bool combatStopQueued = false;
+    uint8 relevelTo = 0;             // (level-balance) set by the world thread: the bot gets this level on its own map thread
     uint32 teleMap = 0;
     float teleX = 0.0f, teleY = 0.0f, teleZ = 0.0f, teleO = 0.0f;
 
@@ -228,6 +229,10 @@ struct BotLifeInfo
     uint32 townMap = 0;
     float townX = 0.0f, townY = 0.0f, townZ = 0.0f, townO = 0.0f;   // where the bot came from
 
+    // (bot-duels) when the current duel (request) was first seen, and the next try to challenge another bot
+    uint32 duelSeenAt = 0;
+    uint32 nextDuelChallenge = 0;
+
     // party (set by BotLifeMgr on the world thread): 0 = none, see BotLifePartyType
     uint8 party = 0;
     uint32 partyWaitSince = 0;
@@ -247,6 +252,8 @@ struct BotLifeInfo
     uint32 nextWalkBring = 0;                      // walker: the next try to bring it to a quest giver of its zones
     uint32 zjDiagNext = 0;                         // diagnostics of the Zar'jira fight: the next log line
     uint32 dungeonBosses = 0;
+    uint32 dungeonWingArea = 0;      // (wing-area) set every leader tick from the group: 0 = no area wing
+    uint32 dungeonWingList = 0;      // (wing-area) dungeon finder id of a wing from a boss list, 0 = none
 
     // kill-gate mobs, targets that are not in the spawn list, sealed bosses
     bool dungeonGateTarget = false;          // dungeonTarget is a kill-gate mob

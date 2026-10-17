@@ -47,6 +47,7 @@ public:
         creators["attack"] = &ActionContext::melee;
         creators["melee"] = &ActionContext::melee;
         creators["attack anything"] = &ActionContext::attack_anything;
+        creators["attack duel opponent"] = &ActionContext::attack_duel_opponent;   // (bot-duels)
 
         creators["toggle pet spell"] = &ActionContext::toggle_pet_spell;
         creators["pet attack"] = &ActionContext::pet_attack;
@@ -87,6 +88,7 @@ private:
     static Action* dps_aoe(PlayerbotAI* botAI) { return new DpsAoeAction(botAI); }
     static Action* melee(PlayerbotAI* botAI) { return new MeleeAction(botAI); }
     static Action* attack_anything(PlayerbotAI* botAI) { return new AttackAnythingAction(botAI); }
+    static Action* attack_duel_opponent(PlayerbotAI* botAI) { return new AttackDuelOpponentAction(botAI); }   // (bot-duels)
 
     static Action* toggle_pet_spell(PlayerbotAI* ai) { return new TogglePetSpellAutoCastAction(ai); }
     static Action* pet_attack(PlayerbotAI* ai) { return new PetAttackAction(ai); }

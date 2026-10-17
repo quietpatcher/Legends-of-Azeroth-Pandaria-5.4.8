@@ -96,6 +96,7 @@ class boss_echo_of_jaina : public CreatureScript
                 me->SetReactState(REACT_PASSIVE);
                 me->setActive(true);
                 me->SetVisible(false);
+                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);   // (jaina-unattackable) until the 16th fragment
                 bIntro = false;
                 uiVolleyCount = 0;
                 uiFragments = 0;
@@ -113,6 +114,7 @@ class boss_echo_of_jaina : public CreatureScript
                 {
                     uiFragments = MAX_FRAGMENTS_COUNT;
                     me->SetVisible(true);
+                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);   // (jaina-unattackable)
                     me->SetReactState(REACT_AGGRESSIVE);
                 }
                 else
@@ -137,6 +139,7 @@ class boss_echo_of_jaina : public CreatureScript
                     {
                         instance->SetData(DATA_JAINA_EVENT, DONE);
                         me->SetVisible(true);
+                        me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);   // (jaina-unattackable)
                         me->SetReactState(REACT_AGGRESSIVE);
                         summons.DespawnEntry(NPC_ARCANE_CIRCLE);
                     }

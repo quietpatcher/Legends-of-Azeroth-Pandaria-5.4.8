@@ -1136,9 +1136,19 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
                 summon->AI()->AttackStart(me);
                 break;
             case NPC_BURNING_BLADE_MOUNT:
+            {
+                // (caravan-riders-behind) set down 25 yards behind the lead kodo on its own side, so it rides up from behind
+                float const side = (++mounts & 1) ? float(M_PI) / 2.0f : -float(M_PI) / 2.0f;
+                float const o = me->GetOrientation();
+                float x = me->GetPositionX() - 25.0f * std::cos(o) + 9.0f * std::cos(o + side);
+                float y = me->GetPositionY() - 25.0f * std::sin(o) + 9.0f * std::sin(o + side);
+                float z = me->GetMap()->GetHeight(me->GetPhaseMask(), x, y, me->GetPositionZ() + 5.0f, true, 15.0f);
+                if (z > INVALID_HEIGHT)
+                    summon->NearTeleportTo(x, y, z, o);
                 summon->SetSpeed(MOVE_RUN, 1.6f);
-                summon->GetMotionMaster()->MoveFollow(me, 9.0f, (++mounts & 1) ? float(M_PI) / 2.0f : -float(M_PI) / 2.0f);
+                summon->GetMotionMaster()->MoveFollow(me, 9.0f, side);
                 break;
+            }
             default:
                 break;
         }
@@ -1484,6 +1494,8 @@ struct npc_caravan_burning_blade_mount : public ScriptedAI
             me->DespawnOrUnsummon(3 * IN_MILLISECONDS);
             return;
         }
+        // (caravan-riders-behind) fast while it comes up, then at the pace of the kodo: no stop and start
+        me->SetSpeed(MOVE_RUN, me->GetExactDist2d(kodo) > 12.0f ? 1.6f : kodo->GetSpeedRate(MOVE_RUN));
         if (me->GetExactDist2d(kodo) > 16.0f || kodo->AI()->GetData(DATA_CARAVAN_JUMP))
             return;   // not alongside yet, or another raider is in the air
         int8 perchSeat = 0;

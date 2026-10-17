@@ -40,6 +40,9 @@ protected:
     virtual bool IsCcTarget(Unit* attacker);
 };
 
+// (bot-duels) the opponent of the current duel (AzerothCore DuelTargetValue)
+class DuelTargetValue;
+
 class TargetValue : public UnitCalculatedValue
 {
 public:
@@ -59,6 +62,15 @@ public:
         : ManualSetValue<ObjectGuid>(botAI, ObjectGuid::Empty, name)
     {
     }
+};
+
+// (bot-duels) the opponent of the current duel (AzerothCore DuelTargetValue)
+class DuelTargetValue : public TargetValue
+{
+public:
+    DuelTargetValue(PlayerbotAI* botAI, std::string const name = "duel target") : TargetValue(botAI, name) {}
+
+    Unit* Calculate() override;
 };
 
 #endif

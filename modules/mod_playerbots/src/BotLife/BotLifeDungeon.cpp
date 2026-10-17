@@ -39,6 +39,7 @@
 #include "RandomPlayerbotMgr.h"
 #include "PathGenerator.h"
 #include "Timer.h"
+#include "SpellMgr.h"
 
 #include <algorithm>
 #include <cmath>
@@ -88,10 +89,13 @@ namespace
     };
 
     // quest givers and enders inside the dungeons (map -> spawns); filled once by LoadDungeons
-    struct DungeonQuestNpc { uint32 spawnId; uint32 entry; float x, y, z; };
+    struct DungeonQuestNpc { uint32 spawnId; uint32 entry; float x, y, z; uint32 area = 0; };   // (wing-area) area
     std::unordered_map<uint32, std::vector<DungeonQuestNpc>> s_dungeonQuestNpcs;
     // scripted gossip NPCs of each instance map (event starters: Brann in the Halls of Stone, ...)
     std::unordered_map<uint32, std::vector<DungeonQuestNpc>> s_eventNpcs;
+    // (event-objects) scripted levers, summoning rituals (altars) and door objects of each dungeon map (not raids); filled once by LoadDungeons
+    struct DungeonEventObject { uint32 guid; uint32 entry; uint32 type; uint32 spawnMask; float x, y, z; uint32 area; };
+    std::unordered_map<uint32, std::vector<DungeonEventObject>> s_eventObjects;
 
     // dungeon finder id -> creature entry of its last encounter, and that entry's spawns (filled once by
     // LoadDungeons; read-only afterwards)
@@ -100,6 +104,66 @@ namespace
     // kills of last encounters by instance - a summoned one (Vazruden) has no spawn to look at
     std::mutex s_finalKilledLock;
     std::set<std::pair<uint32, uint32>> s_finalKilled;   // instance id, creature entry
+
+    // (wing-area) the wing a bot party keeps to: group id -> (area, dungeon finder id of a list wing), set when the party is formed
+    struct GroupWing { uint32 area = 0; uint32 list = 0; };
+    std::mutex s_groupWingLock;
+    std::unordered_map<uint32, GroupWing> s_groupWing;
+    // (wing-area) dungeon finder id -> spawn ids of its wing, for the wings from a boss list (filled once by LoadDungeons)
+    std::unordered_map<uint32, std::unordered_set<uint32>> s_wingSpawns;
+    // (wing-area) dungeon finder id -> its wing (filled once by LoadDungeons; read by the leads of dungeon finder groups)
+    std::unordered_map<uint32, GroupWing> s_wingByDungeon;
+
+    void BotLifeSetGroupWing(uint32 groupId, uint32 area, uint32 list)
+    {
+        std::lock_guard<std::mutex> lock(s_groupWingLock);
+        if (s_groupWing.size() > 5000)
+            s_groupWing.clear();
+        if (area || list)
+            s_groupWing[groupId] = { area, list };
+        else
+            s_groupWing.erase(groupId);
+    }
+
+    GroupWing BotLifeWingOf(Group const* group)
+    {
+        if (!group)
+            return {};
+        std::lock_guard<std::mutex> lock(s_groupWingLock);
+        auto it = s_groupWing.find(group->GetLowGUID());
+        return it != s_groupWing.end() ? it->second : GroupWing();
+    }
+
+    // (wing-area) a spawn of another wing: by area (an area of its own that is neither the wing nor its zone) or by boss list
+    bool OutsideWing(uint32 wingArea, uint32 wingList, uint32 spawnId, uint32 area)
+    {
+        if (wingList)
+        {
+            auto it = s_wingSpawns.find(wingList);
+            return it != s_wingSpawns.end() && !it->second.count(spawnId);
+        }
+        if (!wingArea || !area || area == wingArea)
+            return false;
+        AreaTableEntry const* wing = sAreaTableStore.LookupEntry(wingArea);
+        return !wing || area != wing->ParentAreaID;
+    }
+
+    // (wing-area) the bosses of the wings that have no area of their own (dungeon finder id -> creature entries)
+    std::unordered_map<uint32, std::vector<uint32>> const s_wingBossLists =
+    {
+        // Maraudon (Warcraft Wiki 'Maraudon', Wings): Foulspore Cavern = Orange Crystals (26), Wicked Grotto = Purple Crystals (272),
+        // Earth Song Falls = Pristine Waters (273)
+        { 26,  { 13282, 12258 } },                  // Noxxion, Razorlash
+        { 272, { 13601, 12236, 12225 } },           // Tinkerer Gizlock, Lord Vyletongue, Celebras the Cursed
+        { 273, { 12203, 13596, 12201 } },           // Landslide, Rotgrip, Princess Theradras
+        // Blackrock Spire: Lower (32), Upper (330, a 5-player dungeon since 4.0.3a; Warcraft Wiki 'Upper Blackrock Spire (Classic)')
+        { 32,  { 9196, 9236, 9237, 10596, 10584, 9736, 10220, 10268, 9568 } },   // Omokk, Vosh'gajin, Voone, Smolderweb, Urok, Zigris, Halycon, Gizrul, Wyrmthalak
+        { 330, { 9816, 10264, 10899, 10429, 10339, 10430, 10363 } },             // Emberseer, Solakar, Goraluk, Rend, Gyth, The Beast, Drakkisath
+        // Blackrock Depths - Upper City (276): ends at Emperor Dagran Thaurissan (Warcraft Wiki 'Blackrock Depths', Dungeon Finder tips),
+        // on the way Ambassador Flamelash, The Seven and Magmus (YouTube 'Blackrock Depths - Upper City complete dungeon'). The
+        // Detention Block (30) has no list: it ends at High Interrogator Gerstahn near the entrance and keeps the whole map.
+        { 276, { 9156, 9034, 9035, 9036, 9037, 9038, 9039, 9040, 9938, 9019 } },
+    };
 
     // what a leader did about the quests of the current run (map thread of the leader)
     struct DungeonQuestRun { std::set<uint32> visited; std::set<uint32> handInVisited; uint32 walkTo = 0; uint32 walkSince = 0; uint32 nextScan = 0; };
@@ -139,6 +203,12 @@ bool BotLifeFinalBossDown(Player* leader, uint32 dungeonId)
     return false;
 }
 
+// (final-clear) the dungeon finder entry has a known last encounter (read-only after LoadDungeons)
+bool BotLifeHasFinalBoss(uint32 dungeonId)
+{
+    return s_finalBoss.count(dungeonId) > 0;
+}
+
 // a last encounter died (map thread)
 void BotLifeNoteFinalBossKill(Creature* killed)
 {
@@ -168,17 +238,32 @@ bool BotLifeDungeonHandInPending(Player* leader)
     Group* group = leader->GetGroup();
     if (it == s_dungeonQuestNpcs.end() || !group)
         return false;
+    GroupWing const wing = BotLifeWingOf(group);   // (wing-area)
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
         if (!member || !member->IsInWorld() || member->GetMap() != leader->GetMap() || !member->IsAlive())
             continue;
         for (DungeonQuestNpc const& qn : it->second)
+        {
+            if (OutsideWing(wing.area, wing.list, qn.spawnId, qn.area))   // (wing-area) an NPC of another wing
+                continue;
             for (uint32 questId : sObjectMgr->GetCreatureQuestInvolvedRelations(qn.entry))
                 if (member->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE)
                     return true;
+        }
     }
     return false;
+}
+
+// (wing-area) a dungeon finder group of a real player led by a bot: the wing of its dungeon finder entry (map thread of the lead)
+void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId)
+{
+    if (!group)
+        return;
+    auto it = s_wingByDungeon.find(dungeonId);
+    GroupWing const wing = it != s_wingByDungeon.end() ? it->second : GroupWing();
+    BotLifeSetGroupWing(group->GetLowGUID(), wing.area, wing.list);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -321,6 +406,7 @@ void BotLifeMgr::LoadDungeons()
     }
 
     uint32 spawnCount = 0;
+    std::unordered_map<uint32, std::vector<DungeonQuestNpc>> listMapSpawns;   // (wing-area) every creature spawn of the instance maps
     if (!maps.empty())
     {
         std::ostringstream ids;
@@ -328,7 +414,7 @@ void BotLifeMgr::LoadDungeons()
             ids << (ids.tellp() ? "," : "") << m;
         s_dungeonQuestNpcs.clear();
         s_eventNpcs.clear();
-        if (QueryResult result = WorldDatabase.PQuery("SELECT guid, id, map, spawnMask, position_x, position_y, position_z FROM creature "
+        if (QueryResult result = WorldDatabase.PQuery("SELECT guid, id, map, spawnMask, position_x, position_y, position_z, areaId FROM creature "
             "WHERE (phaseMask & 1) = 1 AND phaseGroup = 0 AND map IN ({})", ids.str()))
         {
             do
@@ -338,19 +424,20 @@ void BotLifeMgr::LoadDungeons()
                 if (!ct)
                     continue;
                 uint32 const mapId = f[2].GetUInt32();
+                listMapSpawns[mapId].push_back({ f[0].GetUInt32(), ct->Entry, f[4].GetFloat(), f[5].GetFloat(), f[6].GetFloat() });   // (wing-area)
                 // a scripted gossip NPC without a service role - an event starter
                 {
                     uint32 const roles = UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_TRAINER | UNIT_NPC_FLAG_FLIGHTMASTER | UNIT_NPC_FLAG_INNKEEPER
                         | UNIT_NPC_FLAG_BANKER | UNIT_NPC_FLAG_AUCTIONEER | UNIT_NPC_FLAG_REPAIR | UNIT_NPC_FLAG_SPIRITHEALER | UNIT_NPC_FLAG_SPIRITGUIDE;
                     if ((ct->npcflag & UNIT_NPC_FLAG_GOSSIP) && !(ct->npcflag & roles) && ct->ScriptID)
-                        s_eventNpcs[mapId].push_back({ f[0].GetUInt32(), ct->Entry, f[4].GetFloat(), f[5].GetFloat(), f[6].GetFloat() });
+                        s_eventNpcs[mapId].push_back({ f[0].GetUInt32(), ct->Entry, f[4].GetFloat(), f[5].GetFloat(), f[6].GetFloat(), f[7].GetUInt32() });
                 }
                 // an NPC that gives or takes quests
                 {
                     auto starts = sObjectMgr->GetCreatureQuestRelations(ct->Entry);
                     auto ends = sObjectMgr->GetCreatureQuestInvolvedRelations(ct->Entry);
                     if (starts.begin() != starts.end() || ends.begin() != ends.end())
-                        s_dungeonQuestNpcs[mapId].push_back({ f[0].GetUInt32(), ct->Entry, f[4].GetFloat(), f[5].GetFloat(), f[6].GetFloat() });
+                        s_dungeonQuestNpcs[mapId].push_back({ f[0].GetUInt32(), ct->Entry, f[4].GetFloat(), f[5].GetFloat(), f[6].GetFloat(), f[7].GetUInt32() });
                 }
                 // spawns of a last encounter
                 for (auto const& fb : s_finalBoss)
@@ -366,6 +453,7 @@ void BotLifeMgr::LoadDungeons()
                 s.x = f[4].GetFloat();
                 s.y = f[5].GetFloat();
                 s.z = f[6].GetFloat();
+                s.area = f[7].GetUInt32();   // (wing-area)
                 s.boss = _bossEntries.count(ct->Entry) > 0;
                 // (real-bosses) only on the maps of its encounters, and never a spawn of a game event
                 if (s.boss)
@@ -401,7 +489,160 @@ void BotLifeMgr::LoadDungeons()
                 ++spawnCount;
             } while (result->NextRow());
         }
+        // (event-objects) scripted levers, altars and door objects of the dungeon maps, for the walk when nothing else is left
+        s_eventObjects.clear();
+        if (QueryResult result = WorldDatabase.PQuery("SELECT guid, id, map, spawnMask, position_x, position_y, position_z, areaId, ScriptName FROM gameobject "
+            "WHERE (phaseMask & 1) = 1 AND phaseGroup = 0 AND map IN ({})", ids.str()))
+        {
+            do
+            {
+                Field* f = result->Fetch();
+                GameObjectTemplate const* gt = sObjectMgr->GetGameObjectTemplate(f[1].GetUInt32());
+                if (!gt || (!gt->ScriptId && f[8].GetString().empty()))
+                    continue;
+                if (gt->type != GAMEOBJECT_TYPE_BUTTON && gt->type != GAMEOBJECT_TYPE_SUMMONING_RITUAL && gt->type != GAMEOBJECT_TYPE_DOOR)
+                    continue;
+                MapEntry const* mapEntry = sMapStore.LookupEntry(f[2].GetUInt32());
+                if (!mapEntry || !mapEntry->IsNonRaidDungeon())
+                    continue;
+                s_eventObjects[f[2].GetUInt32()].push_back({ f[0].GetUInt32(), gt->entry, gt->type, f[3].GetUInt32(), f[4].GetFloat(), f[5].GetFloat(),
+                    f[6].GetFloat(), f[7].GetUInt32() });
+            } while (result->NextRow());
+        }
     }
+
+    // (wing-area) a map that the dungeon finder splits into wings: each wing keeps to its own part of the map (see the lists above)
+    s_wingSpawns.clear();
+    {
+        std::map<std::pair<uint32, uint8>, std::vector<BotLifeDungeon*>> wings;   // (map, difficulty) -> entries
+        for (BotLifeDungeon& d : _dungeons)
+            wings[{ d.map, d.difficulty }].push_back(&d);
+        for (auto& w : wings)
+        {
+            if (w.second.size() < 2)
+                continue;
+            uint32 const mapId = w.first.first;
+            // (area) the area of the last encounter of every entry; all different and all a part of the zone, or none of them
+            std::vector<uint32> wingAreas;
+            std::set<uint32> areas;
+            for (BotLifeDungeon* d : w.second)
+            {
+                uint32 area = 0;
+                auto fb = s_finalBoss.find(d->id);
+                if (fb != s_finalBoss.end())
+                    for (auto const* list : { &_instanceSpawns, &_sealedBossSpawns })
+                    {
+                        auto it = list->find(mapId);
+                        if (it != list->end())
+                            for (BotLifeInstanceSpawn const& s : it->second)
+                                if (s.entry == fb->second && s.area)
+                                    area = s.area;
+                    }
+                AreaTableEntry const* at = area ? sAreaTableStore.LookupEntry(area) : nullptr;
+                if (!at || !at->ParentAreaID)   // the zone itself is no wing
+                    area = 0;
+                wingAreas.push_back(area);
+                areas.insert(area);
+            }
+            if (!areas.count(0) && areas.size() == w.second.size())
+            {
+                for (size_t i = 0; i < w.second.size(); ++i)
+                {
+                    w.second[i]->wingArea = wingAreas[i];
+                    TC_LOG_INFO("server.loading", ">> BotLife: {} ({}) keeps to area {} of map {}", w.second[i]->name, w.second[i]->id, wingAreas[i], mapId);
+                }
+                continue;
+            }
+            // (list) every spawn belongs to the wing of the nearest boss spawn: the bosses of the lists and all other bosses of the map
+            std::map<uint32, uint32> bossWing;   // creature entry -> dungeon finder id
+            for (BotLifeDungeon* d : w.second)
+            {
+                auto bl = s_wingBossLists.find(d->id);
+                if (bl != s_wingBossLists.end())
+                    for (uint32 entry : bl->second)
+                        bossWing[entry] = d->id;
+            }
+            if (bossWing.empty())
+            {
+                TC_LOG_INFO("server.loading", ">> BotLife: map {} has {} dungeon finder entries and no wings: whole map", mapId, uint32(w.second.size()));
+                continue;
+            }
+            std::vector<std::pair<BotLifeInstanceSpawn const*, uint32>> anchors;   // boss spawn, its wing (0 = no list)
+            for (auto const* list : { &_instanceSpawns, &_sealedBossSpawns })
+            {
+                auto it = list->find(mapId);
+                if (it != list->end())
+                    for (BotLifeInstanceSpawn const& s : it->second)
+                    {
+                        auto bw = bossWing.find(s.entry);
+                        if (s.boss || bw != bossWing.end())
+                            anchors.emplace_back(&s, bw != bossWing.end() ? bw->second : 0u);
+                    }
+            }
+            auto spawnsIt = listMapSpawns.find(mapId);
+            if (anchors.empty() || spawnsIt == listMapSpawns.end())
+                continue;
+            for (DungeonQuestNpc const& c : spawnsIt->second)
+            {
+                uint32 best = 0;
+                float bestDist = 0.0f;
+                for (auto const& a : anchors)
+                {
+                    float const dx = c.x - a.first->x, dy = c.y - a.first->y, dz = (c.z - a.first->z) * 3.0f;   // floors apart count more
+                    float const dist = dx * dx + dy * dy + dz * dz;
+                    if (!best || dist < bestDist)
+                    {
+                        best = a.second ? a.second : 0xFFFFFFFFu;
+                        bestDist = dist;
+                    }
+                }
+                if (best && best != 0xFFFFFFFFu)
+                    s_wingSpawns[best].insert(c.spawnId);
+            }
+            // (event-objects) the scripted objects of the map by the same rule (key: guid | 0x80000000, as in gossipUsed)
+            auto objectsIt = s_eventObjects.find(mapId);
+            if (objectsIt != s_eventObjects.end())
+                for (DungeonEventObject const& o : objectsIt->second)
+                {
+                    uint32 best = 0;
+                    float bestDist = 0.0f;
+                    for (auto const& a : anchors)
+                    {
+                        float const dx = o.x - a.first->x, dy = o.y - a.first->y, dz = (o.z - a.first->z) * 3.0f;
+                        float const dist = dx * dx + dy * dy + dz * dz;
+                        if (!best || dist < bestDist)
+                        {
+                            best = a.second ? a.second : 0xFFFFFFFFu;
+                            bestDist = dist;
+                        }
+                    }
+                    if (best && best != 0xFFFFFFFFu)
+                        s_wingSpawns[best].insert(o.guid | 0x80000000u);
+                }
+            for (BotLifeDungeon* d : w.second)
+                if (s_wingBossLists.count(d->id))
+                {
+                    d->wingList = true;
+                    TC_LOG_INFO("server.loading", ">> BotLife: {} ({}) keeps to {} spawns of map {} (boss list)", d->name, d->id,
+                        uint32(s_wingSpawns[d->id].size()), mapId);
+                }
+        }
+    }
+    // (wing-area) Blackrock Depths - Upper City starts where the Abandoned Mole Machine at the entrance brings a player ('Just past the
+    // Grim Guzzler', Tunnel to Shadowforge City)
+    if (SpellTargetPosition const* mole = sSpellMgr->GetSpellTargetPosition(93087, EFFECT_0))
+        for (BotLifeDungeon& d : _dungeons)
+            if (d.id == 276 && d.map == mole->target_mapId)
+            {
+                d.x = mole->target_X;
+                d.y = mole->target_Y;
+                d.z = mole->target_Z;
+                d.o = mole->target_Orientation;
+            }
+    s_wingByDungeon.clear();
+    for (BotLifeDungeon const& d : _dungeons)
+        if (d.wingArea || d.wingList)
+            s_wingByDungeon[d.id] = { d.wingArea, d.wingList ? d.id : 0u };
 
     // dungeons need something to fight
     _dungeons.erase(std::remove_if(_dungeons.begin(), _dungeons.end(), [this](BotLifeDungeon& d)
@@ -415,9 +656,15 @@ void BotLifeMgr::LoadDungeons()
             if (s.spawnMask & bit)   // spawnMask 0 is never loaded by the core
             {
                 ++count;
-                if (s.boss)
+                if (s.boss && !OutsideWing(d.wingArea, d.wingList ? d.id : 0, s.spawnId, s.area))   // (wing-area)
                     ++d.bosses;
             }
+        // (final-clear) the bosses that start sealed (not attackable) count as well
+        auto sealedIt = _sealedBossSpawns.find(d.map);
+        if (sealedIt != _sealedBossSpawns.end())
+            for (BotLifeInstanceSpawn const& s : sealedIt->second)
+                if ((s.spawnMask & bit) && s.boss && !OutsideWing(d.wingArea, d.wingList ? d.id : 0, s.spawnId, s.area))
+                    ++d.bosses;
         return count < 10;
     }), _dungeons.end());
 
@@ -607,6 +854,16 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
         uint32 index = fits[urand(0, fits.size() - 1)];
         BotLifeDungeon const& d = _dungeons[index];
         uint32 minL = d.minLevel, maxL = raid ? 255 : d.maxLevel;
+        // (raid-size) a raid party of the size the raid was made for: MapDifficulty.dbc maxPlayers of its map and difficulty (5.4.8:
+        // Molten Core, Blackwing Lair and Ahn'Qiraj Temple 40, the other raids of the rotation 10); BotLife.RaidSize only without a number
+        uint32 partySize = size, partyTanks = needTanks, partyHeals = needHeals;
+        if (raid)
+        {
+            MapDifficulty const* md = sDBCManager.GetMapDifficultyData(d.map, Difficulty(d.difficulty));
+            partySize = md && md->maxPlayers ? std::min<uint32>(40, std::max<uint32>(6, md->maxPlayers)) : _raidSize;
+            partyTanks = partySize >= 40 ? 4 : partySize >= 25 ? 3 : 2;
+            partyHeals = partySize >= 40 ? 10 : partySize >= 25 ? 6 : partySize >= 20 ? 5 : 3;
+        }
 
         auto pick = [&](std::vector<Player*>& from, uint32 count, std::vector<Player*>& out) -> bool
         {
@@ -639,9 +896,12 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
         };
 
         std::vector<Player*> members;
-        if (!pick(pool.tanks, needTanks - 1, members) || !pick(pool.heals, needHeals, members)
-            || !pick(pool.dps, size - needTanks - needHeals, members))
+        if (!pick(pool.tanks, partyTanks - 1, members) || !pick(pool.heals, partyHeals, members)
+            || !pick(pool.dps, partySize - partyTanks - partyHeals, members))   // (raid-size)
             continue;
+        if (raid)
+            TC_LOG_INFO("playerbots", "BotLife: raid party of {} ({} tanks, {} healers) for {} (map {}, difficulty {})", uint32(members.size()) + 1,
+                partyTanks, partyHeals, d.name, d.map, uint32(d.difficulty));
 
         // remember where everybody was
         std::vector<Player*> all = members;
@@ -673,6 +933,7 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
         BotLifeParty& party = _parties[group->GetLowGUID()];
         party.dungeon = int32(index);
         party.origin = std::move(origin);
+        BotLifeSetGroupWing(group->GetLowGUID(), d.wingArea, d.wingList ? d.id : 0);   // (wing-area)
 
         // teleports deferred to each bot own map thread (QueueTeleport) to remove the cross-thread
         // TeleportTo race. The leader-refused-entry abort relied on TeleportTo's immediate bool, which a deferred
@@ -696,8 +957,17 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
             if (bound)
                 ++released;
         }
-        if (released)
-            TC_LOG_INFO("playerbots", "BotLife: {} of {} bots released their lockout of {} for the party of {}", released, all.size(), d.name, leader->GetName());
+        // (group-unbind) the group itself can still be bound to the instance of an earlier run (its last boss dead): drop that too
+        uint32 groupBinds = 0;
+        for (uint8 difficulty = 0; difficulty < MAX_DIFFICULTY; ++difficulty)
+            if (group->GetBoundInstance(Difficulty(difficulty), d.map))
+            {
+                group->UnbindInstance(d.map, difficulty);
+                ++groupBinds;
+            }
+        if (released || groupBinds)
+            TC_LOG_INFO("playerbots", "BotLife: {} of {} bots released their lockout of {} for the party of {} (group binds dropped: {})", released,
+                all.size(), d.name, leader->GetName(), groupBinds);
 
         QueueTeleport(leader, d.map, d.x, d.y, d.z, d.o);
         for (Player* member : members)
@@ -739,6 +1009,8 @@ bool BotLifeMgr::DungeonTargetValid(Player* bot, BotLifeInfo const& t, BotLifeIn
     creature = nullptr;
     if (t.dungeonSkip.count(s.spawnId))
         return false;
+    if (OutsideWing(t.dungeonWingArea, t.dungeonWingList, s.spawnId, s.area))   // (wing-area) another wing of the map
+        return false;
     if (!(s.spawnMask & diffBit))   // spawnMask 0 is never loaded by the core
         return false;
     creature = SpawnCreature(bot->GetMap(), s.spawnId);
@@ -776,8 +1048,12 @@ uint32 BotLifeMgr::OpenDoorsNear(Player* bot, float range)
     Trinity::GameObjectListSearcher<ClosedDoorCheck> searcher(bot, doors, check);
     bot->VisitNearbyGridObject(range, searcher);
     uint32 opened = 0;
+    InstanceScript* instance = bot->GetInstanceScript();
     for (GameObject* door : doors)
     {
+        // (held-door) the exit door of a boss that is still alive stays shut (Thalnos, Scarlet Monastery)
+        if (instance && instance->IsHeldEncounterDoor(door->GetEntry()))
+            continue;
         door->SetGoState(GO_STATE_ACTIVE);
         ++opened;
         if (_debug)
@@ -952,6 +1228,11 @@ static std::vector<AreaTriggerEntry const*> const& ScriptedAreaTriggers(uint32 m
 bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
 {
     Player* bot = botAI->GetBot();
+    {
+        GroupWing const wing = BotLifeWingOf(bot->GetGroup());   // (wing-area)
+        t.dungeonWingArea = wing.area;
+        t.dungeonWingList = wing.list;
+    }
     // (bot-areatrigger) a client sends the scripted area triggers its player walks into; a bot has none, so do it here
     if (now >= t.areaTriggerCheck && bot->IsAlive() && bot->GetMap()->IsDungeon())
     {
@@ -1003,6 +1284,40 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             }
             TC_LOG_INFO("playerbots", "BotLife: leader {} in combat 3 min without a victim or a kill ({} attackers) - combat stop", bot->GetName(), n);
             QueueCombatStop(bot);
+        }
+        // (unhurt-foe) a victim that cannot be hurt yet (Raigonn before Commander Ri'mok is dead): its health has not changed
+        // at all for 120 s (unhurt-foe-health). The whole party leaves it alone for 5 minutes, then it is tried again. The
+        // fields of the fruitless-fight rule are free here: that rule only runs for bots alone in the open world.
+        Creature* foe = bot->GetVictim() ? bot->GetVictim()->ToCreature() : nullptr;
+        if (!foe || foe->GetGUID() != t.fightVictim || !t.fightSince || foe->GetHealthPct() != t.fightVictimHp)
+        {
+            t.fightVictim = foe ? foe->GetGUID() : ObjectGuid::Empty;
+            t.fightVictimHp = foe ? foe->GetHealthPct() : 0.0f;   // the same health gives the very same percentage
+            t.fightSince = now;
+        }
+        else if (now - t.fightSince > 120000)
+        {
+            TC_LOG_INFO("playerbots", "BotLife: leader {} leaves {} ({}) alone in map {}: health {} of {} unchanged for 120 s, its victim {}, it cannot be hurt yet - again in 5 minutes",
+                bot->GetName(), foe->GetName(), foe->GetEntry(), bot->GetMapId(), foe->GetHealth(), foe->GetMaxHealth(),
+                foe->GetVictim() ? foe->GetVictim()->GetName() : std::string("-"));
+            uint32 const until = now + 5 * MINUTE * IN_MILLISECONDS;
+            if (Group* group = bot->GetGroup())
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                    if (Player* member = ref->GetSource())
+                        if (member->GetMap() == bot->GetMap())
+                        {
+                            if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member))
+                                memberAI->life.avoidCreature[foe->GetEntry()] = until;
+                            member->AttackStop();
+                            QueueCombatStop(member);
+                        }
+            t.avoidCreature[foe->GetEntry()] = until;
+            bot->AttackStop();
+            QueueCombatStop(bot);
+            t.fightVictim = ObjectGuid::Empty;
+            t.fightSince = 0;
+            t.dungeonTarget = 0;
+            t.hasDest = false;
         }
         t.lastCombat = now;
         t.resting = false;
@@ -1187,7 +1502,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 std::set<uint32> const& seen = t.dungeonDone ? run.handInVisited : run.visited;   // (part 3)
                 for (DungeonQuestNpc const& qn : npcsIt->second)
                 {
-                    if (seen.count(qn.spawnId))
+                    if (seen.count(qn.spawnId) || OutsideWing(t.dungeonWingArea, t.dungeonWingList, qn.spawnId, qn.area))   // (wing-area)
                         continue;
                     Creature* npc = SpawnCreature(qmap, qn.spawnId);
                     if (!npc || !npc->IsAlive() || npc->IsHostileTo(bot) || npc->IsInCombat())
@@ -1419,8 +1734,14 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             current = nullptr;
         else if (t.dungeonTargetActive > DUNGEON_TARGET_TIMEOUT)
         {
-            SkipDungeonTarget(bot, t, "target timeout");
-            current = nullptr;
+            // (timeout-hop) a boss the party does not get to on foot in time: the hop of an unreachable boss first
+            if (current->boss && (creature ? hopToBoss(creature) : hopToSpawn(*current)))
+                t.dungeonTargetActive = 0;
+            else
+            {
+                SkipDungeonTarget(bot, t, "target timeout");
+                current = nullptr;
+            }
         }
     }
 
@@ -1433,13 +1754,15 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
         std::vector<std::tuple<float, BotLifeInstanceSpawn const*, Creature*>> candidates;
         for (BotLifeInstanceSpawn const& s : spawnsIt->second)
         {
-            if (s.boss && (s.spawnMask & diffBit))   // spawnMask 0 is never loaded by the core
+            if (s.boss && (s.spawnMask & diffBit) && !OutsideWing(t.dungeonWingArea, t.dungeonWingList, s.spawnId, s.area))   // spawnMask 0 is never loaded by the core
                 hasBoss = true;
             Creature* c = nullptr;
             if (!DungeonTargetValid(bot, t, s, diffBit, c))
                 continue;
             if (s.boss)
                 bossLeft = true;
+            if (c && IsAvoidedTarget(bot, c))   // (unhurt-foe) left alone for now, still counts as a boss left
+                continue;
             float x = c ? c->GetPositionX() : s.x, y = c ? c->GetPositionY() : s.y, z = c ? c->GetPositionZ() : s.z;
             float dx = bot->GetPositionX() - x, dy = bot->GetPositionY() - y, dz = (bot->GetPositionZ() - z) * 3.0f;
             candidates.emplace_back(dx * dx + dy * dy + dz * dz, &s, c);
@@ -1935,7 +2258,8 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
             return;
         for (BotLifeInstanceSpawn const& s : it->second)
         {
-            if (!s.boss || (!(s.spawnMask & diffBit)) || t.dungeonSealedVisited.count(s.spawnId))
+            if (!s.boss || (!(s.spawnMask & diffBit)) || t.dungeonSealedVisited.count(s.spawnId)
+                || OutsideWing(t.dungeonWingArea, t.dungeonWingList, s.spawnId, s.area))   // (wing-area)
                 continue;
             if (t.dungeonSealedTarget && t.dungeonSealedTarget != s.spawnId)
                 continue;   // finish the one we are on our way to
@@ -2122,8 +2446,11 @@ bool BotLifeMgr::GossipApproachTimedOut(Player* bot, BotLifeInfo& t, uint32 key,
 bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
 {
     Player* bot = botAI->GetBot();
-    if (t.gossipUsed.size() >= 5 || now < t.nextGossipTry)
+    if (now < t.nextGossipTry)
         return false;
+    // (door-objects-unlimited) five event NPCs / buttons per run; the door objects (sixteen staff fragments in End Time) apart
+    bool const clicksDone = t.gossipUsed.size() >= 5;
+    uint32 const usedForGood = 0xFFFFFFFFu;
 
     std::list<Creature*> npcs;
     EventNpcCheck check{ bot, t };
@@ -2135,24 +2462,46 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
     cell.Visit(pair, visitor, *bot->GetMap(), *bot, 100.0f);
     Creature* npc = nullptr;
     for (Creature* c : npcs)
-        if (!npc || bot->GetExactDist(c) < bot->GetExactDist(npc))
+        if (!clicksDone && (!npc || bot->GetExactDist(c) < bot->GetExactDist(npc)))
             npc = c;
     if (!npc)
     {
         // no NPC: a scripted lever / button / goober nearby (Broggok's cells, Sunken Temple statues, ...)
-        if (t.gossipUsed.size() < 5)
         {
             GameObject* best = nullptr;
             std::list<GameObject*> gos;
+            // (bot-door-objects) a clickable scripted object of the door type (Signal Flame, Gate of the Setting Sun; Iron Gate,
+            // Scholomance): in a dungeon that is not a raid, whatever its open state, within 150 yards
+            bool const doorsToo = bot->GetMap()->IsNonRaidDungeon();
+            auto clickableDoor = [&](GameObject* go)
+            {
+                if (!doorsToo || go->GetGoType() != GAMEOBJECT_TYPE_DOOR || !go->GetScriptId())
+                    return false;
+                if (go->HasFlag(GAMEOBJECT_FIELD_FLAGS, GO_FLAG_NOT_SELECTABLE | GO_FLAG_INTERACT_COND | GO_FLAG_LOCKED | GO_FLAG_IN_USE))
+                    return false;
+                uint32 const key = uint32(go->GetDBTableGUIDLow()) | 0x80000000u;
+                auto empty = t.gossipEmpty.find(key);   // changed nothing before: again after the next boss
+                if (empty != t.gossipEmpty.end() && empty->second == usedForGood)
+                    return false;                       // (door-objects-unlimited) used
+                return empty == t.gossipEmpty.end() || empty->second != t.dungeonBosses;
+            };
             auto goCheck = [&](GameObject* go)
             {
-                return (go->GetGoType() == GAMEOBJECT_TYPE_BUTTON || go->GetGoType() == GAMEOBJECT_TYPE_GOOBER) && go->isSpawned()
-                    && go->GetGoState() == GO_STATE_READY && go->GetScriptId() && !t.gossipUsed.count(uint32(go->GetDBTableGUIDLow()) | 0x80000000u)
+                if (!go->isSpawned() || t.gossipUsed.count(uint32(go->GetDBTableGUIDLow()) | 0x80000000u))
+                    return false;
+                if (clickableDoor(go))
+                    return bot->IsWithinDistInMap(go, 150.0f);
+                if (clicksDone)
+                    return false;   // (door-objects-unlimited)
+                // (event-objects) an altar (summoning ritual) with a script too: Altar of the Keepers / of Archaedas in Uldaman
+                return (go->GetGoType() == GAMEOBJECT_TYPE_BUTTON || go->GetGoType() == GAMEOBJECT_TYPE_GOOBER
+                        || go->GetGoType() == GAMEOBJECT_TYPE_SUMMONING_RITUAL)
+                    && go->GetGoState() == GO_STATE_READY && go->GetScriptId()
                     && bot->IsWithinDistInMap(go, 60.0f);
             };
             Trinity::GameObjectListSearcher<decltype(goCheck)> goSearcher(bot, gos, goCheck);
             TypeContainerVisitor<Trinity::GameObjectListSearcher<decltype(goCheck)>, GridTypeMapContainer> goVisitor(goSearcher);
-            cell.Visit(pair, goVisitor, *bot->GetMap(), *bot, 60.0f);
+            cell.Visit(pair, goVisitor, *bot->GetMap(), *bot, doorsToo ? 150.0f : 60.0f);   // (bot-door-objects)
             for (GameObject* go : gos)
                 if (!best || bot->GetExactDist(go) < bot->GetExactDist(best))
                     best = go;
@@ -2171,8 +2520,25 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
                     return true;
                 }
                 bot->StopMoving();
-                t.gossipUsed.insert(uint32(best->GetDBTableGUIDLow()) | 0x80000000u);
+                // (bot-door-objects) a door object that does not change on the click is not used up: it waits for the next boss
+                bool const door = best->GetGoType() == GAMEOBJECT_TYPE_DOOR;
+                GOState const stateBefore = best->GetGoState();
+                uint32 const flagsBefore = best->GetUInt32Value(GAMEOBJECT_FIELD_FLAGS);
+                if (!door)
+                    t.gossipUsed.insert(uint32(best->GetDBTableGUIDLow()) | 0x80000000u);
                 best->Use(bot);
+                if (door)
+                {
+                    if (best->GetGoState() == stateBefore && best->GetUInt32Value(GAMEOBJECT_FIELD_FLAGS) == flagsBefore)
+                    {
+                        t.gossipEmpty[key] = t.dungeonBosses;
+                        TC_LOG_INFO("playerbots", "BotLife {}: door object {} ({}) in map {} did not change, again after the next boss",
+                            bot->GetName(), best->GetName(), best->GetEntry(), bot->GetMapId());
+                        t.nextGossipTry = now + 5000;
+                        return true;
+                    }
+                    t.gossipEmpty[key] = usedForGood;   // (door-objects-unlimited) not one of the five
+                }
                 Count(BLC_EVENT_GOSSIP);
                 TC_LOG_INFO("playerbots", "BotLife {}: used event object {} ({}) in map {}", bot->GetName(), best->GetName(), best->GetEntry(),
                     bot->GetMapId());
@@ -2188,7 +2554,8 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
             float bestFar = 0.0f;
             for (DungeonQuestNpc const& s : en->second)
             {
-                if (t.gossipUsed.count(s.spawnId) || t.eventFarVisited.count(s.spawnId))
+                if (t.gossipUsed.count(s.spawnId) || t.eventFarVisited.count(s.spawnId)
+                    || OutsideWing(t.dungeonWingArea, t.dungeonWingList, s.spawnId, s.area))   // (wing-area)
                     continue;
                 float const d = bot->GetExactDist(s.x, s.y, s.z);
                 if (d <= 100.0f)
@@ -2222,6 +2589,62 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
                 if (!bot->isMoving() || now - t.lastMoveOrder > 2500)
                 {
                     bot->GetMotionMaster()->MovePoint(0, farNpc->x, farNpc->y, farNpc->z, true);
+                    t.lastMoveOrder = now;
+                }
+                return true;
+            }
+        }
+        // (event-objects) a scripted lever, altar or door object farther away in this instance (Uldaman: Keystone, the altars; Blackrock
+        // Depths: the Shadowforge Braziers): walk there, the search nearby takes over within 50 yards
+        auto eo = s_eventObjects.find(bot->GetMapId());
+        if (eo != s_eventObjects.end())
+        {
+            uint32 const diffBit = 1u << uint32(bot->GetMap()->GetDifficulty());
+            DungeonEventObject const* farGo = nullptr;
+            float bestFar = 0.0f;
+            for (DungeonEventObject const& o : eo->second)
+            {
+                // key: as the search nearby keeps it (used, or a door object that did not change); farKey: reached on an earlier walk
+                uint32 const key = o.guid | 0x80000000u, farKey = o.guid | 0xC0000000u;
+                auto const used = t.gossipEmpty.find(key);
+                auto const seen = t.gossipEmpty.find(farKey);
+                if (!(o.spawnMask & diffBit) || t.gossipUsed.count(key) || (clicksDone && o.type != GAMEOBJECT_TYPE_DOOR)
+                    || (used != t.gossipEmpty.end() && (used->second == usedForGood || used->second == t.dungeonBosses))
+                    || (seen != t.gossipEmpty.end() && seen->second == t.dungeonBosses)
+                    || OutsideWing(t.dungeonWingArea, t.dungeonWingList, key, o.area))
+                    continue;
+                float const d = bot->GetExactDist(o.x, o.y, o.z);
+                if (d <= 50.0f)
+                {
+                    t.gossipEmpty[farKey] = t.dungeonBosses;   // reached: the search nearby uses it if it can; again after the next boss
+                    continue;
+                }
+                if (!farGo || d < bestFar)
+                {
+                    farGo = &o;
+                    bestFar = d;
+                }
+            }
+            if (farGo)
+            {
+                uint32 const key = farGo->guid | 0xC0000000u;
+                if (t.gossipApproachKey != key)
+                {
+                    t.gossipApproachKey = key;
+                    t.gossipApproachSince = now;
+                    TC_LOG_INFO("playerbots", "BotLife {}: map {} walks to event object {} ({:.0f} yd away)", bot->GetName(), bot->GetMapId(),
+                        farGo->entry, bestFar);
+                }
+                else if (now - t.gossipApproachSince > 150000)
+                {
+                    TC_LOG_INFO("playerbots", "BotLife {}: map {} gives up walking to event object {}", bot->GetName(), bot->GetMapId(), farGo->entry);
+                    t.gossipEmpty[key] = t.dungeonBosses;   // again after the next boss
+                    t.gossipApproachKey = 0;
+                    return true;
+                }
+                if (!bot->isMoving() || now - t.lastMoveOrder > 2500)
+                {
+                    bot->GetMotionMaster()->MovePoint(0, farGo->x, farGo->y, farGo->z, true);
                     t.lastMoveOrder = now;
                 }
                 return true;

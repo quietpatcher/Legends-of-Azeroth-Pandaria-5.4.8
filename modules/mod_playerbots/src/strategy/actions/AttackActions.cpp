@@ -119,7 +119,8 @@ bool AttackAction::Attack(Unit* target, bool with_pet /*true*/)
     }
 
     if (sPlayerbotAIConfig->IsInPvpProhibitedZone(bot->GetZoneId())
-        && (target->IsPlayer() || target->IsPet()))
+        && (target->IsPlayer() || target->IsPet())
+        && !(bot->duel && bot->duel->opponent == target))   // (bot-duels) a duel is allowed where duels are
     {
         if (verbose)
             botAI->TellError("I cannot attack others in PvP prohibited zones");

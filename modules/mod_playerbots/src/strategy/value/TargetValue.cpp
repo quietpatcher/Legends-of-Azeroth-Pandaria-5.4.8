@@ -124,3 +124,6 @@ bool FindNonCcTargetStrategy::IsCcTarget(Unit* attacker)
 
     return false;
 }
+
+// (bot-duels) the opponent of the current duel (AzerothCore DuelTargetValue)
+Unit* DuelTargetValue::Calculate() { return bot->duel ? bot->duel->opponent : nullptr; }

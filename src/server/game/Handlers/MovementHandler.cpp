@@ -168,6 +168,11 @@ void WorldSession::HandleMoveWorldportAck()
     // that died in lava kept the lava flag after the port and burned at the destination until it moved
     GetPlayer()->UpdatePositionData();
 
+    // (out-of-bounds-reset) a player that fell under the map while alive (a GM, an immunity) kept PLAYER_FLAGS_IS_OUT_OF_BOUNDS,
+    // saved with the character, and the client drew no world on any map; a teleport puts it back in bounds
+    if (GetPlayer()->GetPositionZ() >= GetPlayer()->GetMap()->GetMinHeight(GetPlayer()->GetPositionX(), GetPlayer()->GetPositionY()))
+        GetPlayer()->RemoveFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_IS_OUT_OF_BOUNDS);
+
     // battleground state prepare (in case join to BG), at relogin/tele player not invited
     // only add to bg group and object, if the player was invited (else he entered through command)
     if (_player->InBattleground())
@@ -281,6 +286,9 @@ void WorldSession::HandleMoveTeleportAck(WorldPackets::Movement::MoveTeleportAck
     WorldLocation const& dest = plMover->GetTeleportDest();
 
     plMover->UpdatePosition(dest, true);
+    // (out-of-bounds-reset) back in bounds after the teleport
+    if (plMover->GetPositionZ() >= plMover->GetMap()->GetMinHeight(plMover->GetPositionX(), plMover->GetPositionY()))
+        plMover->RemoveFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_IS_OUT_OF_BOUNDS);
 
     uint32 newzone, newarea;
     plMover->GetZoneAndAreaId(newzone, newarea);

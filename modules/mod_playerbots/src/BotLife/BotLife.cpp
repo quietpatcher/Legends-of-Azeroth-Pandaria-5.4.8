@@ -18,6 +18,7 @@
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
 #include "LFGMgr.h"
+void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-area) BotLifeDungeon.cpp
 #include "LastSpellCastValue.h"
 #include "GameObject.h"
 #include "GameObjectAI.h"   // batch 11z2: 
@@ -166,6 +167,10 @@ void BotLifeMgr::LoadConfig()
     _raidsEnabled = sConfigMgr->GetBoolDefault("BotLife.Raids", true);
     _raidParties = std::max(0, sConfigMgr->GetIntDefault("BotLife.RaidParties", 1));
     _raidSize = std::min(25, std::max(6, sConfigMgr->GetIntDefault("BotLife.RaidSize", 10)));
+    _duels = sConfigMgr->GetBoolDefault("BotLife.Duels", true);   // (bot-duels)
+    _duelChallengeMinutes = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.DuelChallengeMinutes", 45)));
+    _levelBalance = sConfigMgr->GetBoolDefault("BotLife.LevelBalance", true);   // (level-balance)
+    _levelBalanceMoves = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.LevelBalanceMoves", 10)));
     _raidMinutes = std::max(10, sConfigMgr->GetIntDefault("BotLife.RaidMinutes", 75));
 }
 
@@ -1930,15 +1935,38 @@ bool BotLifeMgr::RunPendingActions(PlayerbotAI* botAI)
     if (!botAI)
         return false;
     BotLifeInfo& t = botAI->life;
-    if (!t.teleQueued && !t.resetQueued && !t.combatStopQueued)
+    if (!t.teleQueued && !t.resetQueued && !t.combatStopQueued && !t.relevelTo)
         return false;
     Player* bot = botAI->GetBot();
     if (!bot || !bot->IsInWorld() || !bot->GetSession())
     {
         t.teleQueued = t.resetQueued = t.combatStopQueued = false;
+        t.relevelTo = 0;
         return false;
     }
     bool acted = false;
+    // (level-balance) a new level from the world thread's balance round, done here as 'testlevel' does it
+    if (t.relevelTo)
+    {
+        uint8 const level = t.relevelTo;
+        t.relevelTo = 0;
+        if (!bot->IsBeingTeleported() && !bot->GetGroup() && !bot->IsInCombat() && bot->IsAlive() && bot->GetLevel() != level
+            && !bot->duel)   // (bot-duels-calm) not in the middle of a duel
+        {
+            uint32 const from = bot->GetLevel();
+            bot->GiveLevel(level);
+            bot->InitTalentForLevel();
+            bot->SetUInt32Value(PLAYER_FIELD_XP, 0);
+            BotFactory factory(bot, level);
+            factory.Randomize(false);
+            botAI->ResetStrategies();
+            SetState(bot, t, BotLifeState::IDLE, getMSTime(), 0);
+            RelocateForLevel(bot);
+            TC_LOG_INFO("playerbots", "LEVELBAL {} ({} {}) {} -> {}", bot->GetName(), uint32(bot->GetRace()), uint32(bot->GetClass()), from,
+                uint32(level));
+            acted = true;
+        }
+    }
     if (t.combatStopQueued)
     {
         t.combatStopQueued = false;
@@ -2132,6 +2160,11 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     if (QtIsHeld(bot->GetGUID().GetCounter()))   // held still by a test: no plan, no strategy this tick
         return true;
 
+    // (bot-duels) a duel request or a duel: answer it, hold still for the countdown, let the combat engine fight it
+    if (bot->duel)
+        return DuelTick(botAI, botAI->life, getMSTime());
+    botAI->life.duelSeenAt = 0;
+
     if (!sRandomPlayerbotMgr->IsRandomBot(bot))
         return false;
 
@@ -2176,6 +2209,9 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
         EnsureWeapon(bot);
         EnsureBags(bot);
     }
+    // (bot-duels) now and then a bot challenges another bot near it (where the area allows duels)
+    if (_duels && _duelChallengeMinutes && now >= t.nextDuelChallenge && !walker)
+        DuelChallenge(botAI, t, now);
     // guild banker - lives at the capital's guild vault, auctioneer and mailbox
     if (now >= t.nextBankerCheck)
     {
@@ -2372,6 +2408,7 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             t.dungeonKills = 0;
             t.dungeonBosses = 0;
             t.ResetDungeonExtras();
+            BotLifeSetLfgGroupWing(group, sLFGMgr->GetDungeon(group->GetGUID()));   // (wing-area) keep to the wing of its dungeon
             Count(BLC_LFG_LEAD);
         }
         if (!bot->IsAlive())
@@ -7573,7 +7610,8 @@ void BotLifeMgr::PrintStats(ChatHandler* handler)
         "loot_item", "loot_go", "bag_sell", "relocate", "stuck", "rest", "kill", "levelup", "party_formed", "party_disbanded", "party_summon",
         "party_quest_shared", "party_quest_turnin", "dungeon_start", "dungeon_cleared", "dungeon_timeout",
         "dungeon_wipeout", "dungeon_abort", "dungeon_boss", "dungeon_kill", "dungeon_rez", "dungeon_wipe", "raid_start", "unstuck", "ghost_revive", "orphan_group", "mount", "death", "death_by_creature", "death_by_higher", "death_by_elite", "death_by_guard",
-        "death_by_player", "potion", "dungeon_stalled", "avoid_creature", "town_visit", "door_open", "quest_engage", "quest_engage_fail", "bg_queued", "bg_joined", "bg_capture", "bg_left", "bg_flag", "bg_flag_capture", "areatrigger", "self_heal", "repair", "guild_created", "guild_join", "pandaren_faction", "gbank_gold", "gbank_item", "ah_post", "ah_buy", "gear_fix", "gear_upgrade", "death_relocate", "profession_set", "gather_node", "gather_skin", "ah_post_mat", "tank_shield", "bags_given", "stranded_out", "rebalance", "cast_call", "cast_strict_fail", "cast_moving", "cast_prepared", "cast_timed", "gbank_supply", "gbank_equip", "gbank_treasure", "gbank_tab_bought", "banker_picked", "banker_home", "banker_withdraw", "banker_vendor", "banker_gold", "mail_gold", "lfg_bot_queued", "lfg_short", "lfg_master", "phantom_combat_cleared", "craft", "craft_fail", "recipe_learned", "profession_swap", "banker_sort", "lfg_lead", "talents", "event_gossip", "kill_gate", "craft_supply", "guild_repair", "gbank_resort", "refine", "enchant_scroll", "fish_cast", "fish_catch", "heroic_start", "daily_turnin", "dig_survey", "dig_find", "dig_solve", "quest_bad_skip", "quest_roam", "quest_skip", "vendor_gear", "dk_chain_giveup", "dk_portal", "dk_eye", "dk_eye_siphon" };
+        "death_by_player", "potion", "dungeon_stalled", "avoid_creature", "town_visit", "door_open", "quest_engage", "quest_engage_fail", "bg_queued", "bg_joined", "bg_capture", "bg_left", "bg_flag", "bg_flag_capture", "areatrigger", "self_heal", "repair", "guild_created", "guild_join", "pandaren_faction", "gbank_gold", "gbank_item", "ah_post", "ah_buy", "gear_fix", "gear_upgrade", "death_relocate", "profession_set", "gather_node", "gather_skin", "ah_post_mat", "tank_shield", "bags_given", "stranded_out", "rebalance", "cast_call", "cast_strict_fail", "cast_moving", "cast_prepared", "cast_timed", "gbank_supply", "gbank_equip", "gbank_treasure", "gbank_tab_bought", "banker_picked", "banker_home", "banker_withdraw", "banker_vendor", "banker_gold", "mail_gold", "lfg_bot_queued", "lfg_short", "lfg_master", "phantom_combat_cleared", "craft", "craft_fail", "recipe_learned", "profession_swap", "banker_sort", "lfg_lead", "talents", "event_gossip", "kill_gate", "craft_supply", "guild_repair", "gbank_resort", "refine", "enchant_scroll", "fish_cast", "fish_catch", "heroic_start", "daily_turnin", "dig_survey", "dig_find", "dig_solve", "quest_bad_skip", "quest_roam", "quest_skip", "vendor_gear", "dk_chain_giveup", "dk_portal", "dk_eye", "dk_eye_siphon",
+        "duel_requested", "duel_accepted", "duel_declined", "duel_won", "duel_lost", "level_balance" };   // (bot-duels) (level-balance)
     static char const* const stateNames[] = { "idle", "go_grind", "at_grind", "go_questgiver", "do_quest", "go_turnin", "rest", "town", "dig" };
 
     uint32 states[9] = {};
@@ -8673,4 +8711,249 @@ void BotLifeMgr::AdjustMapPopulation(uint32 mapId, int32 delta)
     }
     else
         _mapPop[idx].fetch_add(uint32(delta), std::memory_order_relaxed);
+}
+
+// ---------------------------------------------------------------------------------------------
+// (bot-duels) duels, after AzerothCore mod-playerbots (AcceptDuelAction, DuelStrategy, RpgDuelTrigger), on the MoP duel opcodes
+
+namespace
+{
+    // the answer of the client to a duel request, through the session handler (it does every check of the core); the arbiter guid of
+    // the packet is not read there
+    void BotDuelRespond(Player* bot, bool accept)
+    {
+        WorldPacket packet(CMSG_DUEL_RESPONSE, 2);
+        ObjectGuid const guid;
+        packet.WriteBit(guid[7]);
+        packet.WriteBit(guid[1]);
+        packet.WriteBit(guid[3]);
+        packet.WriteBit(guid[4]);
+        packet.WriteBit(guid[0]);
+        packet.WriteBit(guid[2]);
+        packet.WriteBit(guid[6]);
+        packet.WriteBit(accept);
+        packet.WriteBit(guid[5]);
+        packet.FlushBits();
+        bot->GetSession()->HandleDuelResponseOpcode(packet);
+    }
+
+    uint32 const SPELL_BOT_DUEL = 7266;   // Duel (the spell of CMSG_DUEL_PROPOSED)
+}
+
+bool BotLifeMgr::DuelTick(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
+{
+    Player* bot = botAI->GetBot();
+    DuelInfo* duel = bot->duel;
+    Player* opponent = duel ? duel->opponent : nullptr;
+    if (!duel || !opponent || !bot->GetSession())
+        return false;
+    if (!t.duelSeenAt)
+        t.duelSeenAt = now ? now : 1;
+    bool const challenger = duel->initiator == bot;
+    if (!duel->startTimer && !duel->startTime)
+    {
+        // asked: the challenged bot answers after a moment; the challenger waits half a minute at most
+        if (bot->isMoving())
+            bot->StopMoving();
+        if (challenger)
+        {
+            if (now - t.duelSeenAt > 30000)
+            {
+                TC_LOG_INFO("playerbots", "BotLife {}: withdraws the duel challenge to {} (no answer)", bot->GetName(), opponent->GetName());
+                BotDuelRespond(bot, false);
+            }
+            return true;
+        }
+        if (now - t.duelSeenAt < 1000 + bot->GetGUID().GetCounter() % 3000)
+            return true;
+        bool const real = opponent->GetSession() && !opponent->GetSession()->IsBot();
+        char const* why = nullptr;
+        if (!_duels)
+            why = "duels are off";
+        else if (bot->GetHealthPct() < 90.0f)
+            why = "low health";
+        else if (bot->IsInCombat())
+            why = "in combat";
+        else if (t.party || bot->GetMap()->Instanceable())
+            why = "busy in a party";
+        else if (IsWalker(bot))
+            why = "walker";
+        Count(why ? BLC_DUEL_DECLINED : BLC_DUEL_ACCEPTED);
+        TC_LOG_INFO("playerbots", "BotLife {}: {} the duel of {} ({}){}{}", bot->GetName(), why ? "declines" : "accepts", opponent->GetName(),
+            real ? "real player" : "bot", why ? ": " : "", why ? why : "");
+        BotDuelRespond(bot, !why);
+        return true;
+    }
+    if (!duel->startTime)
+    {
+        // the countdown: stand and face the opponent
+        if (bot->isMoving())
+            bot->StopMoving();
+        if (!bot->HasInArc(float(M_PI) / 4.0f, opponent))
+            bot->SetFacingToObject(opponent);
+        return true;
+    }
+    // the duel runs: the combat engine fights it; the bot starts the fight itself if nothing else did
+    if (bot->IsAlive() && !bot->GetVictim() && !bot->IsNonMeleeSpellCasted(false))
+        botAI->DoSpecificAction("attack duel opponent", Event(), true);
+    return false;
+}
+
+void BotLifeMgr::DuelChallenge(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
+{
+    Player* bot = botAI->GetBot();
+    uint32 const minutes = _duelChallengeMinutes;
+    if (!t.nextDuelChallenge)
+    {
+        t.nextDuelChallenge = now + urand(1, minutes) * MINUTE * IN_MILLISECONDS;   // spread the first tries
+        return;
+    }
+    t.nextDuelChallenge = now + urand(minutes / 2 + 1, minutes * 3 / 2 + 1) * MINUTE * IN_MILLISECONDS;
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->GetGroup() || t.party || t.banker || bot->duel || bot->IsMounted() || bot->GetLevel() < 10
+        || bot->GetHealthPct() < 90.0f || bot->GetMap()->Instanceable() || bot->InBattleground() || botAI->HasRealPlayerMaster()
+        || bot->IsBeingTeleported() || bot->IsInFlight())   // (bot-duels-anywhere) no rest needed: the area flag decides
+        return;
+    AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetAreaId());
+    if (!area || !(area->Flags & AREA_FLAG_ALLOW_DUELS))
+        return;
+    // (bot-duels-calm) no hostile creature within 30 yards: it would join in and break the duel off
+    {
+        Unit* foe = nullptr;
+        auto foeCheck = [bot](Unit* u) { return u != bot && u->IsAlive() && u->IsHostileTo(bot) && bot->IsWithinDistInMap(u, 30.0f); };
+        Trinity::UnitSearcher<decltype(foeCheck)> foeSearcher(bot, foe, foeCheck);
+        Cell::VisitAllObjects(bot, foeSearcher, 30.0f);
+        if (foe)
+            return;
+    }
+    // another free random bot at rest nearby, of about the same level and the same side; never a real player
+    std::list<Player*> near;
+    Trinity::AnyPlayerInObjectRangeCheck check(bot, 15.0f);
+    Trinity::PlayerListSearcher<Trinity::AnyPlayerInObjectRangeCheck> searcher(bot, near, check);
+    Cell::VisitWorldObjects(bot, searcher, 15.0f);
+    Player* pick = nullptr;
+    for (Player* p : near)
+    {
+        if (p == bot || !p->IsAlive() || p->IsInCombat() || p->duel || p->GetGroup() || p->IsMounted() || p->GetTeam() != bot->GetTeam()
+            || !p->GetSession() || !p->GetSession()->IsBot() || !sRandomPlayerbotMgr->IsRandomBot(p))
+            continue;
+        int32 const diff = int32(p->GetLevel()) - int32(bot->GetLevel());
+        if (diff < -3 || diff > 3 || p->GetHealthPct() < 90.0f || IsWalker(p) || IsBanker(p->GetGUID()))
+            continue;
+        PlayerbotAI* other = GET_PLAYERBOT_AI(p);
+        if (!other || other->life.party || other->HasRealPlayerMaster())
+            continue;
+        pick = p;
+        break;
+    }
+    if (!pick)
+        return;
+    Count(BLC_DUEL_REQUESTED);
+    TC_LOG_INFO("playerbots", "BotLife {}: challenges {} to a duel (area {}, levels {} and {})", bot->GetName(), pick->GetName(), bot->GetAreaId(),
+        uint32(bot->GetLevel()), uint32(pick->GetLevel()));
+    if (bot->isMoving())
+        bot->StopMoving();
+    bot->SetFacingToObject(pick);
+    bot->CastSpell(pick, SPELL_BOT_DUEL, false);
+}
+
+// a duel ended (map thread of the players): count it when a bot took part
+void BotLifeMgr::NoteDuelEnd(Player* winner, Player* loser, uint8 type)
+{
+    if (!winner || !loser)
+        return;
+    bool const winnerBot = winner->GetSession() && winner->GetSession()->IsBot();
+    bool const loserBot = loser->GetSession() && loser->GetSession()->IsBot();
+    if (!winnerBot && !loserBot)
+        return;
+    if (type != DUEL_INTERRUPTED)
+    {
+        if (winnerBot)
+            Count(BLC_DUEL_WON);
+        if (loserBot)
+            Count(BLC_DUEL_LOST);
+    }
+    static char const* const how[] = { "interrupted", "won", "fled", "surrender" };
+    TC_LOG_INFO("playerbots", "BotLife duel: {} ({}) over {} ({}): {}", winner->GetName(), winnerBot ? "bot" : "real player", loser->GetName(),
+        loserBot ? "bot" : "real player", type < 4 ? how[type] : "?");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (level-balance) the online random bots spread over the level bands (world thread, while the maps stand still)
+
+void BotLifeMgr::BalanceLevels(uint32 /*now*/)
+{
+    // bands: 0 = 1-9, 1 = 10-19, ..., 8 = 80-89, 9 = 90
+    std::array<std::vector<Player*>, 10> free;
+    std::array<uint32, 10> count = {};
+    uint32 total = 0;
+    for (auto const& pair : sRandomPlayerbotMgr->GetAllBots())
+    {
+        Player* bot = pair.second;
+        if (!bot || !bot->IsInWorld())
+            continue;
+        uint32 const level = bot->GetLevel();
+        uint32 const band = level >= 90 ? 9u : std::min<uint32>(8u, level / 10);
+        ++count[band];
+        ++total;
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+        if (!ai || ai->HasRealPlayerMaster() || ai->life.party || ai->life.banker || ai->life.relevelTo || IsWalker(bot) || IsLfgBot(bot->GetGUID())
+            || IsBanker(bot->GetGUID()) || bot->GetGroup() || !bot->IsAlive() || bot->IsInCombat()
+            || bot->GetMap()->Instanceable() || bot->InBattleground() || bot->InBattlegroundQueue() || bot->IsBeingTeleported() || bot->IsInFlight()
+            || bot->duel)   // (bot-duels-calm) a duel (request) stays where it is
+            continue;
+        free[band].push_back(bot);
+    }
+    if (total < 100)
+        return;
+    float const top = std::min(0.5f, std::max(0.0f, sPlayerbotAIConfig->randomBotMaxLevelChance));
+    std::array<float, 10> target;
+    for (uint32 b = 0; b < 9; ++b)
+        target[b] = float(total) * (1.0f - top) / 9.0f;
+    target[9] = float(total) * top;
+    uint32 moved = 0;
+    for (uint32 i = 0; i < _levelBalanceMoves; ++i)
+    {
+        int32 over = -1, under = -1;
+        float overRatio = 1.3f, underRatio = 0.7f;
+        for (uint32 b = 0; b < 10; ++b)
+        {
+            if (target[b] <= 0.0f)
+                continue;
+            float const ratio = float(count[b]) / target[b];
+            if (ratio > overRatio && !free[b].empty())
+            {
+                overRatio = ratio;
+                over = int32(b);
+            }
+            if (ratio < underRatio)
+            {
+                underRatio = ratio;
+                under = int32(b);
+            }
+        }
+        if (over < 0 || under < 0)
+            break;
+        uint32 const to = under == 9 ? 90u : under == 0 ? urand(2, 9) : urand(uint32(under) * 10, uint32(under) * 10 + 9);
+        std::vector<Player*>& from = free[over];
+        Player* bot = nullptr;
+        for (size_t tries = 0; tries < 8 && !from.empty() && !bot; ++tries)
+        {
+            size_t const k = urand(0, uint32(from.size() - 1));
+            Player* candidate = from[k];
+            from.erase(from.begin() + k);
+            if (candidate->GetClass() == CLASS_DEATH_KNIGHT && to < 55)
+                continue;   // a death knight starts at 55
+            bot = candidate;
+        }
+        if (!bot)
+            break;
+        GET_PLAYERBOT_AI(bot)->life.relevelTo = uint8(to);
+        TC_LOG_INFO("playerbots", "LEVELBAL {} level {} -> {} (band {}: {} of {:.0f}, band {}: {} of {:.0f}, {} bots)", bot->GetName(),
+            uint32(bot->GetLevel()), to, over, count[over], target[over], under, count[under], target[under], total);
+        --count[over];
+        ++count[under];
+        ++moved;
+    }
+    if (moved)
+        Count(BLC_LEVEL_BALANCE, moved);
 }

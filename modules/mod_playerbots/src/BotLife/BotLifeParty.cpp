@@ -268,7 +268,11 @@ void BotLifeMgr::RecordDungeonRun(BotLifeDungeon const& d, BotLifeParty const& p
 {
     PlayerbotAI* leaderAI = leader ? GET_PLAYERBOT_AI(leader) : nullptr;
     uint32 bossesKilled = leaderAI ? leaderAI->life.dungeonBosses : 0;
-    if (!bossesKilled && strcmp(result, "cleared"))
+    if (!strcmp(result, "already-done"))
+    {
+        // (finished-instance) neither a failed run nor a success
+    }
+    else if (!bossesKilled && strcmp(result, "cleared"))
         ++_dungeonRecord[d.id].first;
     else
         ++_dungeonRecord[d.id].second;
@@ -283,6 +287,7 @@ void BotLifeMgr::RecordDungeonRun(BotLifeDungeon const& d, BotLifeParty const& p
 
 bool BotLifeDungeonHandInPending(Player* leader);   // , BotLifeDungeon.cpp
 bool BotLifeFinalBossDown(Player* leader, uint32 dungeonId);   // , BotLifeDungeon.cpp
+bool BotLifeHasFinalBoss(uint32 dungeonId);   // (final-clear) BotLifeDungeon.cpp
 
 bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player* leader, uint32 now)
 {
@@ -307,10 +312,20 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
     }
     if (leaderAI && leaderAI->life.dungeonDone)
     {
+        // (finished-instance) the last boss was already dead when the party came in and it killed nothing: not a clear
+        if (finalDown && !leaderAI->life.dungeonKills && !leaderAI->life.dungeonBosses)
+        {
+            RecordDungeonRun(d, party, leader, "already-done", now);
+            TC_LOG_INFO("playerbots", "BotLife: {} entered a finished {} (last boss already dead, nothing killed)", leader->GetName(), d.name);
+            return true;
+        }
         Count(BLC_DUNGEON_CLEARED);
         // nothing left to fight but bosses still standing is not a clear
-        RecordDungeonRun(d, party, leader, d.bosses && leaderAI->life.dungeonBosses < d.bosses && !finalDown ? "incomplete" : "cleared", now);
-        TC_LOG_INFO("playerbots", "BotLife: {} cleared {} ({} kills, {} bosses of {}, {} wipes, {} min)", leader->GetName(), d.name,
+        // (final-clear) with a known last encounter only its death is a clear; otherwise all bosses of the entry
+        bool const incomplete = finalDown ? false : BotLifeHasFinalBoss(d.id) || (d.bosses && leaderAI->life.dungeonBosses < d.bosses);
+        RecordDungeonRun(d, party, leader, incomplete ? "incomplete" : "cleared", now);
+        TC_LOG_INFO("playerbots", "BotLife: {} {} {} ({} kills, {} bosses of {}, {} wipes, {} min)", leader->GetName(),
+            incomplete ? "ends without the last boss:" : "cleared", d.name,
             leaderAI->life.dungeonKills, leaderAI->life.dungeonBosses, d.bosses, party.wipes, (now - party.formedAt) / MINUTE / IN_MILLISECONDS);
         return true;
     }
@@ -321,6 +336,31 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
         TC_LOG_INFO("playerbots", "BotLife: {} ran out of time in {} ({} kills, {} bosses of {}, {} wipes)", leader->GetName(), d.name,
             leaderAI ? leaderAI->life.dungeonKills : 0, leaderAI ? leaderAI->life.dungeonBosses : 0, d.bosses, party.wipes);
         return true;
+    }
+
+    // (kill-first-adds) an add the party has to kill during a boss fight, as a real group does: the leader puts the skull on
+    // the nearest one and the damage dealers switch to it (their dps target takes the skull first). Echo of Sylvanas (End
+    // Time): one Risen Ghoul of Calling of the Highborne has to die before the ring reaches her.
+    if (leaderAI && leader->GetMapId() == d.map && leader->IsAlive() && leader->IsInCombat())
+    {
+        static std::pair<uint32, uint32> const killFirst[] = { { 54123, 54191 } };   // boss, add
+        for (auto const& kf : killFirst)
+        {
+            Creature* boss = leader->FindNearestCreature(kf.first, 100.0f, true);
+            if (!boss || !boss->IsInCombat())
+                continue;
+            ObjectGuid const marked = group->GetTargetIcon(7);
+            Creature* current = marked ? ObjectAccessor::GetCreature(*leader, marked) : nullptr;
+            if (current && current->IsAlive() && current->GetEntry() == kf.second)
+                break;
+            if (Creature* add = leader->FindNearestCreature(kf.second, 60.0f, true))
+            {
+                group->SetTargetIcon(7, leader->GetGUID(), add->GetGUID(), 0);
+                TC_LOG_INFO("playerbots", "BotLife: {} marks {} ({}) with the skull in {} ({} in combat)", leader->GetName(),
+                    add->GetName(), add->GetEntry(), d.name, boss->GetName());
+            }
+            break;
+        }
     }
 
     // once a minute where the run stands: the stall detail only exists at the end of the run
@@ -421,7 +461,8 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
     // kill count keeps rising) or stays in perpetual combat, so it otherwise runs to the 50-minute hard timeout with a full
     // party stuck. End it early, free the party, and take the dungeon out of rotation until the encounter is fixed.
     // 
-    if (!bosses && now - party.formedAt > (HasKillGate(d.map) ? 30u : 18u) * MINUTE * IN_MILLISECONDS)
+    // (end-time-30-min) End Time too: its echoes stand far apart, Jaina comes after sixteen staff fragments
+    if (!bosses && now - party.formedAt > (HasKillGate(d.map) || d.map == 938 ? 30u : 18u) * MINUTE * IN_MILLISECONDS)
     {
         Count(BLC_DUNGEON_STALLED);
         RecordDungeonRun(d, party, leader, "stalled", now);

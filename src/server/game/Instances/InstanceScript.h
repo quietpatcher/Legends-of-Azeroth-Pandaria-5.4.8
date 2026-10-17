@@ -379,6 +379,15 @@ class InstanceScript : public ZoneScript
 
         virtual bool SetBossState(uint32 id, EncounterState state);
         EncounterState GetBossState(uint32 id) const { return id < bosses.size() ? bosses[id].state : TO_BE_DECIDED; }
+        // (held-door) a passage door of a boss that is not done yet: the encounter keeps it shut
+        bool IsHeldEncounterDoor(uint32 entry) const
+        {
+            DoorInfoMapBounds range = doors.equal_range(entry);
+            for (DoorInfoMap::const_iterator itr = range.first; itr != range.second; ++itr)
+                if (itr->second.type == DOOR_TYPE_PASSAGE && itr->second.bossInfo && itr->second.bossInfo->state != DONE)
+                    return true;
+            return false;
+        }
         BossBoundaryMap const* GetBossBoundary(uint32 id) const { return id < bosses.size() ? &bosses[id].boundary : NULL; }
 
         // Achievement criteria additional requirements check

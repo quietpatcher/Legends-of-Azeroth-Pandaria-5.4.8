@@ -19,6 +19,7 @@
 #include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSplineInitArgs.h"
+#include "MoveSpline.h"
 #include "MovementGenerator.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
@@ -1175,6 +1176,224 @@ namespace
         return nullptr;
     }
 
+    // (sweeping-hazard) a passive hostile summon without a victim that moves along a line over the floor (the Mantid Munitions
+    // fire walls of Saboteur Kip'tilak): true when the bot stands within 3.5 yards of the rest of its path and it gets there within
+    // 2.5 seconds; 'aside' is then a spot no line reaches in the next 4 seconds
+    // (safe-aside) all lines are taken into account, also the four lines a still-standing munition on a line sends out when the
+    // line reaches it (in the direction of the line and square to it, 40 yards, same speed): the bot tries 5, 8 and 11 yards in
+    // 8 directions, square to its own line first, and takes the first safe spot it can reach
+    struct SweepLine
+    {
+        float x, y;       // where it starts (now, or where the munition stands)
+        float ux, uy;     // direction
+        float len;        // length
+        float speed;
+        float t0;         // seconds before it starts
+    };
+
+    bool LineReaches(SweepLine const& l, float px, float py, float within)
+    {
+        float const bx = px - l.x, by = py - l.y;
+        float const along = bx * l.ux + by * l.uy;   // behind the start is safe
+        if (along < -1.0f || along > l.len + 2.0f || l.t0 + std::max(0.0f, along) / l.speed > within)
+            return false;
+        return std::fabs(bx * -l.uy + by * l.ux) < 3.5f;
+    }
+
+    bool SweepingHazardNear(Player* bot, Position& aside)
+    {
+        if (!bot->IsInCombat())
+            return false;
+        std::list<Unit*> units;
+        Trinity::AnyUnfriendlyUnitInObjectRangeCheck check(bot, bot, 25.0f);
+        Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitAllObjects(bot, searcher, 25.0f);
+        std::vector<SweepLine> lines;
+        std::vector<Unit*> standing;   // passive summons that do not move: munitions a line can set off
+        for (Unit* unit : units)
+        {
+            Creature* creature = unit->ToCreature();
+            if (!creature || !unit->IsSummon() || !unit->IsAlive() || !creature->HasReactState(REACT_PASSIVE) || unit->GetVictim())
+                continue;
+            if (!unit->movespline || unit->movespline->Finalized())
+            {
+                standing.push_back(unit);
+                continue;
+            }
+            G3D::Vector3 const end = unit->movespline->FinalDestination();
+            float const dx = end.x - unit->GetPositionX(), dy = end.y - unit->GetPositionY();
+            float const len = std::sqrt(dx * dx + dy * dy);
+            float const speed = unit->movespline->Velocity();
+            if (len < 1.0f || speed <= 0.0f)
+                continue;
+            lines.push_back({ unit->GetPositionX(), unit->GetPositionY(), dx / len, dy / len, len, speed, 0.0f });
+        }
+        // (volatile-munitions) a munition that goes off on its own in a few seconds (Volatile Munitions of the Krik'thik
+        // Demolisher, aura 109986 'Explodes in $d'): its four lines along the world axes count from now on, as if they ran
+        for (Unit* m : units)   // whatever its react state: only the entry and that it is still there count
+            if (m->GetEntry() == 56896 && m->IsAlive())
+                for (std::pair<float, float> const& d : { std::make_pair(1.0f, 0.0f), std::make_pair(-1.0f, 0.0f),
+                    std::make_pair(0.0f, 1.0f), std::make_pair(0.0f, -1.0f) })
+                    lines.push_back({ m->GetPositionX(), m->GetPositionY(), d.first, d.second, 40.0f, 10.0f, 0.0f });
+        if (lines.empty())
+            return false;
+        // the lines the standing munitions on a line will send out
+        size_t const moving = lines.size();
+        for (size_t n = 0; n < moving; ++n)
+        {
+            SweepLine const l = lines[n];
+            for (Unit* m : standing)
+            {
+                float const bx = m->GetPositionX() - l.x, by = m->GetPositionY() - l.y;
+                float const along = bx * l.ux + by * l.uy;
+                if (along < 0.0f || along > l.len || std::fabs(bx * -l.uy + by * l.ux) > 2.0f)
+                    continue;
+                float const t0 = along / l.speed;
+                for (std::pair<float, float> const& d : { std::make_pair(l.ux, l.uy), std::make_pair(-l.ux, -l.uy),
+                    std::make_pair(-l.uy, l.ux), std::make_pair(l.uy, -l.ux) })
+                    lines.push_back({ m->GetPositionX(), m->GetPositionY(), d.first, d.second, 40.0f, l.speed, t0 });
+            }
+        }
+        float const px = bot->GetPositionX(), py = bot->GetPositionY();
+        SweepLine const* mine = nullptr;
+        for (size_t n = 0; n < moving && !mine; ++n)
+            if (LineReaches(lines[n], px, py, 2.5f))
+                mine = &lines[n];
+        if (!mine)
+            return false;
+        float const side = (px - mine->x) * -mine->uy + (py - mine->y) * mine->ux;
+        float const sign = side < 0.0f ? -1.0f : 1.0f;
+        float const base = std::atan2(mine->ux * sign, -mine->uy * sign);   // square to its line, on the side the bot stands
+        for (float dist : { 5.0f, 8.0f, 11.0f })
+            for (int k : { 0, 4, 1, -1, 3, -3, 2, -2 })   // square first (both sides), then slanting, then along the line
+            {
+                float const a = base + k * float(M_PI) / 4.0f;
+                float x = px + std::cos(a) * dist, y = py + std::sin(a) * dist, z = bot->GetPositionZ();
+                if (!bot->GetMap()->CheckCollisionAndGetValidCoords(bot, px, py, bot->GetPositionZ(), x, y, z))
+                    continue;
+                bool safe = true;
+                for (SweepLine const& l : lines)
+                    if (LineReaches(l, x, y, 4.0f))
+                    {
+                        safe = false;
+                        break;
+                    }
+                if (safe)
+                {
+                    aside.Relocate(x, y, z);
+                    return true;
+                }
+            }
+        // no safe spot: 5 yards square to its own line, as before
+        for (float s : { sign, -sign })
+        {
+            float const shift = s * 5.0f - side;
+            float x = px + -mine->uy * shift, y = py + mine->ux * shift, z = bot->GetPositionZ();
+            if (bot->GetMap()->CheckCollisionAndGetValidCoords(bot, px, py, bot->GetPositionZ(), x, y, z))
+            {
+                aside.Relocate(x, y, z);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // (highborne-gap) Echo of Sylvanas (End Time), Calling of the Highborne: a ring of eight Risen Ghouls walks in on her and the
+    // first to arrive makes her cast Sacrifice on everybody within 11 yards. Once a ghoul is dead its links are gone: the spot
+    // in the middle of the widest gap, 8 yards outside the ring and at least 16 yards from her, is safe
+    bool HighborneGapSpot(Player* bot, Position& spot)
+    {
+        if (bot->GetMapId() != 938 || !bot->IsInCombat())
+            return false;
+        Creature* sylvanas = bot->FindNearestCreature(54123, 80.0f, true);
+        if (!sylvanas || !sylvanas->HasAura(100686))   // Call of the Highborne
+            return false;
+        std::list<Creature*> ghouls;
+        bot->GetCreatureListWithEntryInGrid(ghouls, 54191, 80.0f);   // Risen Ghoul
+        float const cx = sylvanas->GetPositionX(), cy = sylvanas->GetPositionY();
+        std::vector<float> angles;
+        float ring = 0.0f;
+        for (Creature* ghoul : ghouls)
+            if (ghoul->IsAlive())
+            {
+                angles.push_back(std::atan2(ghoul->GetPositionY() - cy, ghoul->GetPositionX() - cx));
+                ring = std::max(ring, sylvanas->GetExactDist2d(ghoul));
+            }
+        if (angles.empty() || angles.size() >= 8)   // all eight still up: no way out yet, one has to die first (skull)
+            return false;
+        std::sort(angles.begin(), angles.end());
+        float widest = 0.0f, gap = 0.0f;
+        for (size_t i = 0; i < angles.size(); ++i)
+        {
+            float const a = angles[i];
+            float const b = i + 1 < angles.size() ? angles[i + 1] : angles[0] + 2.0f * float(M_PI);
+            if (b - a > widest)
+            {
+                widest = b - a;
+                gap = (a + b) / 2.0f;
+            }
+        }
+        if (widest < float(M_PI) / 4.0f * 1.5f)   // the ghouls stand 45 degrees apart: no gap of a dead one
+            return false;
+        float const r = std::max(ring + 8.0f, 40.0f);   // (highborne-far) does not follow the shrinking ring inwards
+        float x = cx + std::cos(gap) * r, y = cy + std::sin(gap) * r, z = bot->GetPositionZ();
+        if (bot->GetExactDist2d(x, y) < 4.0f)
+        {
+            spot.Relocate(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());   // (highborne-hold) there: stay
+            return true;
+        }
+        bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), x, y, z);
+        spot.Relocate(x, y, z);
+        return true;
+    }
+
+    // (channel-area) a selectable enemy that channels damage around or in front of it (Frenzied Assault of Commander Ri'mok: its own
+    // periodic trigger aura, the triggered spell hits everybody within 9 yards in a cone): the caster when the bot stands in it
+    Unit* ChanneledAreaNear(Player* bot, float& radius)
+    {
+        if (!bot->IsInCombat())
+            return nullptr;
+        std::list<Unit*> units;
+        Trinity::AnyUnfriendlyUnitInObjectRangeCheck check(bot, bot, 20.0f);
+        Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitAllObjects(bot, searcher, 20.0f);
+        for (Unit* unit : units)
+        {
+            Creature* creature = unit->ToCreature();
+            if (!creature || !unit->IsAlive() || unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) || creature->IsTrigger())
+                continue;   // the invisible triggers are handled by AvoidUnitWithDamageAura
+            for (AuraEffect const* aurEff : unit->GetAuraEffectsByType(SPELL_AURA_PERIODIC_TRIGGER_SPELL))
+            {
+                if (aurEff->GetCasterGUID() != unit->GetGUID())
+                    continue;
+                int32 const maxDuration = aurEff->GetBase()->GetMaxDuration();   // (channel-area-timed) not a permanent aura
+                if (maxDuration <= 0 || maxDuration > 20000)
+                    continue;
+                SpellInfo const* trigger = sSpellMgr->GetSpellInfo(aurEff->GetSpellInfo()->Effects[aurEff->GetEffIndex()].TriggerSpell);
+                if (!trigger || sPlayerbotAIConfig->aoeAvoidSpellWhitelist.count(trigger->Id))
+                    continue;
+                for (uint8 j = 0; j < MAX_SPELL_EFFECTS; ++j)
+                {
+                    uint32 const effect = trigger->Effects[j].Effect;
+                    if (effect != SPELL_EFFECT_SCHOOL_DAMAGE && effect != SPELL_EFFECT_WEAPON_PERCENT_DAMAGE && effect != SPELL_EFFECT_WEAPON_DAMAGE
+                        && effect != SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL && effect != SPELL_EFFECT_NORMALIZED_WEAPON_DMG)
+                        continue;
+                    if (!trigger->Effects[j].IsTargetingArea())
+                        continue;
+                    float const r = trigger->Effects[j].CalcRadius();
+                    if (!r || r > 15.0f || unit->GetDistance(bot) > r + 1.0f)
+                        continue;
+                    if (trigger->Effects[j].TargetA.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE
+                        && !unit->isInFront(bot, float(M_PI) * 2.0f / 3.0f))
+                        continue;
+                    radius = r;
+                    return unit;
+                }
+            }
+        }
+        return nullptr;
+    }
+
     struct DamageTrapCheck
     {
         WorldObject const* bot;
@@ -1191,6 +1410,14 @@ bool AvoidAoeAction::isUseful()
 {
     if (!bot->IsInWorld() || !bot->GetMap()->Instanceable() || bot->GetMap()->IsBattlegroundOrArena())
         return false;
+    Position aside;
+    if (getMSTime() - lastMoveTimer >= 300 && SweepingHazardNear(bot, aside))   // (sweeping-hazard) it does not wait
+        return true;
+    if (getMSTime() - lastMoveTimer >= 300 && HighborneGapSpot(bot, aside))   // (highborne-gap)
+        return true;
+    float channelRadius = 0.0f;
+    if (getMSTime() - lastMoveTimer >= 300 && ChanneledAreaNear(bot, channelRadius))   // (channel-area)
+        return true;
     if (getMSTime() - lastMoveTimer < moveInterval)
         return false;
     if (AreaDebuff(bot) || SummonedHazardNear(bot, 3.0f))
@@ -1209,6 +1436,40 @@ bool AvoidAoeAction::Execute(Event /*event*/)
 {
     // an aura with a dynamic object (Rain of Fire), a trap object with a spell (lava bomb), a trigger unit (shadow
     // fissure, sticky bomb)
+    Position aside;
+    if (SweepingHazardNear(bot, aside) && MoveTo(bot->GetMapId(), aside.GetPositionX(), aside.GetPositionY(), aside.GetPositionZ(),
+        false, false, true, false, MovementPriority::MOVEMENT_COMBAT))
+    {
+        lastMoveTimer = getMSTime();   // (sweeping-hazard)
+        TC_LOG_INFO("playerbots", "BotLife {}: steps aside from a sweeping hazard in map {} at {:.1f} {:.1f} {:.1f}", bot->GetName(),
+            bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());   // (avoid-aoe-registered)
+        return true;
+    }
+    if (HighborneGapSpot(bot, aside) && bot->GetExactDist2d(aside.GetPositionX(), aside.GetPositionY()) < 0.5f)
+    {
+        bot->StopMoving();   // (highborne-hold) at the safe spot outside the ring: hold still until the ghouls are done
+        lastMoveTimer = getMSTime();
+        return true;
+    }
+    if (HighborneGapSpot(bot, aside) && MoveTo(bot->GetMapId(), aside.GetPositionX(), aside.GetPositionY(), aside.GetPositionZ(),
+        false, false, true, false, MovementPriority::MOVEMENT_COMBAT))   // (highborne-gap)
+    {
+        if (getMSTime() - lastMoveTimer > 3000)
+            TC_LOG_INFO("playerbots", "BotLife {}: goes out through the gap in the ghoul ring to {:.1f} {:.1f} (from {:.1f} {:.1f})", bot->GetName(),
+                aside.GetPositionX(), aside.GetPositionY(), bot->GetPositionX(), bot->GetPositionY());
+        lastMoveTimer = getMSTime();
+        return true;
+    }
+    float channelRadius = 0.0f;   // (channel-area) out of a channeled area around or in front of an enemy
+    if (Unit* caster = ChanneledAreaNear(bot, channelRadius))
+        if (FleePosition(caster->GetPosition(), channelRadius + 2.0f, 0))
+        {
+            if (getMSTime() - lastMoveTimer > 3000)
+                TC_LOG_INFO("playerbots", "BotLife {}: steps out of the channel of {} ({}, {:.0f} yd) in map {}", bot->GetName(),
+                    caster->GetName(), caster->GetEntry(), channelRadius, bot->GetMapId());
+            lastMoveTimer = getMSTime();
+            return true;
+        }
     Unit* hazard = SummonedHazardNear(bot, 3.0f);   // (part 3: a bomb before it goes off)
     if (AvoidAuraWithDynamicObj() || AvoidGameObjectWithDamage() || AvoidUnitWithDamageAura()
         || (hazard && FleePosition(hazard->GetPosition(), 5.0f)))
@@ -1284,10 +1545,15 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                     if (trigger->Effects[j].Effect != SPELL_EFFECT_SCHOOL_DAMAGE)
                         continue;
                     float const radius = trigger->Effects[j].CalcRadius();
-                    if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius || bot->GetDistance(unit) > radius)
+                    // (trigger-margin) 2 yards early: the trigger list is refreshed once a second, the first tick came before the step
+                    if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius || bot->GetDistance(unit) > radius + 2.0f)
                         continue;
-                    if (FleePosition(unit->GetPosition(), radius))
+                    if (FleePosition(unit->GetPosition(), radius + 2.0f))
+                    {
+                        TC_LOG_INFO("playerbots", "BotLife {}: steps out of the damage zone of {} ({}, {:.0f} yd) in map {}", bot->GetName(),
+                            unit->GetName(), unit->GetEntry(), radius, bot->GetMapId());
                         return true;
+                    }
                 }
             }
         // a bomb that explodes by script when someone comes close (Sticky Bomb: 2 yards)

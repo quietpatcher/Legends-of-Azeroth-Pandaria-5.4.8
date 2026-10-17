@@ -103,6 +103,7 @@ public:
         creators["self target"] = &ValueContext::self_target;
         creators["pet target"] = &ValueContext::pet_target;
         creators["current target"] = &ValueContext::current_target;
+        creators["duel target"] = &ValueContext::duel_target;   // (bot-duels)
         creators["old target"] = &ValueContext::old_target;
         creators["grind target"] = &ValueContext::grind_target;
         creators["pull target"] = &ValueContext::pull_target;
@@ -213,6 +214,7 @@ private:
     static UntypedValue* self_target(PlayerbotAI* botAI) { return new SelfTargetValue(botAI); }
     static UntypedValue* pet_target(PlayerbotAI* botAI) { return new PetTargetValue(botAI); }
     static UntypedValue* current_target(PlayerbotAI* botAI) { return new CurrentTargetValue(botAI); }
+    static UntypedValue* duel_target(PlayerbotAI* botAI) { return new DuelTargetValue(botAI); }   // (bot-duels)
     static UntypedValue* possible_triggers(PlayerbotAI* botAI) { return new PossibleTriggersValue(botAI); }
     static UntypedValue* possible_targets(PlayerbotAI* botAI) { return new PossibleTargetsValue(botAI); }
     static UntypedValue* possible_targets_no_los(PlayerbotAI* botAI) { return new PossibleTargetsValue(botAI, "possible targets", sPlayerbotAIConfig->sightDistance, true); }
