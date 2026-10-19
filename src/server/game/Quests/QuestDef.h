@@ -407,7 +407,9 @@ class Quest
         bool IsDaily() const { return (_flags & QUEST_FLAGS_DAILY) != 0; }
         bool IsWeekly() const { return (_flags & QUEST_FLAGS_WEEKLY) != 0; }
         bool IsMonthly() const { return (_specialFlags & QUEST_SPECIAL_FLAGS_MONTHLY) != 0; }
-        bool IsSeasonal() const { return (_questSortID == -QUEST_SORT_SEASONAL || _questSortID == -QUEST_SORT_SPECIAL || _questSortID == -QUEST_SORT_LUNAR_FESTIVAL || _questSortID == -QUEST_SORT_MIDSUMMER || _questSortID == -QUEST_SORT_BREWFEST || _questSortID == -QUEST_SORT_LOVE_IS_IN_THE_AIR || _questSortID == -QUEST_SORT_NOBLEGARDEN) && !IsRepeatable(); }
+        // (seasonal-sorts) also the holiday sorts of the 5.4.8 data: Hallow's End, Day of the Dead, Pilgrim's Bounty, Children's Week
+        bool IsSeasonal() const { return (_questSortID == -QUEST_SORT_SEASONAL || _questSortID == -QUEST_SORT_SPECIAL || _questSortID == -QUEST_SORT_LUNAR_FESTIVAL || _questSortID == -QUEST_SORT_MIDSUMMER || _questSortID == -QUEST_SORT_BREWFEST || _questSortID == -QUEST_SORT_LOVE_IS_IN_THE_AIR || _questSortID == -QUEST_SORT_NOBLEGARDEN
+            || _questSortID == -QUEST_SORT_HALLOWS_END || _questSortID == -QUEST_SORT_DAY_OF_THE_DEAD || _questSortID == -QUEST_SORT_PILGRIMS_BOUNTY || _questSortID == -QUEST_SORT_CHILDRENS_WEEK) && !IsRepeatable(); }
         bool IsDailyOrWeekly() const { return (_flags & (QUEST_FLAGS_DAILY | QUEST_FLAGS_WEEKLY)) != 0; }
         bool IsRaidQuest(Difficulty difficulty) const;
         bool IsAllowedInRaid(Difficulty difficulty) const;

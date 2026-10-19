@@ -3539,6 +3539,10 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                 if (!gameobject)
                     return;
 
+                // (distance-go-spawned) a despawned object waiting for its respawn is not there
+                if (!gameobject->ToGameObject() || !gameobject->ToGameObject()->isSpawned())
+                    return;
+
                 if (!me->IsInRange(gameobject, 0, (float) e.event.distance.dist))
                     return;
             }
@@ -3547,8 +3551,13 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                 std::list<GameObject*> list;
                 me->GetGameObjectListWithEntryInGrid(list, e.event.distance.entry, (float) e.event.distance.dist);
 
-                if (list.size() > 0)
-                    gameobject = list.front();
+                // (distance-go-spawned) the first one that is spawned
+                for (GameObject* go : list)
+                    if (go->isSpawned())
+                    {
+                        gameobject = go;
+                        break;
+                    }
             }
 
             if (gameobject)
@@ -3692,7 +3701,7 @@ void SmartScript::OnUpdate(uint32 const diff)
         UpdateTimer(*i, diff);
 
     if (!mStoredEvents.empty())
-        for (SmartAIEventList::iterator i = mStoredEvents.begin(); i != mStoredEvents.end(); ++i)
+        for (auto i = mStoredEvents.begin(); i != mStoredEvents.end(); ++i)   // (stored-events-list)
              UpdateTimer(*i, diff);
 
     bool needCleanup = true;

@@ -15620,6 +15620,7 @@ void Player::PrepareGossipMenu(WorldObject* source, uint32 menuId /*= 0*/, bool 
                 case GOSSIP_OPTION_PETITIONER:
                 case GOSSIP_OPTION_TABARDDESIGNER:
                 case GOSSIP_OPTION_AUCTIONEER:
+                case GOSSIP_OPTION_REFORGER:                // OptionNpcflag (UNIT_NPC_FLAG_REFORGER) already checked above
                     break;                                  // no checks
                 case GOSSIP_OPTION_OUTDOORPVP:
                     if (!sOutdoorPvPMgr->CanTalkTo(this, creature, itr->second))
@@ -15835,6 +15836,12 @@ void Player::OnGossipSelect(WorldObject* source, uint32 gossipListId, uint32 men
             break;
         case GOSSIP_OPTION_BANKER:
             GetSession()->SendShowBank(guid);
+            break;
+        case GOSSIP_OPTION_REFORGER:
+            // "Reforge an item." on a reforger that has a gossip menu. The 5.4.8 client opens the
+            // reforge window only on SMSG_OPEN_REFORGE (one packed npc guid); the window closes the gossip itself.
+            if (GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_REFORGER))
+                GetSession()->SendOpenReforge(guid);
             break;
         case GOSSIP_OPTION_PETITIONER:
             PlayerTalkClass->SendCloseGossip();

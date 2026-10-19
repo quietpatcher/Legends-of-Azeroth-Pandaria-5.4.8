@@ -813,6 +813,13 @@ void WorldSession::HandlePetBattleRequestWild(WorldPacket& recvData)
     sPetBattleSystem->Create(petBattleRequest);
 }
 
+// (pet-final-notify) the client is done showing the results of the final round: end its pet battle state
+void WorldSession::HandlePetBattleFinalNotify(WorldPacket& /*recvData*/)
+{
+    WorldPacket data(SMSG_PET_BATTLE_FINISHED, 0);
+    SendPacket(&data);
+}
+
 void WorldSession::HandlePetBattleSetFrontPet(WorldPacket& recvData)
 {
     // This packets is sended in to cases:

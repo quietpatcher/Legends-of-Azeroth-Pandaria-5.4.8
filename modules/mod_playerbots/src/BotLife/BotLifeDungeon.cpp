@@ -1194,6 +1194,38 @@ static bool HasFightableAttacker(Player const* member)
 }
 
 // a member of the bot's party within 40 yards on its map is attacked
+// (door-block) a path that runs through a closed door (dynamic object, e.g. the Foundry Door of Foe Reaper 5000): the spline movement of
+// a bot has no collision, so it would walk through. Segments are tested at chest height against dynamic objects only.
+static bool PathCrossesClosedDoor(Player* bot, PathGenerator const& path)
+{
+    Map* map = bot->GetMap();
+    G3D::Vector3 const* prev = nullptr;
+    for (G3D::Vector3 const& p : path.GetPath())
+    {
+        if (prev)
+        {
+            float rx, ry, rz;
+            if (map->getObjectHitPos(1, prev->x, prev->y, prev->z + 1.5f, p.x, p.y, p.z + 1.5f, rx, ry, rz, 0.0f))
+            {
+                // only a closed door that its encounter keeps shut counts (other doors are opened by OpenDoorsNear, other
+                // dynamic objects are decoration)
+                InstanceScript* instance = bot->GetInstanceScript();
+                if (!instance)
+                    return false;
+                std::list<GameObject*> doors;
+                ClosedDoorCheck check{ bot, 250.0f };
+                Trinity::GameObjectListSearcher<ClosedDoorCheck> searcher(bot, doors, check);
+                bot->VisitNearbyGridObject(250.0f, searcher);
+                for (GameObject* door : doors)
+                    if (door->GetExactDist(rx, ry, rz) < 8.0f && instance->IsHeldEncounterDoor(door->GetEntry()))
+                        return true;
+            }
+        }
+        prev = &p;
+    }
+    return false;
+}
+
 static bool PartyMemberAttacked(Player* bot)
 {
     Group* group = bot->GetGroup();
@@ -1355,7 +1387,47 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                                     attacker->ToCreature() && attacker->ToCreature()->IsInEvadeMode() ? 1 : 0);
                             QueueCombatStop(member);
                         }
+            // (stuckattacker) do not stand still: the attacker that holds a member becomes the target of the whole group
+            if (Group* grp = bot->GetGroup())
+            {
+                ObjectGuid pick;
+                for (GroupReference* ref = grp->GetFirstMember(); ref && pick.IsEmpty(); ref = ref->next())
+                    if (Player* member = ref->GetSource())
+                        if (member->GetMap() == bot->GetMap() && member->IsAlive())
+                            for (Unit* attacker : member->getAttackers())
+                                if (IsFightableAttacker(attacker) && attacker->ToCreature() && !attacker->ToCreature()->IsInEvadeMode())
+                                {
+                                    pick = attacker->GetGUID();
+                                    break;
+                                }
+                if (!pick.IsEmpty())
+                {
+                    TC_LOG_INFO("playerbots", "BotLife: {} stuck fight: the group goes for the attacker {} itself for 90 s", bot->GetName(), pick.ToString());
+                    for (GroupReference* ref = grp->GetFirstMember(); ref; ref = ref->next())
+                        if (Player* member = ref->GetSource())
+                            if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member))
+                            {
+                                memberAI->life.stuckAttacker = pick;
+                                memberAI->life.stuckAttackerUntil = now + 90000;
+                            }
+                    t.stuckAttacker = pick;
+                    t.stuckAttackerUntil = now + 90000;
+                }
+            }
+            // (stuck-boss) a boss spawn is never skipped here: the route behind it stays shut (Foe Reaper 5000)
+            bool stuckBoss = false;
             if (t.dungeonTarget)
+            {
+                auto spawnsIt2 = _instanceSpawns.find(bot->GetMapId());
+                if (spawnsIt2 != _instanceSpawns.end())
+                    for (BotLifeInstanceSpawn const& sp : spawnsIt2->second)
+                        if (sp.spawnId == t.dungeonTarget)
+                        {
+                            stuckBoss = sp.boss;
+                            break;
+                        }
+            }
+            if (t.dungeonTarget && !stuckBoss)
                 t.dungeonSkip.insert(t.dungeonTarget);
             t.dungeonTarget = 0;
             t.hasDest = false;
@@ -1364,6 +1436,28 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
         t.lastCombat = now;
         t.resting = false;
         t.lootTarget.Clear();
+        // (stuckattacker) a bot that has to fight the stuck attacker: first target, and walk until it can hit it
+        if (!t.stuckAttacker.IsEmpty())
+        {
+            Creature* foe = now < t.stuckAttackerUntil ? ObjectAccessor::GetCreature(*bot, t.stuckAttacker) : nullptr;
+            if (!foe || !foe->IsAlive() || foe->IsInEvadeMode())
+                t.stuckAttacker.Clear();
+            else
+            {
+                GuidVector first;
+                first.push_back(foe->GetGUID());
+                botAI->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Set(first);
+                bool const ranged = PlayerBotSpec::IsRanged(bot, true);
+                float const reach = ranged ? 20.0f : 4.0f;
+                if (!PlayerBotSpec::IsHeal(bot, true) && !bot->HasUnitState(UNIT_STATE_CASTING)
+                    && (bot->GetExactDist(foe) > reach || !bot->IsWithinLOSInMap(foe)) && (!bot->isMoving() || now - t.lastMoveOrder > 1500))
+                {
+                    bot->GetMotionMaster()->MoveChase(foe, ranged ? 15.0f : 0.0f);
+                    t.lastMoveOrder = now;
+                }
+                return false;   // no StopMoving below: the walk has to go on
+            }
+        }
         if (bot->IsSitState())
             bot->SetStandState(UNIT_STAND_STATE_STAND);
         if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
@@ -1774,6 +1868,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             std::stable_partition(candidates.begin(), candidates.end(), [](auto const& a) { return std::get<2>(a) != nullptr; });
         // nearest one the navmesh can actually reach (floors above / below are close but far away on foot)
         uint32 tried = 0;
+        uint32 doorBlocked = 0;   // (door-block)
         for (auto const& cand : candidates)
         {
             BotLifeInstanceSpawn const* s = std::get<1>(cand);
@@ -1797,6 +1892,14 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 && std::sqrt(ex * ex + ey * ey + ez * ez) + 25.0f < bot->GetExactDist(x, y, z);
             if (((path.GetPathType() & PATHFIND_NORMAL) && ex * ex + ey * ey + ez * ez < 12.0f * 12.0f) || closer)
             {
+                // (door-block) behind a closed door: open what the bots may open, otherwise take the next candidate
+                if (PathCrossesClosedDoor(bot, path))
+                {
+                    if (OpenDoorsNear(bot, 45.0f))
+                        return true;
+                    ++doorBlocked;
+                    continue;
+                }
                 current = s;
                 creature = c;
                 break;
@@ -1813,6 +1916,20 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             SkipDungeonTarget(bot, t, "no path");
             t.dungeonTarget = 0;
         }
+        // (door-block) every target lies behind a closed door that stays shut: wait (5 minutes at most) instead of leaving the dungeon
+        if (!current && doorBlocked)
+        {
+            if (!t.doorBlockedSince)
+                t.doorBlockedSince = now;
+            if (now - t.doorBlockedSince < 300000)
+            {
+                if (now - t.doorBlockedSince < 2000)
+                    TC_LOG_INFO("playerbots", "BotLife: {} dungeon map {}: {} targets lie behind a closed door, waiting", bot->GetName(), bot->GetMapId(), doorBlocked);
+                return true;
+            }
+        }
+        else if (current)
+            t.doorBlockedSince = 0;
         // all bosses down: the run is done, the leftover trash can stay
         if (current && hasBoss && !bossLeft && t.dungeonBosses)
             current = nullptr;

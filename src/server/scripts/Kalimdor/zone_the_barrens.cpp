@@ -1657,6 +1657,8 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
     uint8 scene = 0;       // the step of the ambush at the camp
     bool greeted = false;
     bool campSaid = false;
+    uint32 cartTimer = 0;               // (cart260) Delivery: the cart starts this much after the kodo
+    Movement::PointsArray cartPoints;   // (cart260) Delivery: its road
 
     void InitializeAI() override
     {
@@ -1668,6 +1670,10 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
     void MoveInLineOfSight(Unit* /*who*/) override { }
     void EnterEvadeMode(EvadeReason /*why*/) override { }
     void OnCharmed(bool /*apply*/) override { }   // the guard of the Master Caravan Kodo sits on its control seat: this AI stays
+    // (cart260) No SetClientControl(kodo, false) for the guard any more: the client shows the vehicle action bar
+    // (Shoot / Face Smash) only while it holds the control of the vehicle (same finding as the Forsaken Bat, to-do 178). The
+    // guard cannot steer: the route runs as a movement generator, and the server drops the movement packets of a unit that is
+    // moved by a generator (WorldSession::HandleMovementOpcode).
 
     void DamageTaken(Unit* /*attacker*/, uint32& damage) override
     {
@@ -1732,14 +1738,6 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
     void SummonedCreatureDespawn(Creature* summon) override
     {
         summons.Despawn(summon);
-    }
-
-    void PassengerBoarded(Unit* who, int8 seatId, bool apply) override
-    {
-        // the guard of the Master Caravan Kodo gets its action bar, not its reins
-        if (Player* player = who->ToPlayer())
-            if (apply && seatId == SEAT_CARAVAN_GUARD)
-                player->SetClientControl(me, false);
     }
 
     Creature* Driver() const
@@ -1813,8 +1811,61 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
             points.push_back(route[i]);
         if (points.size() < 2)
             return;
+        if (delivery)
+        {
+            // (cart260) a generator, so that the movement packets of the guard (he controls the kodo for the action
+            // bar) are dropped by the server
+            me->GetMotionMaster()->LaunchMoveSpline([points](Movement::MoveSplineInit& init)
+            {
+                init.MovebyPath(points);
+                init.SetUncompressed();
+                init.SetWalk(false);
+            }, 0, MOTION_SLOT_ACTIVE, EFFECT_MOTION_TYPE);
+            return;
+        }
         Movement::MoveSplineInit init(me);
         init.MovebyPath(points);
+        init.SetUncompressed();
+        init.SetWalk(false);
+        init.Launch();
+    }
+
+    // (cart260) Delivery: the Mor'shan Caravan Cart is a guardian of the Master Caravan Kodo in the client data
+    // (Call a Pack Kodo 4, summon properties 186) and trails it at the follow distance of a guardian, 1 yard plus the combat
+    // reaches (cart 6, kodo 1.5), so about 9 yards from centre to centre. MoveFollow(7) with those reaches left it 14.5 to 15.5
+    // yards behind. As with the pack kodo of the Crossroads caravan the cart runs the road of the kodo at its speed, 9 yards behind.
+    void PrepareCart(Creature* cart)
+    {
+        cartPoints.clear();
+        if (route.size() < 2)
+            return;
+        G3D::Vector3 const here(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ());
+        size_t nearest = 0;
+        for (size_t i = 1; i < route.size(); ++i)
+            if ((route[i] - here).squaredLength() < (route[nearest] - here).squaredLength())
+                nearest = i;
+        cartPoints.push_back(G3D::Vector3(cart->GetPositionX(), cart->GetPositionY(), cart->GetPositionZ()));
+        cartPoints.push_back(here);
+        for (size_t i = nearest + 1; i < route.size(); ++i)
+            cartPoints.push_back(route[i]);
+        while (cartPoints.size() > 2 && (cartPoints.back() - route.back()).length() < 9.0f)
+            cartPoints.pop_back();
+        cart->GetMotionMaster()->MoveIdle();
+        cart->StopMoving();
+        cart->SetSpeed(MOVE_RUN, me->GetSpeedRate(MOVE_RUN));
+        float const gap = cart->GetExactDist2d(me);
+        float const speed = me->GetSpeed(MOVE_RUN);
+        cartTimer = (gap < 9.0f && speed > 0.1f) ? uint32((9.0f - gap) / speed * 1000.0f) : 0;
+        if (!cartTimer)
+            LaunchCart(cart);
+    }
+
+    void LaunchCart(Creature* cart)
+    {
+        if (cartPoints.size() < 2)
+            return;
+        Movement::MoveSplineInit init(cart);
+        init.MovebyPath(cartPoints);
         init.SetUncompressed();
         init.SetWalk(false);
         init.Launch();
@@ -1834,7 +1885,12 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
         me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
         ambushTimer = 20 * IN_MILLISECONDS;
         if (Creature* cart = ObjectAccessor::GetCreature(*me, cartGUID))
-            cart->GetMotionMaster()->MoveFollow(me, 7.0f, float(M_PI));
+        {
+            if (delivery)
+                PrepareCart(cart);   // (cart260)
+            else
+                cart->GetMotionMaster()->MoveFollow(me, 7.0f, float(M_PI));
+        }
         Launch();
     }
 
@@ -2041,6 +2097,13 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
                     break;
                 }
                 rideTime += diff;
+                if (cartTimer)   // (cart260)
+                {
+                    cartTimer -= std::min(cartTimer, diff);
+                    if (!cartTimer)
+                        if (Creature* cart = ObjectAccessor::GetCreature(*me, cartGUID))
+                            LaunchCart(cart);
+                }
                 if (delivery)
                     Attackers(diff);
                 else

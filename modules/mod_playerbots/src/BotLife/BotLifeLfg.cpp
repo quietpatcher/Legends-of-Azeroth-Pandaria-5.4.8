@@ -81,6 +81,22 @@ namespace
 // synchronous LFGMgr::FillMissingRoles hook (see LFGMgr.h/.cpp) - same eligibility/role logic as the
 // polling version below, but called once, right at join time, with the queueId/dungeons/roles already known,
 // so it wins the race against LFGSolo.Enabled's instant same-tick matching (see LfgUpdate() for why polling can't).
+// (holiday-gear) a holiday boss group gets the best-equipped bots first: a bot far behind in gear made run 3 of the Headless
+// Horseman wipe (healer out of mana in phase 3). The order of the other dungeons stays random.
+static std::vector<Player*> HolidayGearOrder(std::vector<Player*> const& bots)
+{
+    std::vector<std::pair<float, Player*>> keyed;
+    keyed.reserve(bots.size());
+    for (Player* bot : bots)
+        keyed.emplace_back(bot->IsInWorld() ? bot->GetAverageItemLevel() : 0.0f, bot);
+    std::stable_sort(keyed.begin(), keyed.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
+    std::vector<Player*> order;
+    order.reserve(keyed.size());
+    for (auto const& k : keyed)
+        order.push_back(k.second);
+    return order;
+}
+
 void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint32> const& dungeonIds)
 {
     if (!_lfgFill || dungeonIds.empty())
@@ -104,6 +120,8 @@ void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint3
     uint32 joined = 0, tries = 0;
     // a holiday boss is fought at full strength: for those the level 90 bots come first
     uint8 const firstLevel = (dungeonIds.count(285) || dungeonIds.count(287)) ? uint8(90) : player->GetLevel();
+    if (dungeonIds.count(285) || dungeonIds.count(287))
+        bots = HolidayGearOrder(bots);   // (holiday-gear)
     // bots of the player's own level first, the others within three levels fill what is left
     for (uint32 pass = 0; pass < 2; ++pass)
     {
@@ -405,10 +423,12 @@ void BotLifeMgr::LfgUpdate(uint32 now)
         uint32 tries = 0;
         // a holiday boss is fought at full strength: for those the level 90 bots come first
         uint8 const firstLevel = (dungeons.count(285) || dungeons.count(287)) ? uint8(90) : player->GetLevel();
+        bool const holidayBoss = dungeons.count(285) || dungeons.count(287);
+        std::vector<Player*> const holidayOrder = holidayBoss ? HolidayGearOrder(bots) : std::vector<Player*>();   // (holiday-gear)
         // bots of the player's own level first, the others within three levels fill what is left
         for (uint32 pass = 0; pass < 2; ++pass)
         {
-            for (Player* bot : bots)
+            for (Player* bot : (holidayBoss ? holidayOrder : bots))
             {
                 if ((!need[0] && !need[1] && !need[2]) || tries >= 40)
                     break;

@@ -19,6 +19,8 @@
 #include "GameEventMgr.h"
 #include "Transport.h"
 #include "Random.h"
+#include "Containers.h"
+#include "Timer.h"
 
 // Darkmoon Deathmatch
 enum DarkmoonDeathmatchData
@@ -415,6 +417,56 @@ class spell_darkmoon_moonfang_curse : public SpellScript
     }
 };
 
+// (whack-a-gnoll) 101994 - Whack! Summon Aura: periodic dummy (1.2 s) on the player while Whack-a-Gnoll! 101612 is up.
+// The summons are personal (SummonProperties 2841: only visible to the summoner) and the baby/Hogger summons need
+// Whack-a-Gnoll! on the caster, so the player summons the gnoll at a barrel.
+class spell_darkmoon_whack_summon_aura : public AuraScript
+{
+    PrepareAuraScript(spell_darkmoon_whack_summon_aura);
+
+    enum
+    {
+        NPC_WHACK_A_GNOLL_BARREL    = 54546,
+        SPELL_WHACK_SUMMON_GNOLL    = 102036,
+        SPELL_WHACK_SUMMON_BABY     = 102043,
+        SPELL_WHACK_SUMMON_HOGGER   = 102044,
+        BARREL_BUSY_MS              = 5000,     // a gnoll stays up five seconds
+    };
+
+    std::map<ObjectGuid, uint32> _barrelUsed;
+
+    void HandlePeriodic(AuraEffect const* /*aurEff*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        if (!player)
+            return;
+
+        std::list<Creature*> barrels;
+        player->GetCreatureListWithEntryInGrid(barrels, NPC_WHACK_A_GNOLL_BARREL, 30.0f);
+        uint32 now = getMSTime();
+        std::vector<Creature*> freeBarrels;
+        for (Creature* barrel : barrels)
+        {
+            auto itr = _barrelUsed.find(barrel->GetGUID());
+            if (itr == _barrelUsed.end() || getMSTimeDiff(itr->second, now) >= BARREL_BUSY_MS)
+                freeBarrels.push_back(barrel);
+        }
+        if (freeBarrels.empty())
+            return;
+
+        Creature* barrel = Trinity::Containers::SelectRandomContainerElement(freeBarrels);
+        uint32 roll = urand(0, 99);
+        uint32 spellId = roll < 15 ? SPELL_WHACK_SUMMON_BABY : (roll < 25 ? SPELL_WHACK_SUMMON_HOGGER : SPELL_WHACK_SUMMON_GNOLL);
+        player->CastSpell(barrel, spellId, true);
+        _barrelUsed[barrel->GetGUID()] = now;
+    }
+
+    void Register() override
+    {
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_darkmoon_whack_summon_aura::HandlePeriodic, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY);
+    }
+};
+
 void AddSC_darkmoon_island()
 {
     new npc_darkmoon_deathmatch_announcer();
@@ -426,4 +478,5 @@ void AddSC_darkmoon_island()
     new spell_script<spell_darkmoon_free_your_mind>("spell_darkmoon_free_your_mind");
     new spell_script<spell_darkmoon_moonfang_tears>("spell_darkmoon_moonfang_tears");
     new spell_script<spell_darkmoon_moonfang_curse>("spell_darkmoon_moonfang_curse");
+    new aura_script<spell_darkmoon_whack_summon_aura>("spell_darkmoon_whack_summon_aura");   // (whack-a-gnoll)
 }

@@ -763,6 +763,26 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
                 master->GetPositionY() + std::sin(angle) * 2.0f, master->GetPositionZ() + 0.5f, master->GetOrientation());
             ++count;
         }
+        // (summon-group) dungeon finder bots (RNDBOT) are group members but not in playerBots: same treatment, also inside an instance
+        if (Group* summonGroup = master->GetGroup())
+            for (GroupReference* ref = summonGroup->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* bot = ref->GetSource();
+                if (!bot || bot == master || !bot->GetSession() || !bot->GetSession()->IsBot() || playerBots.find(bot->GetGUID()) != playerBots.end())
+                    continue;
+                if (!bot->IsInWorld() || bot->IsBeingTeleported())
+                    continue;
+                if (!bot->IsAlive())
+                {
+                    bot->ResurrectPlayer(1.0f);
+                    bot->SpawnCorpseBones();
+                }
+                bot->CombatStop(true);
+                float angle = frand(0.0f, 2 * float(M_PI));
+                bot->TeleportTo(master->GetMapId(), master->GetPositionX() + std::cos(angle) * 2.0f,
+                    master->GetPositionY() + std::sin(angle) * 2.0f, master->GetPositionZ() + 0.5f, master->GetOrientation());
+                ++count;
+            }
         messages.push_back("Summoned " + std::to_string(count) + " bot(s).");
         return messages;
     }

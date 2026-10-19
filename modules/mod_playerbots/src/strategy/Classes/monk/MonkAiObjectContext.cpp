@@ -69,6 +69,7 @@ public:
         creators["spear hand strike"] = &MonkTriggerFactoryInternal::spear_hand_strike;
 
         creators["monk group heal"] = &MonkTriggerFactoryInternal::monk_group_heal;
+        creators["monk chi full"] = &MonkTriggerFactoryInternal::monk_chi_full;   // (healer-mana)
         creators["monk group heal critical"] = &MonkTriggerFactoryInternal::monk_group_heal_critical;
         creators["party member dead"] = &MonkTriggerFactoryInternal::party_member_dead;
 
@@ -99,6 +100,7 @@ private:
     static Trigger* spear_hand_strike(PlayerbotAI* botAI) { return new SpearHandStrikeInterruptTrigger(botAI); }
 
     static Trigger* monk_group_heal(PlayerbotAI* botAI) { return new MonkGroupHealTrigger(botAI, "monk group heal", 70, 3); }
+    static Trigger* monk_chi_full(PlayerbotAI* botAI) { return new MonkChiFullTrigger(botAI); }   // (healer-mana)
     static Trigger* monk_group_heal_critical(PlayerbotAI* botAI) { return new MonkGroupHealTrigger(botAI, "monk group heal critical", 40, 3); }
     static Trigger* party_member_dead(PlayerbotAI* botAI) { return new PartyMemberDeadTrigger(botAI); }
 

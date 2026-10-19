@@ -2071,7 +2071,18 @@ bool Aura::CanStackWith(Aura const* existingAura) const
         if (!veh)           // We should probably just let it stack. Vehicle system will prevent undefined behaviour later
             return true;
 
-        if (!veh->GetAvailableSeatCount())
+        // (forced-seat-stack) a ride aura without a seat number may also take a seat the player cannot pick himself (see
+        // Vehicle::AddPassenger), so count every empty seat: otherwise the second rider's aura replaces the first rider's and
+        // throws him off the vehicle
+        bool anyEmptySeat = false;
+        for (SeatMap::const_iterator seat = veh->Seats.begin(); seat != veh->Seats.end(); ++seat)
+            if (seat->second.IsEmpty())
+            {
+                anyEmptySeat = true;
+                break;
+            }
+
+        if (!veh->GetAvailableSeatCount() && !anyEmptySeat)
             return false;   // No empty seat available
 
         return true; // Empty seat available (skip rest)

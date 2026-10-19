@@ -318,6 +318,7 @@ PlayerSocial* SocialMgr::LoadFromDB(PreparedQueryResult result, ObjectGuid guid)
 {
     PlayerSocial *social = &m_socialMap[guid];
     social->SetPlayerGUID(guid);
+    social->m_playerSocialMap.clear();   // (social-keep) the entry is reused from an earlier login: load it fresh from the database
 
     if (!result)
         return social;

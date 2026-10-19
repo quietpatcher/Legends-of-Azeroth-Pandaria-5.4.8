@@ -2073,6 +2073,58 @@ static void LfgHealDiag(PlayerbotAI* botAI, Player* bot, uint32 now)
              return head + (trace.size() > 400 ? trace.substr(trace.size() - 400) : trace); }());
 }
 
+// (rez-walk) the dead real player of the group on this map (not a game master), or nullptr
+static Player* DeadRealMember(Group* group, Player* bot)
+{
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            if (member != bot && !member->IsAlive() && member->IsInWorld() && member->FindMap() == bot->FindMap() && member->GetSession()
+                && !member->GetSession()->IsBot() && !member->IsGameMaster())
+                return member;
+    return nullptr;
+}
+
+// (rez-walk) a healer that can resurrect walks to the dead real player and casts the spell itself; true = this tick is used
+static bool HealerResurrectsPlayer(Player* bot, BotLifeInfo& t, Group* group, uint32 now)
+{
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->HasUnitState(UNIT_STATE_CASTING) || bot->IsBeingTeleported())
+        return false;
+    uint32 spellId = 0;
+    switch (bot->GetClass())
+    {
+        case CLASS_PRIEST: spellId = 2006; break;
+        case CLASS_PALADIN: spellId = 7328; break;
+        case CLASS_SHAMAN: spellId = 2008; break;
+        case CLASS_DRUID: spellId = 50769; break;
+        case CLASS_MONK: spellId = 115178; break;
+        default: return false;
+    }
+    if (!bot->HasSpell(spellId))
+        return false;
+    Player* dead = DeadRealMember(group, bot);
+    if (!dead || dead->IsRessurectRequested())
+        return false;
+    // only the nearest healer works on it (one resurrection at a time)
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* other = ref->GetSource())
+            if (other != bot && other->IsAlive() && !other->IsInCombat() && other->FindMap() == bot->FindMap() && other->GetSession() && other->GetSession()->IsBot()
+                && PlayerBotSpec::IsHeal(other, true) && other->GetExactDist(dead) + 0.5f < bot->GetExactDist(dead) && other->HasSpell(other->GetClass() == CLASS_PRIEST ? 2006 : other->GetClass() == CLASS_PALADIN ? 7328 : other->GetClass() == CLASS_SHAMAN ? 2008 : other->GetClass() == CLASS_DRUID ? 50769 : 115178))
+                return false;
+    if (now < t.nextRezOrder)
+        return false;
+    t.nextRezOrder = now + 1500;
+    if (bot->GetExactDist(dead) > 25.0f || !bot->IsWithinLOSInMap(dead))
+    {
+        bot->GetMotionMaster()->MovePoint(0, dead->GetPositionX(), dead->GetPositionY(), dead->GetPositionZ(), true);
+        return true;
+    }
+    bot->StopMoving();
+    bot->SetFacingToObject(dead);
+    bot->CastSpell(dead, spellId, false);
+    TC_LOG_INFO("playerbots", "BotLife {}: resurrects {} (spell {}) in map {}", bot->GetName(), dead->GetName(), spellId, bot->GetMapId());
+    return true;
+}
+
 // (lfg-rez-diag) a healer bot in a dungeon whose group has a dead real player: every ten seconds what stands between the healer
 // and the resurrection. Diagnostics only.
 static void LfgRezDiag(PlayerbotAI* botAI, Player* bot, Group* group, uint32 now)
@@ -2353,7 +2405,11 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             }
     // (lfg-rez-diag)
     if (group && bot->IsInWorld() && bot->IsAlive() && bot->GetMap()->IsDungeon() && PlayerBotSpec::IsHeal(bot, true))
+    {
         LfgRezDiag(botAI, bot, group, getMSTime());
+        if (!t.party && HealerResurrectsPlayer(bot, t, group, getMSTime()))   // (rez-walk)
+            return true;
+    }
     Player* lfgLeadBot = nullptr;
     if (group && !t.party && bot->IsInWorld() && bot->GetMap()->IsDungeon() && !bot->GetMap()->IsRaid())
     {
@@ -2471,6 +2527,25 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             }
             return false;
         }
+        // (rez-wait) a real player of the group is dead and a healer can still resurrect him: the lead stays (3 minutes at most)
+        if (!bot->IsInCombat() && DeadRealMember(group, bot))
+        {
+            bool healerAlive = false;
+            for (GroupReference* ref = group->GetFirstMember(); ref && !healerAlive; ref = ref->next())
+                if (Player* other = ref->GetSource())
+                    healerAlive = other != bot && other->IsAlive() && other->FindMap() == bot->FindMap() && other->GetSession()
+                        && other->GetSession()->IsBot() && PlayerBotSpec::IsHeal(other, true);
+            if (!t.rezWaitSince)
+                t.rezWaitSince = now;
+            if (healerAlive && now - t.rezWaitSince < 180000)
+            {
+                if (bot->isMoving())
+                    bot->StopMoving();
+                return false;
+            }
+        }
+        else
+            t.rezWaitSince = 0;
         return DungeonLeaderUpdate(botAI, t, now);
     }
     if (lfgLeadBot && botAI->GetMaster() != lfgLeadBot)
@@ -8792,6 +8867,17 @@ bool BotLifeMgr::DuelTick(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
         if (!bot->HasInArc(float(M_PI) / 4.0f, opponent))
             bot->SetFacingToObject(opponent);
         return true;
+    }
+    // (duel-timeout) a duel between bots that has not ended after three minutes is ended (pairs that never fought stayed locked for hours)
+    if (challenger && GameTime::GetGameTime() - duel->startTime > 180)
+    {
+        bool const real = opponent->GetSession() && !opponent->GetSession()->IsBot();
+        if (!real)
+        {
+            TC_LOG_INFO("playerbots", "BotLife {}: ends a duel with {} (three minutes without an end)", bot->GetName(), opponent->GetName());
+            bot->DuelComplete(DUEL_INTERRUPTED);
+            return true;
+        }
     }
     // the duel runs: the combat engine fights it; the bot starts the fight itself if nothing else did
     if (bot->IsAlive() && !bot->GetVictim() && !bot->IsNonMeleeSpellCasted(false))

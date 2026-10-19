@@ -153,6 +153,32 @@ void WorldSession::SendShowBank(ObjectGuid guid)
     SendPacket(&data);
 }
 
+// SMSG_OPEN_REFORGE (0x1E33) opens the reforge window of the 5.4.8 client (build 18414). The client
+// registers its handler in the ForgeMaster module and the message carries exactly one packed npc guid; the bit and
+// byte orders below were read from the client's message reader (see to-do 290).
+void WorldSession::SendOpenReforge(ObjectGuid guid)
+{
+    WorldPacket data(SMSG_OPEN_REFORGE, 1 + 8);
+    data.WriteBit(guid[7]);
+    data.WriteBit(guid[0]);
+    data.WriteBit(guid[1]);
+    data.WriteBit(guid[3]);
+    data.WriteBit(guid[2]);
+    data.WriteBit(guid[4]);
+    data.WriteBit(guid[6]);
+    data.WriteBit(guid[5]);
+    data.FlushBits();
+    data.WriteByteSeq(guid[5]);
+    data.WriteByteSeq(guid[1]);
+    data.WriteByteSeq(guid[0]);
+    data.WriteByteSeq(guid[6]);
+    data.WriteByteSeq(guid[3]);
+    data.WriteByteSeq(guid[2]);
+    data.WriteByteSeq(guid[4]);
+    data.WriteByteSeq(guid[7]);
+    SendPacket(&data);
+}
+
 void WorldSession::SendShowMailBox(ObjectGuid guid)
 {
     WorldPacket data(SMSG_SHOW_MAILBOX, 8);

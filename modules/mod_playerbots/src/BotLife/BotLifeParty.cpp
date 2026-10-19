@@ -933,6 +933,12 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             if (toHeal && toHeal != bot)
                 known << " dist " << uint32(bot->GetExactDist(toHeal)) << " los " << (bot->IsWithinLOSInMap(toHeal) ? 1 : 0);
             known << " moving " << (bot->isMoving() ? 1 : 0) << " motion " << uint32(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()) << " |";
+            // (healer-mana) what the mana depends on: chi and Mana Tea stacks (monk), spirit and intellect (all)
+            {
+                Aura const* tea = bot->GetAura(115867);
+                known << " chi " << bot->GetPower(POWER_CHI) << '/' << bot->GetMaxPower(POWER_CHI) << " manatea " << (tea ? uint32(tea->GetStackAmount()) : 0u)
+                      << " spi " << uint32(bot->GetStat(STAT_SPIRIT)) << " int " << uint32(bot->GetStat(STAT_INTELLECT)) << " |";
+            }
             static char const* const partyHeals[] = { "flash heal on party", "power word: shield on party", "renew on party",
                 "lesser healing wave on party", "riptide on party", "soothing mist on party", "renewing mist on party",
                 "flash of light on party", "holy light on party", "rejuvenation on party", "regrowth on party", "healing touch on party" };

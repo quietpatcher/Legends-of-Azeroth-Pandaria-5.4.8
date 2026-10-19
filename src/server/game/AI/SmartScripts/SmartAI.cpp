@@ -597,6 +597,12 @@ void SmartAI::JustAppeared()
     if (me->isDead())
         return;
 
+    // (summoninvoker) First appearance of a summon: event JUST_SUMMONED (54) already ran in TempSummon::InitSummon
+    // and stored the summoner as invoker. The Reset() below would wipe it (SmartScript::OnReset clears mLastInvoker), so later
+    // actions/timed action lists with target 7 (invoker) found nothing. Keep it through this one reset only; every later reset
+    // (evade, JustReachedHome, respawn) is untouched and still clears it. Only a GUID is kept, resolved with ObjectAccessor on use.
+    bool const keepSummonInvoker = !mAppearedOnce && me->IsSummon();
+
     // A respawn: the AI object survives it, and with it the despawn state of a forced despawn of a
     // living creature - it then despawned itself again at every respawn, invisible, until a restart. Not on the first appearance:
     // InitializeAI just ran, and a summon may have been told to despawn after a delay in the tick it was created.
@@ -609,7 +615,11 @@ void SmartAI::JustAppeared()
     mAppearedOnce = true;
 
     GetScript()->ProcessEventsFor(SMART_EVENT_RESPAWN);
+
+    ObjectGuid const summonInvoker = keepSummonInvoker ? GetScript()->mLastInvoker : ObjectGuid::Empty;
     Reset();
+    if (!summonInvoker.IsEmpty() && GetScript()->mLastInvoker.IsEmpty())
+        GetScript()->mLastInvoker = summonInvoker;
 }
 
 int32 SmartAI::Permissible(const Creature* creature)

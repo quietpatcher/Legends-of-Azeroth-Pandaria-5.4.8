@@ -39,6 +39,8 @@ EndContentData */
 #include "CellImpl.h"
 #include "GridNotifiersImpl.h"
 #include "GridNotifiers.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 
 /*######
 ## npc_draenei_survivor
@@ -432,26 +434,62 @@ public:
 
     struct npc_geezleAI : public ScriptedAI
     {
-        npc_geezleAI(Creature* creature) : ScriptedAI(creature) { }
+        npc_geezleAI(Creature* creature) : ScriptedAI(creature) { EventStarted = false; RetryTimer = 0; }
 
         ObjectGuid SparkGUID;
 
         uint8 Step;
         uint32 SayTimer;
+        uint32 RetryTimer;  // (geezle-scene) > 0 while another Geezle holds the meeting: look again when it runs out
 
         bool EventStarted;
 
         void Reset() override
         {
+            if (EventStarted)   // (geezle-scene) one scene at a time; Reset also comes on evade
+                return;
             SparkGUID = ObjectGuid::Empty;
             Step = 0;
+            RetryTimer = 0;
+
+            // (geezle-scene) One meeting at a time in the cove. A second Geezle can exist next to the world spawn
+            // (for example a copy temp-summoned by the Tree Disguise event script 10675 for every disguised player,
+            // or the world spawn respawning while such a copy is still talking). When another Geezle nearby already
+            // holds the meeting we do not start one on top of it: a summoned copy leaves, the world spawn looks
+            // again later. The running meeting gives the credit to every disguised player within 50 yards anyway.
+            if (IsMeetingRunningNearby())
+            {
+                if (me->IsSummon())
+                    me->DespawnOrUnsummon(1000);
+                else
+                    RetryTimer = 30 * IN_MILLISECONDS;
+                return;
+            }
+
             StartEvent();
+        }
+
+        // (geezle-scene) true when another living Geezle within 150 yards is already running the scene
+        bool IsMeetingRunningNearby() const
+        {
+            std::list<Creature*> others;
+            me->GetCreatureListWithEntryInGrid(others, me->GetEntry(), 150.0f);
+            for (Creature* other : others)
+            {
+                if (other == me || !other->IsAlive() || !other->IsAIEnabled)
+                    continue;
+                if (npc_geezleAI const* otherAI = CAST_AI(npc_geezleAI, other->AI()))
+                    if (otherAI->EventStarted)
+                        return true;
+            }
+            return false;
         }
 
         void JustEngagedWith(Unit* /*who*/)override { }
 
         void StartEvent()
         {
+            TC_LOG_INFO("scripts", "Geezle {}: starts the Tree's Company scene", me->GetGUID().GetCounter());   // (geezle-scene) one line per scene
             Step = 0;
             EventStarted = true;
             if (Creature* Spark = me->SummonCreature(NPC_SPARK, SparkPos, TEMPSUMMON_CORPSE_TIMED_DESPAWN, 1000ms))
@@ -467,7 +505,12 @@ public:
         {
             Creature* Spark = Unit::GetCreature(*me, SparkGUID);
             if (!Spark)
+            {
+                // (geezle-scene) Spark is gone (killed, removed by a GM, grid unloaded): end the meeting instead of
+                // standing here forever with EventStarted set, which would block every later meeting.
+                EndEvent();
                 return 99999999;
+            }
 
             switch (Step)
             {
@@ -509,10 +552,20 @@ public:
                     return 9000;
                 case 10:
                     Spark->DisappearAndDie();
-                    DespawnNagaFlag(false);
-                    me->DisappearAndDie();
+                    EndEvent();
+                    return 99999999;
                 default: return 99999999;
             }
+        }
+
+        // (geezle-scene) The meeting is over (or broken): put the flag back, release the guard and leave. The world
+        // spawn respawns after creature.spawntimesecs and then holds the next meeting; a summoned copy just goes.
+        void EndEvent()
+        {
+            DespawnNagaFlag(false);
+            EventStarted = false;
+            SparkGUID = ObjectGuid::Empty;
+            me->DisappearAndDie();
         }
 
         // will complete Tree's company quest for all nearby players that are disguised as trees
@@ -550,11 +603,24 @@ public:
 
         void UpdateAI(uint32 diff) override
         {
-            if (SayTimer <= diff)
+            if (!EventStarted)
             {
-                if (EventStarted)
-                    SayTimer = NextStep(Step++);
+                // (geezle-scene) another Geezle held the meeting when we (re)spawned: look again
+                if (RetryTimer)
+                {
+                    if (RetryTimer <= diff)
+                    {
+                        RetryTimer = 0;
+                        Reset();
+                    }
+                    else
+                        RetryTimer -= diff;
+                }
+                return;
             }
+
+            if (SayTimer <= diff)
+                SayTimer = NextStep(Step++);
             else
                 SayTimer -= diff;
         }
@@ -653,6 +719,7 @@ enum BristlelimbCage
     QUEST_THE_PROPHECY_OF_AKIDA         = 9544,
     NPC_STILLPINE_CAPITIVE              = 17375,
     GO_BRISTELIMB_CAGE                  = 181714,
+    SPELL_OPENING_BRISTLELIMB_CAGE      = 30406, // use spell of Bristlelimb Key (23801), SPELL_EFFECT_OPEN_LOCK, lock 1664
 
     CAPITIVE_SAY                        = 0,
 
@@ -734,6 +801,18 @@ class go_bristlelimb_cage : public GameObjectScript
 
         bool OnGossipHello(Player* player, GameObject* go) override
         {
+            // The cage has lock 1664 (Lock.dbc 5.4.8: LOCK_KEY_ITEM 23801, Bristlelimb Key). The key's use spell
+            // 30406 "Opening Bristlelimb Cage" (5 s cast) opens it: Spell::EffectOpenLock -> Spell::SendLoot -> this
+            // hook. A plain right click reaches this hook as well, before any cast and without a lock check:
+            // CMSG_GAMEOBJ_REPORT_USE (WorldSession::HandleGameobjectReportUse, "backward compatibility" call of
+            // ScriptMgr::OnGossipHello) and CMSG_GAMEOBJ_USE (GameObject::Use). That freed the captive without a key
+            // and before the cast bar finished. Only the key spell may free the captive: while its effects run it is
+            // being executed (Spell::cast, m_executedCurrently): the report-use packet arrives while the key is still
+            // being cast (PREPARING) and must not free the captive before the cast bar ends.
+            Spell const* spell = player->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            if (!spell || spell->GetSpellInfo()->Id != SPELL_OPENING_BRISTLELIMB_CAGE || spell->IsInterruptable())
+                return true; // handled: the cage stays locked, no door animation, no captive
+
             go->SetGoState(GO_STATE_READY);
             if (player->GetQuestStatus(QUEST_THE_PROPHECY_OF_AKIDA) == QUEST_STATUS_INCOMPLETE)
             {
@@ -752,6 +831,7 @@ void AddSC_azuremyst_isle()
 {
     new creature_script<npc_draenei_survivor>("npc_draenei_survivor");
     new npc_engineer_spark_overgrind();
+    new npc_geezle();   // (geezle-scene) Tree's Company: the meeting of Geezle and Spark
     new npc_injured_draenei();
     new npc_magwin();
     new npc_death_ravager();

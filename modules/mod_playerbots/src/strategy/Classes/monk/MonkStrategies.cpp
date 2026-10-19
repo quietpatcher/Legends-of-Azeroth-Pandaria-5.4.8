@@ -91,6 +91,10 @@ void MistweaverMonkStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("stance of the wise serpent", NextAction::array(0, new NextAction("stance of the wise serpent", ACTION_HIGH + 9), nullptr)));
     triggers.push_back(new TriggerNode("spear hand strike", NextAction::array(0, new NextAction("spear hand strike", ACTION_INTERRUPT + 2), nullptr)));
     triggers.push_back(new TriggerNode("mana tea", NextAction::array(0, new NextAction("mana tea", ACTION_HIGH + 5), nullptr)));
+    // (healer-mana) full chi is spent (Uplift, else Enveloping Mist): only spent chi brews Mana Tea
+    triggers.push_back(new TriggerNode("monk chi full", NextAction::array(0,
+        new NextAction("uplift", ACTION_MEDIUM_HEAL + 7),
+        new NextAction("enveloping mist on party", ACTION_MEDIUM_HEAL + 6), nullptr)));
 
     triggers.push_back(new TriggerNode("party member to heal out of spell range", NextAction::array(0,
         new NextAction("reach party member to heal", ACTION_CRITICAL_HEAL + 10), nullptr)));

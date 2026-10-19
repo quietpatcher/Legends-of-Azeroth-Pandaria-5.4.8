@@ -249,6 +249,11 @@ struct BotLifeInfo
     // these sat in function-static tables that every map thread wrote to without a lock
     std::pair<uint32, uint32> leadCombat{0, 0};   // dungeon leader in combat without a victim: (kills seen, since)
     std::pair<uint32, uint32> noKill{0, 0};       // dungeon leader fighting without a kill: (kills seen, since)
+    uint32 rezWaitSince = 0;                       // (rez-wait) the lead waits for a dead real player to be resurrected
+    uint32 nextRezOrder = 0;                       // (rez-walk) next walk/cast order of a healer to a dead real player
+    uint32 doorBlockedSince = 0;                   // (door-block) every target of the lead lies behind a closed door
+    ObjectGuid stuckAttacker;                      // (stuckattacker) attacker of a member the group could not reach: all bots go for it
+    uint32 stuckAttackerUntil = 0;
     uint32 nextWalkBring = 0;                      // walker: the next try to bring it to a quest giver of its zones
     uint32 zjDiagNext = 0;                         // diagnostics of the Zar'jira fight: the next log line
     uint32 dungeonBosses = 0;

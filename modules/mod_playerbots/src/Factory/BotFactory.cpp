@@ -377,7 +377,8 @@ void BotFactory::InitTalentsTree(bool reset)
         // -- Select spec
         if (bot->GetLevel() >= 10)
         {
-            uint32 tab = std::rand() % 3;
+            // (healer-mana) the druid has four specializations (restoration is the fourth); the others three
+            uint32 tab = std::rand() % (bot->GetClass() == CLASS_DRUID ? 4 : 3);
             WorldPacket p(CMSG_SET_PRIMARY_TALENT_TREE);
             p << tab;
             bot->GetSession()->HandeSetTalentSpecialization(p);

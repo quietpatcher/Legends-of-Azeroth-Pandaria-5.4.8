@@ -563,6 +563,13 @@ bool Vehicle::AddPassenger(Unit* unit, int8 seatId)
             if (seat->second.IsEmpty() && (seat->second.SeatInfo->CanEnterOrExit() || seat->second.SeatInfo->IsUsableByOverride()))
                 break;
 
+        // (forced-seat) a ride aura without a seat number may also use a seat the player cannot pick himself: quest vehicles such as
+        // Brutusk only have those, and the passenger was never added
+        if (seat == Seats.end())
+            for (seat = Seats.begin(); seat != Seats.end(); ++seat)
+                if (seat->second.IsEmpty())
+                    break;
+
         if (seat == Seats.end()) // no available seat
             return false;
     }

@@ -73,6 +73,12 @@ bool EnergizingBrewTrigger::IsActive()
     return bot->HasSpell(115288) && bot->IsInCombat() && AI_VALUE2(uint8, "energy", "self target") < 30;
 }
 
+bool MonkChiFullTrigger::IsActive()
+{
+    // (healer-mana) chi only becomes Mana Tea when it is spent
+    return bot->IsInCombat() && bot->GetMaxPower(POWER_CHI) > 0 && bot->GetPower(POWER_CHI) >= bot->GetMaxPower(POWER_CHI);
+}
+
 bool MonkGroupHealTrigger::IsActive()
 {
     Group* group = bot->GetGroup();

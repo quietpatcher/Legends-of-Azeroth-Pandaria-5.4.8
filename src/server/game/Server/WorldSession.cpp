@@ -724,7 +724,8 @@ void WorldSession::LogoutPlayer(bool save)
 
         //! Broadcast a logout message to the player's friends
         sSocialMgr->SendFriendStatus(_player, FRIEND_OFFLINE, _player->GetGUID(), true);
-        sSocialMgr->RemovePlayerSocial(_player->GetGUID());
+        // (social-keep) the social list is not erased here: a new Player of the same character may already point at it (quick relog,
+        // or a bot pushed off the character), and erasing it left that pointer dangling (crash in SendSocialList). LoadFromDB reuses it.
 
         // forfiet any pet battles in progress
         sPetBattleSystem->ForfietBattle(_player->GetGUID());

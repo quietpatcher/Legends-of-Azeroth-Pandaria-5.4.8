@@ -5902,7 +5902,28 @@ void Spell::EffectTransmitted(SpellEffIndex effIndex)
 
     float fx, fy, fz;
 
-    if (m_targets.HasDst())
+    // (transdoor-go-target) An effect that targets a gameobject places the new object at that gameobject. The spell destination
+    // can still be the caster's own position when only a later effect sets the real one. 5.4.8: 78395 'Plant Ironforge Banner'
+    // (quest 26085) puts the Ironforge Banner (203451) into the Loose Snow mound (203452, spell focus 1671), not into the player.
+    GameObject* goTarget = nullptr;
+    if (m_spellInfo->Effects[effIndex].TargetA.GetObjectType() == TARGET_OBJECT_TYPE_GOBJ
+        || m_spellInfo->Effects[effIndex].TargetB.GetObjectType() == TARGET_OBJECT_TYPE_GOBJ)
+    {
+        for (GOTargetInfo const& goInfo : m_UniqueGOTargetInfo)
+        {
+            if (!(goInfo.effectMask & (1 << effIndex)))
+                continue;
+            goTarget = ObjectAccessor::GetGameObject(*m_caster, goInfo.targetGUID);
+            if (goTarget)
+                break;
+        }
+        if (!goTarget)
+            goTarget = focusObject;
+    }
+
+    if (goTarget)
+        goTarget->GetPosition(fx, fy, fz);
+    else if (m_targets.HasDst())
         destTarget->GetPosition(fx, fy, fz);
     //FIXME: this can be better check for most objects but still hack
     else if (m_spellInfo->Effects[effIndex].HasRadius() && m_spellInfo->Speed == 0)

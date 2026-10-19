@@ -253,7 +253,7 @@ class SmartScript
         uint32 mEventPhase;
 
         uint32 mPathId;
-        SmartAIEventList mStoredEvents;
+        std::list<SmartScriptHolder> mStoredEvents;   // (stored-events-list) a list: an action may add a timed event while OnUpdate walks it
         std::list<uint32>mRemIDs;
 
         uint32 mTextTimer;
@@ -268,7 +268,7 @@ class SmartScript
         {
             if (!mStoredEvents.empty())
             {
-                for (SmartAIEventList::iterator i = mStoredEvents.begin(); i != mStoredEvents.end(); ++i)
+                for (auto i = mStoredEvents.begin(); i != mStoredEvents.end(); ++i)   // (stored-events-list)
                 {
                     if (i->event_id == id)
                     {

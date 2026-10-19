@@ -812,7 +812,10 @@ uint32 RandomItemManager::FindBestItemForLevelAndEquip(Player* bot, InventoryTyp
                     AddItemStats(proto->ItemStat[j].ItemStatType, sp, ap, tank);
                 }
 
-                if (!CheckItemStats((Classes)bot_class, sp, ap, tank)) continue;
+                // (healer-gear) the class rule wants agility/strength for monks and paladins, so a Mistweaver or Holy paladin never got
+                // an intellect piece; for an intellect spec of those classes spell stats are enough (HasWrongPrimaryStat below still applies)
+                bool const intellectSpec = (bot_class == CLASS_MONK || bot_class == CLASS_PALADIN) && PrimaryStat(bot) == ITEM_MOD_INTELLECT;
+                if (intellectSpec ? !sp : !CheckItemStats((Classes)bot_class, sp, ap, tank)) continue;
             }
 
             if (HasWrongPrimaryStat(bot, proto))   // e.g. an intellect mail piece for an enhancement shaman

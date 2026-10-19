@@ -95,6 +95,14 @@ CAN_CAST_TRIGGER(TouchOfDeathTrigger, "touch of death");
 INTERRUPT_TRIGGER(SpearHandStrikeInterruptTrigger, "spear hand strike");
 
 // -- mistweaver: several group members hurt at once
+// (healer-mana) a Mistweaver in combat with full chi: spending it gives Mana Tea stacks
+class MonkChiFullTrigger : public Trigger
+{
+public:
+    MonkChiFullTrigger(PlayerbotAI* botAI) : Trigger(botAI, "monk chi full", 2) {}
+    bool IsActive() override;
+};
+
 class MonkGroupHealTrigger : public Trigger
 {
 public:

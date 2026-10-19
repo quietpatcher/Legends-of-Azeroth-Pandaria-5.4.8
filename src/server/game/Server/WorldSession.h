@@ -1086,6 +1086,7 @@ class TC_GAME_API WorldSession
         // Reforge
         void HandleReforgeItemOpcode(WorldPacket& recvData);
         void SendReforgeResult(bool success);
+        void SendOpenReforge(ObjectGuid guid);
 
         // BlackMarket
         void HandleBlackMarketHelloOpcode(WorldPacket& recvData);
@@ -1154,6 +1155,7 @@ class TC_GAME_API WorldSession
         void HandlePetBattleInput(WorldPacket& recvData);
         void HandlePetBattleRequestWild(WorldPacket& recvData);
         void HandlePetBattleSetFrontPet(WorldPacket& recvData);
+        void HandlePetBattleFinalNotify(WorldPacket& recvData);   // (pet-final-notify)
 
         void SendPetBattleRequestFailed(uint8 reason);
 

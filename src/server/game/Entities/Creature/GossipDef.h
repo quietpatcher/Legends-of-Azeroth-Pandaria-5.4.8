@@ -51,6 +51,7 @@ enum Gossip_Option
     GOSSIP_OPTION_PROVING_GROUNDS        = 20,                   //UNIT_NPC_FLAG_GOSSIP              (1) (bonus option for GOSSIP_OPTION_TRAINER)
     GOSSIP_OPTION_OUTDOORPVP             = 21,                   //added by code (option for outdoor pvp creatures)
     GOSSIP_OPTION_HEAL_BATTLE_PETS       = 22,                   //UNIT_NPC_FLAG_STABLE              (4194304) (bonus option for GOSSIP_OPTION_STABLEPET) 
+    GOSSIP_OPTION_REFORGER               = 23,                   //UNIT_NPC_FLAG_REFORGER            (134217728) opens the reforge window (SMSG_OPEN_REFORGE)
     GOSSIP_OPTION_MAX
 };
 
