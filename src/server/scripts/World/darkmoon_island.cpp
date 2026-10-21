@@ -21,6 +21,7 @@
 #include "Random.h"
 #include "Containers.h"
 #include "Timer.h"
+#include "Vehicle.h"
 
 // Darkmoon Deathmatch
 enum DarkmoonDeathmatchData
@@ -467,6 +468,358 @@ class spell_darkmoon_whack_summon_aura : public AuraScript
     }
 };
 
+// (shooting gallery) 101872 - Shoot: a cone cast on the Target Bunnies of the gallery. The shot of a player never reached them
+// through the normal target selection, so the hit is resolved here: the Target Bunny that carries the Target Indicator [DND]
+// (101010) in the cone in front of the player takes the shot, loses the indicator and pays the Quick Shot Bonus! (101012).
+class spell_darkmoon_shooting_gallery_shoot : public SpellScript
+{
+    PrepareSpellScript(spell_darkmoon_shooting_gallery_shoot);
+
+    enum
+    {
+        NPC_TARGET_BUNNY        = 24171,
+        SPELL_TARGET_INDICATOR  = 101010,
+        SPELL_QUICK_SHOT_BONUS  = 101012,
+    };
+
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster()->ToPlayer();
+        if (!player)
+            return;
+
+        std::list<Creature*> bunnies;
+        player->GetCreatureListWithEntryInGrid(bunnies, NPC_TARGET_BUNNY, 20.0f);
+
+        Creature* best = nullptr;
+        float bestDist = 0.0f;
+        for (Creature* bunny : bunnies)
+        {
+            if (!bunny->IsAlive() || !bunny->HasAura(SPELL_TARGET_INDICATOR) || !player->isInFront(bunny, float(M_PI) * 2.0f / 3.0f))
+                continue;
+            float dist = player->GetExactDist2d(bunny);
+            if (!best || dist < bestDist)
+            {
+                best = bunny;
+                bestDist = dist;
+            }
+        }
+
+        if (!best)
+            return;
+
+        best->RemoveAurasDueToSpell(SPELL_TARGET_INDICATOR);
+        best->CastSpell(player, SPELL_QUICK_SHOT_BONUS, true);
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_darkmoon_shooting_gallery_shoot::HandleAfterCast);
+    }
+};
+
+// (ring toss) 102058 - Ring Toss: the game aura (override bar 101695, alt power bar 88 with a maximum of 10). The bar counts the rings that are left.
+class spell_darkmoon_ring_toss_game : public AuraScript
+{
+    PrepareAuraScript(spell_darkmoon_ring_toss_game);
+
+    enum
+    {
+        RING_TOSS_RINGS     = 10,
+    };
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        GetTarget()->SetMaxPower(POWER_ALTERNATE_POWER, RING_TOSS_RINGS);
+        GetTarget()->SetPower(POWER_ALTERNATE_POWER, RING_TOSS_RINGS);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_darkmoon_ring_toss_game::HandleApply, EFFECT_1, SPELL_AURA_ENABLE_ALT_POWER, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// (ring toss) 101695 - Ring Toss: the throw from the override bar, cast on the ground (dummy effect on a 4 yd area). The ring lands at the destination of the
+// cast: the Dubenko (54490) within 2.75 yd of it is hit and pays the Ring Toss kill credit (54495) of Target: Turtle (29455, 3 rings). Every throw costs one ring
+// of the bar; the game ends (aura 102058 off) with the last ring or when the quest is complete.
+class spell_darkmoon_ring_toss_throw : public SpellScript
+{
+    PrepareSpellScript(spell_darkmoon_ring_toss_throw);
+
+    enum
+    {
+        NPC_DUBENKO             = 54490,
+        NPC_RING_TOSS_CREDIT    = 54495,
+        QUEST_TARGET_TURTLE     = 29455,
+        SPELL_RING_TOSS_GAME    = 102058,
+        SPELL_RING_TOSS_LANDING = 101697,       // missile to the destination, summons the ring object 209269 (9 s)
+    };
+
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster()->ToPlayer();
+        WorldLocation const* dest = GetExplTargetDest();
+        if (!player || !dest || !player->HasAura(SPELL_RING_TOSS_GAME))
+            return;
+
+        // the spell itself takes one ring from the bar (power cost): the bar already shows the rings that are left
+        int32 rings = player->GetPower(POWER_ALTERNATE_POWER);
+
+        std::list<Creature*> turtles;
+        player->GetCreatureListWithEntryInGrid(turtles, NPC_DUBENKO, 60.0f);
+
+        Creature* hit = nullptr;
+        float hitDist = 2.75f;
+        for (Creature* turtle : turtles)
+        {
+            float dist = turtle->GetExactDist2d(dest->GetPositionX(), dest->GetPositionY());
+            if (turtle->IsAlive() && dist <= hitDist)
+            {
+                hit = turtle;
+                hitDist = dist;
+            }
+        }
+
+        TC_LOG_DEBUG("scripts", "RingToss: {} threw at {:.1f} {:.1f}, {} turtles in range, nearest {:.1f} yd, hit {}, rings left {}", player->GetName(), dest->GetPositionX(), dest->GetPositionY(),
+            turtles.size(), turtles.empty() ? -1.0f : turtles.front()->GetExactDist2d(dest->GetPositionX(), dest->GetPositionY()), hit ? 1 : 0, rings);
+
+        if (hit)
+            player->CastSpell(hit->GetPositionX(), hit->GetPositionY(), hit->GetPositionZ(), SPELL_RING_TOSS_LANDING, true);
+        else
+            player->CastSpell(dest->GetPositionX(), dest->GetPositionY(), dest->GetPositionZ(), SPELL_RING_TOSS_LANDING, true);
+
+        if (hit)
+            player->KilledMonsterCredit(NPC_RING_TOSS_CREDIT);
+
+        if (rings <= 0 || player->GetQuestStatus(QUEST_TARGET_TURTLE) != QUEST_STATUS_INCOMPLETE)
+            player->RemoveAurasDueToSpell(SPELL_RING_TOSS_GAME);
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_darkmoon_ring_toss_throw::HandleAfterCast);
+    }
+};
+
+// (human cannonball) shared ids. 15218 Faire Cannon Trigger (in the cannon), 33068 Cannon Target Bunny (in the water), 54224 = quest credit
+namespace DarkmoonCannon
+{
+    uint32 const NPC_CANNON_TRIGGER     = 15218;
+    uint32 const NPC_TARGET_BUNNY       = 33068;
+    uint32 const NPC_POINT_CREDIT       = 54224;
+    uint32 const SPELL_CANNON_ROOT      = 97936;
+    uint32 const SPELL_CANNON_BLAST     = 102121;
+    uint32 const SPELL_MAGIC_WINGS      = 102116;
+    uint32 const SPELL_TARGET_CENTER    = 62173;    // area aura A (3 yd): bullseye, BE_SPELL_TARGET criterion of achievement 6021
+    uint32 const SPELL_TARGET_CLOSE     = 62175;    // area aura B (7 yd)
+    uint32 const SPELL_TARGET_NEAR      = 62179;    // area aura C (15 yd)
+}
+
+// (human cannonball) 102112 - Cannon Prep: 5 s in the cannon (invisible, disarmed, rooted by 97936 from the gossip). Effect 2 is a periodic
+// trigger without a trigger spell; at the tick (or at expiry, whichever comes first) the player is fired: root off, Cannon Blast 102121 on,
+// and the Faire Cannon Trigger casts Magic Wings 102116 (feather fall + knock back 55 / 47.9 away from the trigger) on the player.
+class spell_darkmoon_cannon_prep : public AuraScript
+{
+    PrepareAuraScript(spell_darkmoon_cannon_prep);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        GetTarget()->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    }
+
+    void Launch()
+    {
+        Player* player = GetTarget()->ToPlayer();
+        if (!player || !player->HasAura(DarkmoonCannon::SPELL_CANNON_ROOT))     // the root is the "not fired yet" marker
+            return;
+
+        player->RemoveAurasDueToSpell(DarkmoonCannon::SPELL_CANNON_ROOT);       // a root blocks the knock back
+        player->CastSpell(player, DarkmoonCannon::SPELL_CANNON_BLAST, true);
+        if (Creature* cannon = player->FindNearestCreature(DarkmoonCannon::NPC_CANNON_TRIGGER, 30.0f))
+            cannon->CastSpell(player, DarkmoonCannon::SPELL_MAGIC_WINGS, true);
+        else
+        {
+            player->AddAura(DarkmoonCannon::SPELL_MAGIC_WINGS, player);
+            player->KnockbackFrom(player->GetPositionX() - std::cos(player->GetOrientation()), player->GetPositionY() - std::sin(player->GetOrientation()), 55.0f, 47.9f);
+        }
+    }
+
+    void HandlePeriodic(AuraEffect const* /*aurEff*/)
+    {
+        PreventDefaultAction();
+        Launch();
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (GetTargetApplication()->GetRemoveMode() == AURA_REMOVE_BY_EXPIRE)
+            Launch();
+        else
+            GetTarget()->RemoveAurasDueToSpell(DarkmoonCannon::SPELL_CANNON_ROOT);   // cancelled or died in the cannon: nothing was fired
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_darkmoon_cannon_prep::HandleApply, EFFECT_0, SPELL_AURA_TRANSFORM, AURA_EFFECT_HANDLE_REAL);
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_darkmoon_cannon_prep::HandlePeriodic, EFFECT_2, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_darkmoon_cannon_prep::HandleRemove, EFFECT_0, SPELL_AURA_TRANSFORM, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// (human cannonball) 102121 - Cannon Blast: the 60 s flight aura (override bar 306 = Cancel Magic Wings). The landing is resolved here: after 2.5 s
+// of flight the player is polled every 250 ms; in water or no longer falling = landed. Distance (2D) to the Cannon Target Bunny: <= 3 yd 5 points,
+// <= 7 yd 3 points, <= 15 yd 1 point (quest text), the bunny casts the ring spell on the player (62173 also gives achievement 6021).
+class spell_darkmoon_cannon_flight : public AuraScript
+{
+    PrepareAuraScript(spell_darkmoon_cannon_flight);
+
+    uint32 _flightTime = 0;
+    uint32 _pollTime = 0;
+    bool _landed = false;
+
+    void HandleUpdate(uint32 diff, AuraEffect* /*aurEff*/)
+    {
+        _flightTime += diff;
+        if (_landed || _flightTime < 2500)
+            return;
+
+        _pollTime += diff;
+        if (_pollTime < 250)
+            return;
+        _pollTime = 0;
+
+        Player* player = GetUnitOwner()->ToPlayer();     // no aura application in an update hook: GetTarget() is not valid here
+        if (!player || (!player->IsInWater() && player->IsFalling()))
+            return;
+
+        _landed = true;
+        player->RemoveAurasDueToSpell(DarkmoonCannon::SPELL_MAGIC_WINGS);
+
+        if (Creature* bunny = player->FindNearestCreature(DarkmoonCannon::NPC_TARGET_BUNNY, 200.0f))
+        {
+            float dist = player->GetExactDist2d(bunny);
+            TC_LOG_DEBUG("scripts", "Cannonball: {} landed at {:.1f} {:.1f} {:.1f}, {:.1f} yd from the target bunny", player->GetName(), player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), dist);
+            uint32 points = 0;
+            uint32 ringSpell = 0;
+            if (dist <= 3.0f)
+            {
+                points = 5;
+                ringSpell = DarkmoonCannon::SPELL_TARGET_CENTER;
+            }
+            else if (dist <= 7.0f)
+            {
+                points = 3;
+                ringSpell = DarkmoonCannon::SPELL_TARGET_CLOSE;
+            }
+            else if (dist <= 15.0f)
+            {
+                points = 1;
+                ringSpell = DarkmoonCannon::SPELL_TARGET_NEAR;
+            }
+
+            if (ringSpell)
+            {
+                bunny->CastSpell(player, ringSpell, true);
+                player->KilledMonsterCredit(DarkmoonCannon::NPC_POINT_CREDIT, ObjectGuid::Empty, points);
+            }
+        }
+
+        GetAura()->SetDuration(0);      // ends the flight aura on the next update (the override bar goes away)
+    }
+
+    void Register() override
+    {
+        OnEffectUpdate += AuraEffectUpdateFn(spell_darkmoon_cannon_flight::HandleUpdate, EFFECT_0, SPELL_AURA_OVERRIDE_SPELLS);
+    }
+};
+
+// (tonk challenge) ids. 54588 Darkmoon Steam Tonk = the vehicle of the player (seat 0, summoned by 100752), 33081 Tonk Cannon Target = quest objective of 29434
+// (30x, summoned by the wave list of Finlay, the SmartAI of the target gives the credit and despawns it on a hit of 102292), 54642 / 54643 Enemy Tonk / MiniZep.
+namespace DarkmoonTonk
+{
+    uint32 const NPC_STEAM_TONK         = 54588;
+    uint32 const NPC_CANNON_TARGET      = 33081;
+    uint32 const NPC_ENEMY_TONK         = 54642;
+    uint32 const NPC_ENEMY_MINIZEP      = 54643;
+    uint32 const SPELL_CONTROLLER       = 100752;   // aura 60 s on the player (summons the tonk), links 102178
+    uint32 const SPELL_TONK_ACTION      = 102178;   // bars: vehicle ability bar + alt power bar 129 (0..30)
+    int32 const SCORE_MAX               = 30;
+    float const SHOT_RANGE              = 30.0f;
+}
+
+// (tonk challenge) 102292 - Cannon: the button of the tonk. The 5.4.8 data has a cone of 7 degrees and a range of 7 yd, which our core takes literally: nothing
+// was ever hit. The target is chosen here (nearest Tonk Cannon Target 30 yd / 60 degrees in front of the tonk, otherwise an Enemy Tonk / MiniZep) and the
+// spell hits it as normal; the SmartAI of 33081 pays the kill credit and despawns it. A hit on a Tonk Cannon Target is a point on the score bar.
+class spell_darkmoon_tonk_cannon : public SpellScript
+{
+    PrepareSpellScript(spell_darkmoon_tonk_cannon);
+
+    void SelectTarget(std::list<WorldObject*>& targets)
+    {
+        targets.clear();
+        Unit* caster = GetCaster();
+        if (!caster || caster->GetEntry() != DarkmoonTonk::NPC_STEAM_TONK)
+            return;
+
+        uint32 const entries[] = { DarkmoonTonk::NPC_CANNON_TARGET, DarkmoonTonk::NPC_ENEMY_TONK, DarkmoonTonk::NPC_ENEMY_MINIZEP };
+        Creature* best = nullptr;
+        float bestDist = 0.0f;
+        for (uint32 entry : entries)
+        {
+            std::list<Creature*> found;
+            caster->GetCreatureListWithEntryInGrid(found, entry, DarkmoonTonk::SHOT_RANGE);
+            for (Creature* creature : found)
+            {
+                if (!creature->IsAlive() || !caster->isInFront(creature, float(M_PI) / 3.0f))
+                    continue;
+                float dist = caster->GetExactDist2d(creature);
+                if (!best || dist < bestDist)
+                {
+                    best = creature;
+                    bestDist = dist;
+                }
+            }
+            if (best)       // the quest targets first, enemies only without one
+                break;
+        }
+
+        TC_LOG_DEBUG("scripts", "Tonk: cannon shot from {:.1f} {:.1f} o {:.2f}, target {}", caster->GetPositionX(), caster->GetPositionY(), caster->GetOrientation(),
+            best ? best->GetEntry() : 0);
+
+        if (best)
+            targets.push_back(best);
+    }
+
+    void HandleAfterHit()
+    {
+        Creature* tonk = GetCaster() ? GetCaster()->ToCreature() : nullptr;
+        Unit* hit = GetHitUnit();
+        if (!tonk || !hit || hit->GetEntry() != DarkmoonTonk::NPC_CANNON_TARGET || !tonk->GetVehicleKit())
+            return;
+
+        Unit* passenger = tonk->GetVehicleKit()->GetPassenger(0);
+        Player* player = passenger ? passenger->ToPlayer() : nullptr;
+        if (!player)
+            return;
+
+        int32 score = std::min<int32>(player->GetPower(POWER_ALTERNATE_POWER) + 1, DarkmoonTonk::SCORE_MAX);
+        player->SetPower(POWER_ALTERNATE_POWER, score);
+        if (score < DarkmoonTonk::SCORE_MAX)
+            return;
+
+        player->RemoveAurasDueToSpell(DarkmoonTonk::SPELL_TONK_ACTION);
+        player->RemoveAurasDueToSpell(DarkmoonTonk::SPELL_CONTROLLER);
+        tonk->DespawnOrUnsummon(1000);
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_darkmoon_tonk_cannon::SelectTarget, EFFECT_0, TARGET_UNIT_CONE_ENTRY);
+        AfterHit += SpellHitFn(spell_darkmoon_tonk_cannon::HandleAfterHit);
+    }
+};
+
 void AddSC_darkmoon_island()
 {
     new npc_darkmoon_deathmatch_announcer();
@@ -479,4 +832,10 @@ void AddSC_darkmoon_island()
     new spell_script<spell_darkmoon_moonfang_tears>("spell_darkmoon_moonfang_tears");
     new spell_script<spell_darkmoon_moonfang_curse>("spell_darkmoon_moonfang_curse");
     new aura_script<spell_darkmoon_whack_summon_aura>("spell_darkmoon_whack_summon_aura");   // (whack-a-gnoll)
+    new spell_script<spell_darkmoon_shooting_gallery_shoot>("spell_darkmoon_shooting_gallery_shoot");   // (shooting gallery)
+    new aura_script<spell_darkmoon_ring_toss_game>("spell_darkmoon_ring_toss_game");   // (ring toss)
+    new spell_script<spell_darkmoon_ring_toss_throw>("spell_darkmoon_ring_toss_throw");   // (ring toss)
+    new aura_script<spell_darkmoon_cannon_prep>("spell_darkmoon_cannon_prep");   // (human cannonball)
+    new aura_script<spell_darkmoon_cannon_flight>("spell_darkmoon_cannon_flight");   // (human cannonball)
+    new spell_script<spell_darkmoon_tonk_cannon>("spell_darkmoon_tonk_cannon");   // (tonk challenge)
 }

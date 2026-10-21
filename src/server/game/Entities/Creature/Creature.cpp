@@ -2615,13 +2615,14 @@ CreatureMovementData const& Creature::GetMovementTemplate() const
 
 bool Creature::CanSwim() const
 {
-    if (Unit::CanSwim() || (!Unit::CanSwim() && !CanFly()))
+    if (Unit::CanSwim())
         return true;
 
     if (IsPet())
         return true;
 
-    return false;
+    // speed 64A: creature_template_movement.Swim was ignored, every non-flyer swam (to-do 64)
+    return !CanFly() && GetMovementTemplate().IsSwimAllowed();
 }
 
 void Creature::RefreshSwimmingFlag(bool recheck)
@@ -2943,7 +2944,16 @@ void Creature::UpdateMovementFlags(bool force)
     if (!isInAir)
         SetFall(false);
 
-    SetSwim(CanSwim() && IsInWater());
+    // speed 64B: swim only when the water is deep enough for the body (a ford is walked), to-do 64
+    bool swim = false;
+    if (CanSwim() && IsInWater())
+    {
+        LiquidData liquid;
+        ZLiquidStatus status = GetMap()->GetLiquidStatus(GetPhaseMask(), GetPositionX(), GetPositionY(), GetPositionZ(),
+            MAP_ALL_LIQUIDS, &liquid, GetCollisionHeight());
+        swim = (status & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER)) && GetMap()->HasEnoughWater(this, &liquid);
+    }
+    SetSwim(swim);
 }
 
 void Creature::SetFlying(bool enable)

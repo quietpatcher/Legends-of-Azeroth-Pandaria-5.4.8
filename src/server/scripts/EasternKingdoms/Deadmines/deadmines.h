@@ -50,8 +50,9 @@ enum NPCs
     NPC_CRIME_SCENE_BOT      = 46613,
     // Trash
     NPC_MINING_POWDER        = 48284,
-    NPC_DEFIAS_WATCHER       = 47403,
-    NPC_DEFIAS_REAPER        = 47404,
+    // deadmines 63d: values follow creature_template (47403 = Reaper, 47404 = Watcher); they were swapped
+    NPC_DEFIAS_REAPER        = 47403,
+    NPC_DEFIAS_WATCHER       = 47404,
 
     // Misc
     NPC_FROST_BLOSSOM_BUNNY  = 47284,

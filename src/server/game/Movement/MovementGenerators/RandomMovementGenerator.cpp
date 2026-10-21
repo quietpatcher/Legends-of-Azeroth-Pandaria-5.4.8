@@ -70,6 +70,12 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
         if (levelZ >= destZ)
             return;
     }
+    else if (creature->HasUnitMovementFlag(MOVEMENTFLAG_SWIMMING))
+    {
+        // speed 64D: a swimming animal picks its next point at its own depth, not on the riverbed
+        destZ = creature->GetPositionZ();
+        creature->UpdateAllowedPositionZ(destX, destY, destZ);
+    }
     //else if (is_water_ok)                                 // 3D system under water and above ground (swimming mode)
     else                                                    // 2D only
     {
@@ -104,6 +110,8 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
 
     creature->AddUnitState(UNIT_STATE_ROAMING_MOVE);
 
+    creature->UpdateMovementFlags(true);    // speed 64B2: the swim flag follows a wandering animal in and out of the water
+
     Movement::MoveSplineInit init(creature);
     init.MoveTo(destX, destY, destZ);
 
@@ -114,8 +122,7 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
 
     if (creature->GetWalkMode() == 1)
         init.SetWalk(run);
-    else if (creature->GetWalkMode() == 2)
-        init.SetWalk((irand(0, 5) > 0) ? !run : run);
+    // speed 64C: walk_mode 2 (one wander leg in six at run speed) is gone, wandering is walking
     else
         init.SetWalk(!run);
 

@@ -519,6 +519,14 @@ bool CreatureAI::UpdateVictim()
             _leftCombat = false;
             if (me->IsAlive() && !me->IsInEvadeMode() && !me->GetCharmerOrOwnerGUID())
             {
+                // engage-cluster 62b: the fight is still on when an attacker is alive, in range and reachable: put it
+                // back on the threat list instead of evading (to-do 280/295/296)
+                for (Unit* attacker : me->getAttackers())
+                    if (attacker && attacker->IsAlive() && attacker->IsInMap(me) && me->CanCreatureAttack(attacker, false))
+                    {
+                        me->GetThreatManager().AddThreat(attacker, 0.0f, nullptr, true, true);
+                        return me->GetVictim() != nullptr;
+                    }
                 static bool const leftCombatLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);
                 if (leftCombatLog)
                     TC_LOG_INFO("server", "EVADEDIAG left-combat entry={} map={} home={:.1f} hp={:.0f} tapped={}",
