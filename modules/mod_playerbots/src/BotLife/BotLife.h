@@ -426,7 +426,7 @@ public:
     bool StartDig(Player* bot, BotLifeInfo& t, uint32 now);              // archaeology
     bool DigBusiness(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now);
     bool TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now);
-    bool GossipApproachTimedOut(Player* bot, BotLifeInfo& t, uint32 key, std::string const& name, uint32 now);
+    bool GossipApproachTimedOut(Player* bot, BotLifeInfo& t, uint32 key, std::string const& name, uint32 now, uint32 limitMs = 30000);   // 328c-3-decl: 
     void MasterQuestSync(Player* bot, Player* master, BotLifeInfo& t, uint32 now);   // bots without a main hand weapon get one (factory leaves ~45% empty)
     void PrintGuilds(ChatHandler* handler);             // guild life (BotLifeGuild.cpp)
     void QueueTownBusiness(ObjectGuid guid);

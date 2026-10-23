@@ -27,11 +27,13 @@
 #include "WorldSession.h"
 #include "WorldPacket.h"
 #include "BattlePetSpawnMgr.h"
+#include "Config.h"
 
-void WorldSession::HandlePetBattleStartPvpMatchmaking(WorldPacket& recvData)
+// There is no pet battle matchmaking on the server: joining answers "queued" and leaving must answer too, or the client keeps the
+// player in the queue (report 307). The status the client needs to drop the queue is read from the config so the value can be
+// confirmed with the real client without a rebuild (PetBattle.QueueLeaveStatus, default 12 = "You are no longer in the pet battle queue.", confirmed with the client).
+void WorldSession::SendPetBattleQueueStatus(uint32 status)
 {
-    TC_LOG_DEBUG("network", "WORLD: Received CMSG_PET_BATTLE_START_PVP_MATCHMAKING");
-
     WorldPacket data(SMSG_PET_BATTLE_QUEUE_STATUS, 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + 1);
 
     //CliRideTicket.RequesterGuid
@@ -54,7 +56,7 @@ void WorldSession::HandlePetBattleStartPvpMatchmaking(WorldPacket& recvData)
     data.WriteByteSeq(guid[4]);
     data << uint32(0); // 72 CliRideTicket.Time
     data.WriteByteSeq(guid[3]);
-    data << uint32(1); // 24 Status // ERR_PETBATTLE_QUEUE_ status, 1 = ERR_PETBATTLE_QUEUE_QUEUED
+    data << uint32(status); // 24 Status // ERR_PETBATTLE_QUEUE_ status, 1 = ERR_PETBATTLE_QUEUE_QUEUED
     data.WriteByteSeq(guid[6]);
     //if (hasClientWaitTime)
     //data << uint32(0) // 44
@@ -72,13 +74,19 @@ void WorldSession::HandlePetBattleStartPvpMatchmaking(WorldPacket& recvData)
     // data << uint32(0); // 16
 
     SendPacket(&data);
+}
 
+void WorldSession::HandlePetBattleStartPvpMatchmaking(WorldPacket& /*recvData*/)
+{
+    TC_LOG_DEBUG("network", "WORLD: Received CMSG_PET_BATTLE_START_PVP_MATCHMAKING");
+    SendPetBattleQueueStatus(1);
 }
 
 void WorldSession::HandlePetBattleStopPvpMatchmaking(WorldPacket& recvData)
 {
     TC_LOG_DEBUG("network", "WORLD: Received CMSG_PET_BATTLE_STOP_PVP_MATCHMAKING");
-    //CliRideTicket
+    recvData.rfinish();   // CliRideTicket, not needed: there is only one queue entry per player
+    SendPetBattleQueueStatus(uint32(sConfigMgr->GetIntDefault("PetBattle.QueueLeaveStatus", 12)));
 }
 
 void WorldSession::HandleBattlePetDelete(WorldPacket& recvData)

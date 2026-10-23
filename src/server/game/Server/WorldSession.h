@@ -1140,6 +1140,7 @@ class TC_GAME_API WorldSession
 
         // Battle Pet
         void HandlePetBattleStartPvpMatchmaking(WorldPacket& recvData);
+        void SendPetBattleQueueStatus(uint32 status);
         void HandlePetBattleStopPvpMatchmaking(WorldPacket& recvData);
         void HandleBattlePetModifyName(WorldPacket& recvData);
         void HandleBattlePetDelete(WorldPacket& recvData);

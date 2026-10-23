@@ -23,15 +23,15 @@
 
 enum ScriptTexts
 {
-    // deadmines 63a: group ids follow creature_text of 47296 (0 aggro, 1 "Bombs away!", 2 "Ready Oafie? Throw!",
-    // 3 chest bomb emote, 4 "I didn't need him!", 5 kill, 6 death); the old numbering said the aggro line on death
-    SAY_AGGRO    = 0,
-    SAY_SPELL1   = 1,
-    SAY_THROW    = 2,
+    // deadmines 314a-1: group ids follow creature_text of 47296 (0 aggro, 1 "Bombs away!", 2 "Ready Oafie? Throw!",
+    // 3 chest bomb emote "$n's chest", 4 "I didn't need him!", 5 kill, 6 death); the old numbering said the aggro line on death
+    SAY_AGGRO      = 0,
+    SAY_SPELL1     = 1,
+    SAY_THROW      = 2,
     SAY_CHEST_BOMB = 3,
-    SAY_OAF_DEAD = 4,
-    SAY_KILL     = 5,
-    SAY_DEATH    = 6,
+    SAY_OAF_DEAD   = 4,
+    SAY_KILL       = 5,
+    SAY_DEATH      = 6,
 
     SAY_OAF1     = 0,
 };
@@ -46,6 +46,10 @@ enum Spells
     SPELL_FORCE_PLAYER_RIDE_OAF = 88278,
     SPELL_RIDE_OAF              = 88277,
     SPELL_HELIX_RIDE            = 88337,
+    // deadmines 314a-2-spells: Throw Helix ride. 88337 gives the players vehicle kit 1263 (SET_VEHICLE_ID), 88360 puts Helix
+    // on seat 0 of that kit (CONTROL_VEHICLE), 88351 is the ten second face timer aura (Warcraft Wiki: "for ten seconds")
+    SPELL_RIDE_FACE             = 88360,
+    SPELL_RIDE_FACE_TIMER       = 88351,
 };
 
 enum Adds
@@ -68,7 +72,10 @@ enum Events
     EVENT_BOMB_READY    = 9,
     EVENT_BOMB_EXPLODE  = 10,
     EVENT_CHEST_BOMB    = 11,
-    EVENT_LEAP          = 12,   // deadmines 63c: stage two, Helix leaps to another player every 10 s
+    // deadmines 314a-2-events: 
+    EVENT_HELIX_RIDE    = 12,   // recast of Helix Ride on the players
+    EVENT_RIDE_FACE     = 13,   // leap onto a player's face
+    EVENT_RIDE_FACE_END = 14,   // ten seconds later: Chest Bomb (heroic) and the leap back onto the Oaf / the next player
 };
 
 enum Points
@@ -111,9 +118,44 @@ class boss_helix_gearbreaker : public CreatureScript
         {
             boss_helix_gearbreakerAI(Creature* creature) : BossAI(creature, DATA_HELIX) { }
 
-            // deadmines 63b/63c: the player Helix is riding (Throw Helix) and whether the Oaf is dead
+            // deadmines 314a-2-state: the player Helix is riding and whether the Oaf is down (stage two)
             ObjectGuid _rideGuid;
             bool _stageTwo = false;
+
+            Creature* GetOaf() const
+            {
+                return instance ? ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_OAF)) : nullptr;
+            }
+
+            bool OafIsUp() const
+            {
+                Creature* oaf = GetOaf();
+                return oaf && oaf->IsAlive() && oaf->GetStandState() != UNIT_STAND_STATE_DEAD;
+            }
+
+            // Random living player that carries the Helix Ride vehicle kit; prefers one Helix is not riding right now
+            Player* PickRideTarget() const
+            {
+                std::vector<Player*> candidates, others;
+                Map::PlayerList const& players = me->GetMap()->GetPlayers();
+                for (Map::PlayerList::const_iterator itr = players.begin(); itr != players.end(); ++itr)
+                {
+                    Player* player = itr->GetSource();
+                    if (!player || !player->IsAlive() || player->IsGameMaster() || player->GetVehicle())
+                        continue;
+                    if (!player->HasAura(SPELL_HELIX_RIDE) || !player->GetVehicleKit())
+                        continue;
+                    if (player->GetGUID() == _rideGuid)
+                        others.push_back(player);
+                    else
+                        candidates.push_back(player);
+                }
+                if (candidates.empty())
+                    candidates = others;
+                if (candidates.empty())
+                    return nullptr;
+                return Trinity::Containers::SelectRandomContainerElement(candidates);
+            }
 
             void InitializeAI() override
             {
@@ -141,8 +183,11 @@ class boss_helix_gearbreaker : public CreatureScript
                     instance->SendEncounterUnit(ENCOUNTER_FRAME_DISENGAGE, me);
 
                 me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE);
-                _rideGuid.Clear();      // deadmines 63b: 
-                _stageTwo = false;      // deadmines 63c: 
+                // deadmines 314a-2-reset: 
+                _rideGuid.Clear();
+                _stageTwo = false;
+                if (instance)
+                    instance->DoRemoveAurasDueToSpellOnPlayers(SPELL_HELIX_RIDE);
             }
 
             void SummonedCreatureDies(Creature* summon, Unit* /*killer*/) override
@@ -151,9 +196,6 @@ class boss_helix_gearbreaker : public CreatureScript
                 {
                     Talk(SAY_OAF_DEAD);
                     me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE);
-                    // deadmines 63c: stage two - leap from player to player, Sticky Bombs come faster
-                    _stageTwo = true;
-                    events.ScheduleEvent(EVENT_LEAP, 10000);
                 }
             }
 
@@ -166,12 +208,13 @@ class boss_helix_gearbreaker : public CreatureScript
 
                 events.ScheduleEvent(EVENT_STICKY_BOMB, 8000);
                 if (IsHeroic())
-                {
-                    // deadmines 63b: Chest Bomb is planted when Helix leaps off a player (see UpdateAI); this
-                    // timer is only a fallback for a fight in which the Throw Helix ride never happens
-                    events.ScheduleEvent(EVENT_CHEST_BOMB, 30000);
                     events.ScheduleEvent(EVENT_HELIX_CREW, 5000);
-                }
+                // deadmines 314a-2-engage: Chest Bomb is left on the ridden player when Helix leaps off (see EVENT_RIDE_FACE_END),
+                // the random timer is gone. Helix Ride gives the players the vehicle kit; the throw timings are the sniff values
+                // of the CPP reference (the wiki gives none)
+                DoCastAOE(SPELL_HELIX_RIDE, true);
+                events.ScheduleEvent(EVENT_HELIX_RIDE, 56000);
+                events.ScheduleEvent(EVENT_THROW_HELIX, 34000);
                 Talk(SAY_AGGRO);
                 DoZoneInCombat();
             }
@@ -195,6 +238,9 @@ class boss_helix_gearbreaker : public CreatureScript
 
                 Talk(SAY_DEATH);
 
+                if (instance)
+                    instance->DoRemoveAurasDueToSpellOnPlayers(SPELL_HELIX_RIDE);   // deadmines 314a-2-died: 
+
                 if (Creature* Oaf = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_OAF)))
                     me->Kill(Oaf);
             }
@@ -204,36 +250,17 @@ class boss_helix_gearbreaker : public CreatureScript
                 if (!UpdateVictim())
                     return;
 
-                // deadmines 63b: remember the player Helix rides after Throw Helix; when he leaps off, the heroic
-                // Chest Bomb is left on that player (Warcraft Wiki) instead of on a random timer
-                if (Unit* base = me->GetVehicleBase())
+                // deadmines 314a-3-stage: stage two starts when the Oaf is down (fake death in npc_lumbering_oaf ejects Helix).
+                // The Oaf is a DB spawn with Helix as accessory, so SummonedCreatureDies never fires for it.
+                if (!_stageTwo && !me->GetVehicle() && _rideGuid.IsEmpty() && !OafIsUp())
                 {
-                    if (base->GetTypeId() == TYPEID_PLAYER && _rideGuid != base->GetGUID())
-                    {
-                        _rideGuid = base->GetGUID();
-                        Talk(SAY_THROW);
-                    }
+                    _stageTwo = true;
+                    Talk(SAY_OAF_DEAD);
+                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE);
+                    events.CancelEvent(EVENT_THROW_HELIX);
+                    events.CancelEvent(EVENT_RIDE_FACE);
+                    events.ScheduleEvent(EVENT_RIDE_FACE, 2500);
                 }
-                else if (!_rideGuid.IsEmpty())
-                {
-                    if (IsHeroic())
-                        if (Player* rider = ObjectAccessor::GetPlayer(*me, _rideGuid))
-                            if (rider->IsAlive() && !rider->HasAura(SPELL_CHEST_BOMB))
-                            {
-                                Talk(SAY_CHEST_BOMB, rider);
-                                DoCast(rider, SPELL_CHEST_BOMB, true);
-                                events.CancelEvent(EVENT_CHEST_BOMB);
-                            }
-                    _rideGuid.Clear();
-                }
-
-                if (!me->GetVehicle())
-                    if (me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
-                    {
-                        //Talk(SAY_OAF_DEAD);
-                        me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE);
-                        return;
-                    }
 
                 events.Update(diff);
 
@@ -244,14 +271,59 @@ class boss_helix_gearbreaker : public CreatureScript
                 {
                     switch (eventId)
                     {
-                        case EVENT_CHEST_BOMB:
-                            if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, 0.0f, true))
-                            {
-                                Talk(SAY_CHEST_BOMB, target);   // deadmines 63a: emote "$n's chest" needs its target
-                                DoCast(target, SPELL_CHEST_BOMB);
-                            }
-                            events.ScheduleEvent(EVENT_CHEST_BOMB, urand(15000, 20000));
+                        // deadmines 314a-2-ride: Throw Helix ride, Chest Bomb on departure, stage two leaps
+                        case EVENT_HELIX_RIDE:
+                            DoCastAOE(SPELL_HELIX_RIDE, true);
+                            events.ScheduleEvent(EVENT_HELIX_RIDE, 56000);
                             break;
+                        case EVENT_THROW_HELIX:
+                            if (_stageTwo)
+                                break;
+                            Talk(SAY_THROW);
+                            events.ScheduleEvent(EVENT_RIDE_FACE, 2000);
+                            events.ScheduleEvent(EVENT_THROW_HELIX, 52000);
+                            break;
+                        case EVENT_RIDE_FACE:
+                        {
+                            Player* target = PickRideTarget();
+                            if (!target)
+                            {
+                                if (_stageTwo)
+                                    events.ScheduleEvent(EVENT_RIDE_FACE, 2000);
+                                break;
+                            }
+                            if (!_rideGuid.IsEmpty() || me->GetVehicle())
+                                me->ExitVehicle();
+                            _rideGuid = target->GetGUID();
+                            me->CastSpell(target, SPELL_RIDE_FACE, true);
+                            me->CastSpell(me, SPELL_RIDE_FACE_TIMER, true);
+                            me->GetThreatManager().ResetAllThreat();
+                            me->GetThreatManager().AddThreat(target, 1000000.0f, nullptr, true, true);
+                            AttackStart(target);
+                            events.ScheduleEvent(EVENT_RIDE_FACE_END, 10000);
+                            break;
+                        }
+                        case EVENT_RIDE_FACE_END:
+                        {
+                            Player* rider = ObjectAccessor::GetPlayer(*me, _rideGuid);
+                            if (IsHeroic() && rider && rider->IsAlive())
+                            {
+                                Talk(SAY_CHEST_BOMB, rider);
+                                DoCast(rider, SPELL_CHEST_BOMB, true);
+                            }
+                            me->RemoveAurasDueToSpell(SPELL_RIDE_FACE_TIMER);
+                            _rideGuid.Clear();
+                            me->ExitVehicle();
+                            if (!_stageTwo && OafIsUp())
+                            {
+                                // second leap: back onto the Oaf's back
+                                if (Creature* oaf = GetOaf())
+                                    me->EnterVehicle(oaf, 0);
+                            }
+                            else
+                                events.ScheduleEvent(EVENT_RIDE_FACE, 1);   // stage two: immediately the next player (wiki)
+                            break;
+                        }
                         case EVENT_STICKY_BOMB:
                             if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, 0.0f, true))
                             {
@@ -261,26 +333,8 @@ class boss_helix_gearbreaker : public CreatureScript
                                     target->GetPositionZ(),
                                     0.0f);
                             }
-                            // deadmines 63c: stage two throws Sticky Bombs faster
+                            // deadmines 314a-3-sticky: stage two throws faster (wiki "rapidly"; exact interval unknown)
                             events.ScheduleEvent(EVENT_STICKY_BOMB, _stageTwo ? urand(5000, 7000) : urand(8000, 10000));
-                            break;
-                        case EVENT_LEAP:
-                            // deadmines 63c: Helix leaps to another player every 10 s and fights him there
-                            if (!me->GetVehicle())
-                            {
-                                Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 1, 0.0f, true);
-                                if (!target)
-                                    target = SelectTarget(SELECT_TARGET_RANDOM, 0, 0.0f, true);
-                                if (target)
-                                {
-                                    Talk(SAY_SPELL1);
-                                    me->GetThreatManager().ResetAllThreat();
-                                    me->GetThreatManager().AddThreat(target, 1000.0f, nullptr, true, true);
-                                    me->GetMotionMaster()->MoveJump(*target, 20.0f, 10.0f);
-                                    AttackStart(target);
-                                }
-                            }
-                            events.ScheduleEvent(EVENT_LEAP, 10000);
                             break;
                         case EVENT_HELIX_CREW:
                             for (uint8 i = 0; i < 4; i++)
@@ -289,7 +343,8 @@ class boss_helix_gearbreaker : public CreatureScript
                     }
                 }
 
-                if (!me->GetVehicle())
+                // deadmines 314a-2-melee: Helix punches the player he is riding (wiki), only on the Oaf's back he does not melee
+                if (!me->GetVehicle() || !_rideGuid.IsEmpty())
                     DoMeleeAttackIfReady();
             }
         };
@@ -541,7 +596,8 @@ class npc_sticky_bomb : public CreatureScript
 
                 for (ThreatReference const* ref : threatlist)
                     if (Unit* target = ObjectAccessor::GetUnit((*me), ref->GetVictim()->GetGUID()))
-                        if (target->GetTypeId() == TYPEID_PLAYER && me->GetExactDist2dSq(target) < 4 && !target->GetVehicle())
+                        // (sticky-bomb-1yd) source: a player within one yard sets it off
+                        if (target->GetTypeId() == TYPEID_PLAYER && me->GetExactDist2d(target) <= 1.0f && !target->GetVehicle())
                             return target->GetGUID();
 
                 return ObjectGuid::Empty;
@@ -574,10 +630,15 @@ class npc_sticky_bomb : public CreatureScript
                             canBoom = true;
                             me->CastSpell(me, SPELL_STICKY_BOMB_ARMED_STATE, true);
                             events.ScheduleEvent(EVENT_CHECK_PLAYER, 250);
-                            events.ScheduleEvent(EVENT_ARMING_YELLOW, 14000);
+                            // (sticky-bomb-self-destruct) 18 s after arming: 12.5 s armed, then the 5.5 s countdown, then EVENT_BOOM
+                            events.ScheduleEvent(EVENT_ARMING_YELLOW, 12500);
                             break;
                         case EVENT_BOOM:
-                            me->CastSpell(me, SPELL_STICKY_BOMB_PERIODIC_TRIGGER, true);
+                            // (sticky-bomb-self-destruct) one explosion, then gone; the periodic trigger 88329 kept it going off forever
+                            me->CastSpell(me, SPELL_EXPLODE, true);
+                            me->SetDisplayId(11686);
+                            me->DespawnOrUnsummon(2000);
+                            events.Reset();
                             break;
                         case EVENT_CHECK_PLAYER:
                         {

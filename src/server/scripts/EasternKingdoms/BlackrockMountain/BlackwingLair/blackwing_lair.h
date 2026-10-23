@@ -63,6 +63,7 @@ enum BWLData64
     DATA_CHROMAGGUS,
     DATA_LORD_VICTOR_NEFARIUS,
     DATA_NEFARIAN,
+    DATA_GO_CHROMAGGUS_DOOR,    // bwl 328a-1-data: the pen door the lever opens
 };
 
 enum BWLEvents
@@ -88,6 +89,9 @@ enum BLWGameObjects
     GO_PORTCULLIS_CHROMAGGUS    = 179117,
     GO_PORTCULLIS_NEFARIAN      = 176966,
     GO_BLACK_DRAGON_EGG         = 177807,
+    // bwl 328a-1-go: Chromaggus' pen door and the lever that opens it (TDB 4.4.2: 179148 = go_chromaggus_lever)
+    GO_CHROMAGGUS_DOOR          = 179116,
+    GO_CHROMAGGUS_LEVER         = 179148,
 };
 
 #endif

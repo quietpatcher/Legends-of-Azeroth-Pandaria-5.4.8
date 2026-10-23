@@ -36,6 +36,10 @@
 template<>
 void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
 {
+    // speed 64B2: the swim flag follows a wandering animal in and out of the water; refreshed before the
+    // destination is chosen so the 64D branch below sees the current flag and not the one of the previous leg
+    creature->UpdateMovementFlags(true);
+
     float respX, respY, respZ, respO, destX, destY, destZ, travelDistZ;
     creature->GetHomePosition(respX, respY, respZ, respO);
     Map const* map = creature->GetMap();
@@ -109,8 +113,6 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
         i_nextMoveTime.Reset(urand(500, 10000));
 
     creature->AddUnitState(UNIT_STATE_ROAMING_MOVE);
-
-    creature->UpdateMovementFlags(true);    // speed 64B2: the swim flag follows a wandering animal in and out of the water
 
     Movement::MoveSplineInit init(creature);
     init.MoveTo(destX, destY, destZ);

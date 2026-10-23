@@ -80,6 +80,9 @@ void VisibleNotifier::SendToSelf()
     if (!i_data.HasData())
         return;
 
+    if (Map::BotSkipsPackets(&i_player))   // perf2-D: a bot has no client to send the world to
+        return;
+
     WorldPacket packet;
     i_data.BuildPacket(&packet);
     i_player.GetSession()->SendPacket(&packet);

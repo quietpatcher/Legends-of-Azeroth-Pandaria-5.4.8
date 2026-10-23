@@ -73,7 +73,8 @@ class boss_majordomo : public CreatureScript
 
         struct boss_majordomoAI : public BossAI
         {
-            boss_majordomoAI(Creature* creature) : BossAI(creature, BOSS_MAJORDOMO_EXECUTUS)
+            boss_majordomoAI(Creature* creature) : BossAI(creature, BOSS_MAJORDOMO_EXECUTUS),
+                _ragnarosSummoned(false)   // mc 328d-3-ragnaros-once: 
             {
                 me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
             }
@@ -82,6 +83,15 @@ class boss_majordomo : public CreatureScript
             {
                 if (urand(0, 99) < 25)
                     Talk(SAY_SLAY);
+            }
+
+            // mc 328b-1-unkillable: Majordomo cannot be killed (Wowpedia; the encounter ends when the eight Flamewakers
+            // are dead, see UpdateAI). A kill would set the boss DONE through BossAI::JustDied without the outro, and Ragnaros could
+            // not be summoned in this instance any more.
+            void DamageTaken(Unit* /*attacker*/, uint32& damage) override
+            {
+                if (damage >= me->GetHealth())
+                    damage = me->GetHealth() - 1;
             }
 
             void JustEngagedWith(Unit* who) override
@@ -110,6 +120,11 @@ class boss_majordomo : public CreatureScript
                         me->AI()->EnterEvadeMode();
                         Talk(SAY_DEFEAT);
                         _JustDied();
+                        // mc 328d-1-outro-active: stay an active object until the outro is over. BossAI::_JustReachedHome
+                        // switches the boss off once the evade is home; an inactive creature is only updated while a player is
+                        // near its cell (the 32 s timer stops when the raid walks on) and its teleport into a grid that no player
+                        // has loaded yet is refused by Map::CreatureCellRelocation and undone by CreatureRespawnRelocation.
+                        me->setActive(true, ActiveFlags::Script);
                         events.ScheduleEvent(EVENT_OUTRO_1, 32000);
                         return;
                     }
@@ -157,15 +172,23 @@ class boss_majordomo : public CreatureScript
                         switch (eventId)
                         {
                             case EVENT_OUTRO_1:
+                                // mc 328d-2-lair-grid: the lair (829,-816) is in grid (33,30), the summon spot (738,-1145) in
+                                // grid (33,29), border y = -1066.67. A raid that never walked through Golemagg's cave has not loaded
+                                // the lair grid; the move of a creature into an unloaded grid is refused and reverted (Map.cpp
+                                // MoveAllCreaturesInMoveList) while the client already got the teleport packet. Load it first.
+                                me->GetMap()->LoadGrid(RagnarosTelePos.GetPositionX(), RagnarosTelePos.GetPositionY());
                                 me->NearTeleportTo(RagnarosTelePos.GetPositionX(), RagnarosTelePos.GetPositionY(), RagnarosTelePos.GetPositionZ(), RagnarosTelePos.GetOrientation());
-                                me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+                                if (!_ragnarosSummoned)   // mc 328d-3-ragnaros-once: no gossip once the summon has started
+                                    me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
                                 break;
                             case EVENT_OUTRO_2:
-                                if (instance)
+                                // mc 328d-3-ragnaros-once: never a second Ragnaros next to a living one
+                                if (instance && !me->FindNearestCreature(NPC_RAGNAROS, 200.0f))
                                     instance->instance->SummonCreature(NPC_RAGNAROS, RagnarosSummonPos);
                                 break;
                             case EVENT_OUTRO_3:
                                 Talk(SAY_ARRIVAL2_MAJ);
+                                me->setActive(false, ActiveFlags::Script);   // mc 328d-1-outro-active: outro over
                                 break;
                             default:
                                 break;
@@ -178,6 +201,12 @@ class boss_majordomo : public CreatureScript
             {
                 if (action == ACTION_START_RAGNAROS)
                 {
+                    // mc 328d-3-ragnaros-once: answered once. A second pick (bot gossip hook, two players in the same
+                    // tick) scheduled a second EVENT_OUTRO_2 and with it a second Ragnaros.
+                    if (_ragnarosSummoned)
+                        return;
+                    _ragnarosSummoned = true;
+                    me->setActive(true, ActiveFlags::Script);   // mc 328d-1-outro-active: the summon runs on without players nearby
                     me->RemoveFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
                     Talk(SAY_SUMMON_MAJ);
                     events.ScheduleEvent(EVENT_OUTRO_2, 8000);
@@ -189,6 +218,9 @@ class boss_majordomo : public CreatureScript
                     me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
                 }
             }
+
+        private:
+            bool _ragnarosSummoned;   // mc 328d-3-ragnaros-once: ACTION_START_RAGNAROS has been answered
         };
 
         bool OnGossipHello(Player* player, Creature* creature) override

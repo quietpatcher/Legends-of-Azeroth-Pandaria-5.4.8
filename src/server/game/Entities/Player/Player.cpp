@@ -15609,7 +15609,9 @@ void Player::PrepareGossipMenu(WorldObject* source, uint32 menuId /*= 0*/, bool 
                     canTalk = false;
                     break;
                 case GOSSIP_OPTION_TRAINER:
-                    if (GetClass() != creature->GetCreatureTemplate()->trainer_class && creature->GetCreatureTemplate()->trainer_type == TRAINER_TYPE_CLASS)
+                    // a trainer without a class (profession and battle pet trainers with trainer_type 0) is no class trainer
+                    if (creature->GetCreatureTemplate()->trainer_class && GetClass() != creature->GetCreatureTemplate()->trainer_class
+                        && creature->GetCreatureTemplate()->trainer_type == TRAINER_TYPE_CLASS)
                         TC_LOG_ERROR("sql.sql", "GOSSIP_OPTION_TRAINER:: Player {} (GUID: {}) request wrong gossip menu: {} with wrong class: {} at Creature: {} (Entry: {}, Trainer Class: {})",
                         GetName().c_str(), GetGUID().GetCounter(), PlayerTalkClass->GetGossipMenu().GetMenuId(), GetClass(), creature->GetName().c_str(), creature->GetEntry(), creature->GetCreatureTemplate()->trainer_class);
                     // no break;
@@ -25246,7 +25248,8 @@ void Player::UpdateVisibilityOf(T* target, UpdateData& data, std::set<Unit*>& vi
 
             BeforeVisibilityDestroy<T>(target, this);
 
-            target->BuildOutOfRangeUpdateBlock(&data);
+            if (!Map::BotSkipsPackets(this))   // perf2-C1: a bot keeps its m_clientGUIDs, not the packet
+                target->BuildOutOfRangeUpdateBlock(&data);
             m_clientGUIDs.erase(target->GetGUID());
             m_VignetteMgr.OnWorldObjectDisappear(target);
 
@@ -25272,7 +25275,8 @@ void Player::UpdateVisibilityOf(T* target, UpdateData& data, std::set<Unit*>& vi
                 }
             }
 
-            target->BuildCreateUpdateBlockForPlayer(&data, this);
+            if (!Map::BotSkipsPackets(this))   // perf2-C2: a bot keeps its m_clientGUIDs, not the packet
+                target->BuildCreateUpdateBlockForPlayer(&data, this);
             UpdateVisibilityOf_helper(m_clientGUIDs, target, visibleNow);
             m_VignetteMgr.OnWorldObjectAppear(target);
 

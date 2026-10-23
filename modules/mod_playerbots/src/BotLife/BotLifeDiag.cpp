@@ -553,13 +553,14 @@ void BotLifeMgr::PrintCreatureStats(ChatHandler* handler, uint32 entry)
 
 void BotLifeMgr::PrintMapStats(ChatHandler* handler)
 {
-    struct Row { uint32 map, instance, players; MapObjectCounter c; size_t active; };
+    struct Row { uint32 map, instance, players; MapObjectCounter c; size_t active; uint32 idle = 0; };   // perf1-D1: 
     std::vector<Row> rows;
     Row total{ 0, 0, 0, {}, 0 };
     uint32 maps = 0;
     sMapMgr->DoForAllMaps([&](Map* map)
     {
         Row r{ map->GetId(), map->GetInstanceId(), map->GetPlayersCountExceptGMs(), {}, map->GetActiveNonPlayersCount() };
+        r.idle = map->GetBotIdleCount();   // perf1-D2: 
         TypeContainerVisitor<MapObjectCounter, MapStoredObjectTypesContainer> visitor(r.c);
         visitor.Visit(map->GetObjectsStore());
         total.players += r.players;
@@ -597,7 +598,8 @@ void BotLifeMgr::PrintMapStats(ChatHandler* handler)
     out << "maps " << maps << " | total players " << total.players << " creatures " << total.c.creatures << " gos " << total.c.gameObjects
         << " dyn " << total.c.dynamicObjects << " pets " << total.c.pets << " corpses " << total.c.corpses << " active " << total.active
         << " | snapshot 0=" << MapPopulation(0) << " 1=" << MapPopulation(1) << " 530=" << MapPopulation(530) << " 571=" << MapPopulation(571)
-        << " 870=" << MapPopulation(870) << " 1064=" << MapPopulation(1064);
+        << " 870=" << MapPopulation(870) << " 1064=" << MapPopulation(1064)
+        << " botpkt=" << Map::BotPacketsSkipped();   // perf2-F: bot update packets not built since start
     // update time per map in ms, average/peak since the last call (the tick is the slowest map)
     {
         static uint32 const continents[] = { 0, 1, 530, 571, 870, 1064 };
@@ -620,7 +622,8 @@ void BotLifeMgr::PrintMapStats(ChatHandler* handler)
     }
     for (size_t i = 0; i < rows.size() && i < 12; ++i)
         out << " || " << rows[i].map << "/" << rows[i].instance << " p" << rows[i].players << " c" << rows[i].c.creatures << " g"
-            << rows[i].c.gameObjects << " d" << rows[i].c.dynamicObjects << " pet" << rows[i].c.pets << " a" << rows[i].active;
+            << rows[i].c.gameObjects << " d" << rows[i].c.dynamicObjects << " pet" << rows[i].c.pets << " a" << rows[i].active
+            << " i" << rows[i].idle;   // perf1-D3: bots skipped on the last tick
     {
         std::vector<std::pair<uint64, uint32>> top(dynBySpell.begin(), dynBySpell.end());
         std::sort(top.begin(), top.end(), [](auto const& a, auto const& b) { return a.second > b.second; });

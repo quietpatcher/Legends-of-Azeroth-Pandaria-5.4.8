@@ -18,6 +18,7 @@
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "Player.h"
+#include "GameObject.h"   // bwl 328a-3-include: 
 #include "blackwing_lair.h"
 
 enum Emotes
@@ -285,7 +286,37 @@ public:
     }
 };
 
+// bwl 328a-3-lever: 179148 Lever. Pulling it opens Chromaggus' pen (179116) and Chromaggus comes for the one who
+// pulled it (TDB 4.4.2: ScriptName go_chromaggus_lever; TrinityCore 3.3.5 go_chromaggus_lever as reference). Without the script
+// the door never opened: the raid ended at the three dragons, Chromaggus and Nefarian were never reached.
+class go_chromaggus_lever : public GameObjectScript
+{
+    public:
+        go_chromaggus_lever() : GameObjectScript("go_chromaggus_lever") { }
+
+        bool OnGossipHello(Player* player, GameObject* go) override
+        {
+            InstanceScript* instance = go->GetInstanceScript();
+            if (!instance)
+                return false;
+
+            if (instance->GetBossState(BOSS_CHROMAGGUS) != DONE && instance->GetBossState(BOSS_CHROMAGGUS) != IN_PROGRESS)
+            {
+                if (GameObject* door = instance->instance->GetGameObject(instance->GetGuidData(DATA_GO_CHROMAGGUS_DOOR)))
+                    instance->HandleGameObject(ObjectGuid::Empty, true, door);
+                if (Creature* chromaggus = Unit::GetCreature(*go, instance->GetGuidData(DATA_CHROMAGGUS)))
+                    if (chromaggus->IsAlive() && !chromaggus->IsInCombat())
+                        chromaggus->AI()->AttackStart(player);
+            }
+
+            go->SetFlag(GAMEOBJECT_FIELD_FLAGS, GO_FLAG_NOT_SELECTABLE | GO_FLAG_IN_USE);
+            go->SetGoState(GO_STATE_ACTIVE);
+            return true;
+        }
+};
+
 void AddSC_boss_chromaggus()
 {
     new boss_chromaggus();
+    new go_chromaggus_lever();
 }

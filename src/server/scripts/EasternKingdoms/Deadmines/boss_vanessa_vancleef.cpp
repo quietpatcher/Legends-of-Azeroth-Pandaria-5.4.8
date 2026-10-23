@@ -28,11 +28,14 @@ enum ScriptedTexts
     SAY_ADDS    = 3,
     SAY_BOMB_1  = 4,
     SAY_BOMB_2  = 5,
-    SAY_INTRO_1 = 8,
-    SAY_INTRO_2 = 9,
-    SAY_INTRO_3 = 10,
-    SAY_INTRO_4 = 11,
-    SAY_INTRO_5 = 12,
+    // deadmines 314b-texts: creature_text of 49429: groups 1-5 and 8-12 carry the same intro lines, the lower ids are
+    // used; 6 is the "Vanessa injects you with the Nightmare Elixir!" emote that was never said
+    SAY_INTRO_1 = 1,
+    SAY_INTRO_2 = 2,
+    SAY_INTRO_3 = 3,
+    SAY_INTRO_4 = 4,
+    SAY_INTRO_5 = 5,
+    SAY_INTRO_ELIXIR = 6,
 };
 
 enum Spells
@@ -342,13 +345,16 @@ class npc_vanessa_vancleef_vanessa_sitting : public CreatureScript
                             events.ScheduleEvent(EVENT_INTRO_6, 5000);
                             break;
                         case EVENT_INTRO_6:
+                            // deadmines 314b-handover: the elixir is injected (92113), then the nightmare run starts
+                            Talk(SAY_INTRO_ELIXIR);
+                            instance->DoCastSpellOnPlayers(SPELL_NM_ELIXIR);
                             me->GetMotionMaster()->MoveJump(centershipPos.GetPositionX(), centershipPos.GetPositionY(), centershipPos.GetPositionZ(), 5.f, 10.f);
                             events.ScheduleEvent(EVENT_INTRO_7, 5000);
                             break;
                         case EVENT_INTRO_7:
-                            instance->SetData(DATA_VANESSA_EVENT, DONE);
-                            if (Creature* pVanessa = me->FindNearestCreature(NPC_VANESSA_VANCLEEF, 40.0f))
-                                pVanessa->SetVisible(true);
+                            // deadmines 314b: the instance plays the nightmare (Glubtok -> Helix -> Foe Reaper -> Ripsnarl)
+                            // and shows the boss at the end; the achievement timer (5371, 300 s) starts here as before
+                            instance->SetData(DATA_VANESSA_EVENT, NIGHTMARE_STAGE_GLUBTOK);
                             instance->DoStartCriteria(CRITERIA_START_TYPE_EVENT, ACHIEVEMENT_EVENT);
                             me->DespawnOrUnsummon(1000);
                             break;
@@ -401,6 +407,107 @@ class npc_vanessa_vancleef_defias_enforcer : public CreatureScript
             }
 };
 
+// deadmines 314b-ais: the four nightmare bosses (49670 / 49674 / 49681 / 49682, fix_252). Tank and spank (Warcraft
+// Wiki); Spirit Strike is creature_template.spell1 of three of them, the 4.4 s interval is the CPP reference value.
+struct npc_deadmines_nightmare_boss : public ScriptedAI
+{
+    npc_deadmines_nightmare_boss(Creature* creature) : ScriptedAI(creature)
+    {
+        // the intro figures keep the template flags immune to PC/NPC and stand still; the controller frees the real copy
+        if (me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC))
+            me->SetReactState(REACT_PASSIVE);
+    }
+
+    EventMap events;
+
+    void Reset() override
+    {
+        events.Reset();
+    }
+
+    void JustEngagedWith(Unit* /*who*/) override
+    {
+        if (me->GetCreatureTemplate()->spells[0] == SPELL_NM_SPIRIT_STRIKE)
+            events.ScheduleEvent(1, 4400);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!UpdateVictim())
+            return;
+
+        events.Update(diff);
+
+        if (me->HasUnitState(UNIT_STATE_CASTING))
+            return;
+
+        while (uint32 eventId = events.ExecuteEvent())
+        {
+            if (eventId == 1)
+            {
+                DoCastVictim(SPELL_NM_SPIRIT_STRIKE);
+                events.ScheduleEvent(1, 4400);
+            }
+        }
+
+        DoMeleeAttackIfReady();
+    }
+};
+
+// deadmines 314b: Enraged Worgen (49532, fix_252) run at the Harrington they were summoned next to (wiki)
+struct npc_deadmines_nightmare_worgen : public ScriptedAI
+{
+    npc_deadmines_nightmare_worgen(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_AGGRESSIVE);
+    }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
+    {
+        AttackHarrington();
+    }
+
+    void AttackHarrington()
+    {
+        Creature* target = me->FindNearestCreature(NPC_NM_EMME, 30.0f, true);
+        if (!target)
+            target = me->FindNearestCreature(NPC_NM_ERIK, 30.0f, true);
+        if (!target)
+            return;
+        me->SetInCombatWith(target);
+        target->SetInCombatWith(me);
+        me->GetThreatManager().AddThreat(target, 100.0f, nullptr, true, true);
+        AttackStart(target);
+    }
+
+    void UpdateAI(uint32 /*diff*/) override
+    {
+        if (!UpdateVictim())
+        {
+            AttackHarrington();
+            return;
+        }
+
+        DoMeleeAttackIfReady();
+    }
+};
+
+// deadmines 314b: the Harringtons (49534 / 49535 / 49536 / 49539, fix_252) do not fight; James only holds Calissa
+struct npc_deadmines_nightmare_harrington : public ScriptedAI
+{
+    npc_deadmines_nightmare_harrington(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        SetCombatMovement(false);
+    }
+
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
 class spell_vanessa_vancleef_backslash_targeting : public SpellScriptLoader
 {
     public:
@@ -436,4 +543,8 @@ void AddSC_boss_vanessa_vancleef()
     new npc_vanessa_vancleef_a_note_from_vanessa();
     new npc_vanessa_vancleef_vanessa_sitting();
     new spell_vanessa_vancleef_backslash_targeting();
+    // deadmines 314b-register: 
+    new creature_script<npc_deadmines_nightmare_boss>("npc_deadmines_nightmare_boss");
+    new creature_script<npc_deadmines_nightmare_worgen>("npc_deadmines_nightmare_worgen");
+    new creature_script<npc_deadmines_nightmare_harrington>("npc_deadmines_nightmare_harrington");
 }

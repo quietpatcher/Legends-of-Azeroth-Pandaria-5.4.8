@@ -45,6 +45,7 @@
 #include "WeatherMgr.h"
 #include "Config.h"         // Map.BotCellUpdateEvery
 #include "WorldSession.h"
+#include "SocialMgr.h"      // perf1-inc: friend list guard of the idle bots
 #include <mutex>
 #include <atomic>
 
@@ -68,7 +69,114 @@ namespace
         }
         return every.load();
     }
+
+    // perf1-A: a bot that nobody watches has its Player::Update run every Nth tick, with the time of the
+    // ticks it missed. Per bot: the saved-up time, since when every guard holds, when hostiles were last looked for.
+    struct BotIdleState { uint32 acc = 0; uint32 calmSince = 0; uint32 checkedAt = 0; uint32 seenTick = 0; bool idle = false; bool hostile = false; };
+    struct BotIdleMap { std::unordered_map<ObjectGuid, BotIdleState> bots; uint32 idleNow = 0; };
+    std::mutex botIdleLock;
+    std::unordered_map<Map const*, BotIdleMap> botIdleMaps;
+
+    // Map.BotIdleSkip.Enabled / Map.BotIdleSkip.Every, read again every 10 seconds (follows `.reload config`); 0 = off
+    uint32 BotIdleSkipEvery()
+    {
+        static std::atomic<uint32> every{ 0 };
+        static std::atomic<uint32> readAt{ 0 };
+        static std::atomic<bool> read{ false };
+        uint32 const now = getMSTime();
+        if (!read.load() || getMSTimeDiff(readAt.load(), now) > 10000)
+        {
+            every = sConfigMgr->GetBoolDefault("Map.BotIdleSkip.Enabled", false)
+                ? uint32(std::max(2, sConfigMgr->GetIntDefault("Map.BotIdleSkip.Every", 3))) : 0u;
+            readAt = now;
+            read = true;
+        }
+        return every.load();
+    }
+
+    // a real player on the map: where he is, which zone, his friend list
+    struct RealPlayerSpot { uint32 zone; float x; float y; PlayerSocial* social; };
+
+    // the cheap guards, every tick: alive, not teleporting, not fighting
+    inline bool BotIsCalm(Player* bot)
+    {
+        return bot->IsAlive() && !bot->IsBeingTeleported() && !bot->IsInCombat() && bot->getAttackers().empty();
+    }
+
+    // a hostile creature within aggro range of the bot (the world container with players is not scanned)
+    struct HostileNearBotCheck
+    {
+        HostileNearBotCheck(Player const* bot, float range) : _bot(bot), _range(range) { }
+        bool operator()(Unit* u) const { return u->IsAlive() && u->IsHostileTo(_bot) && _bot->IsWithinDistInMap(u, _range); }
+    private:
+        Player const* _bot;
+        float _range;
+    };
+
+    // the guards that cost something, on the tick the bot is updated: nobody real watches it, no hostile near, no queue
+    bool BotIsUnwatched(Player* bot, std::vector<RealPlayerSpot> const& real, uint32 now, BotIdleState& st)
+    {
+        if (bot->InBattlegroundQueue() || bot->IsUsingLfg())
+            return false;
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource())
+                    if (member->GetSession() && !member->GetSession()->IsBot())
+                        return false;
+        uint32 const zone = bot->GetZoneId();
+        for (RealPlayerSpot const& spot : real)
+        {
+            if (spot.zone == zone)
+                return false;
+            float const dx = spot.x - bot->GetPositionX();
+            float const dy = spot.y - bot->GetPositionY();
+            if (dx * dx + dy * dy < 150.0f * 150.0f)
+                return false;
+            if (spot.social && spot.social->HasFriend(bot->GetGUID()))
+                return false;
+        }
+        if (!st.checkedAt || getMSTimeDiff(st.checkedAt, now) > 2000)
+        {
+            st.checkedAt = now;
+            Unit* hostile = nullptr;
+            HostileNearBotCheck check(bot, 30.0f);
+            Trinity::UnitSearcher<HostileNearBotCheck> searcher(bot, hostile, check);
+            bot->VisitNearbyGridObject(30.0f, searcher);
+            st.hostile = hostile != nullptr;
+        }
+        return !st.hostile;
+    }
+
+    // perf2-A: Map.BotNoPackets.Enabled, read again every 10 seconds (follows `.reload config`)
+    bool BotNoPackets()
+    {
+        static std::atomic<bool> enabled{ false };
+        static std::atomic<uint32> readAt{ 0 };
+        static std::atomic<bool> read{ false };
+        uint32 const now = getMSTime();
+        if (!read.load() || getMSTimeDiff(readAt.load(), now) > 10000)
+        {
+            enabled = sConfigMgr->GetBoolDefault("Map.BotNoPackets.Enabled", false);
+            readAt = now;
+            read = true;
+        }
+        return enabled.load();
+    }
+    std::atomic<uint64> botPacketsSkipped{ 0 };
 }
+
+// perf2-A: a bot session has no socket, every update packet built for it is dropped in SendPacket
+bool Map::BotSkipsPackets(Player const* player)
+{
+    if (!player || !BotNoPackets())
+        return false;
+    WorldSession* session = player->GetSession();
+    if (!session || !session->IsBot())
+        return false;
+    botPacketsSkipped.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+uint64 Map::BotPacketsSkipped() { return botPacketsSkipped.load(std::memory_order_relaxed); }
 #include "G3D/Plane.h"
 
 u_map_magic MapMagic        = { {'M','A','P','S'} };
@@ -91,6 +199,10 @@ Intensity(0.0f) { }
 
 Map::~Map()
 {
+    {   // REVIEW-FIX R2: drop the per-map bot bookkeeping (instances come and go, addresses get reused)
+        { std::lock_guard<std::mutex> guard(botIdleLock); botIdleMaps.erase(this); }
+        { std::lock_guard<std::mutex> guard(botCellLock); botCellStates.erase(this); }
+    }
     sBattlePetSpawnMgr->DepopulateMap(i_mapEntry->MapID);
 
     sScriptMgr->OnDestroyMap(this);
@@ -756,6 +868,29 @@ void Map::Update(const uint32 t_diff)
     bool const botCellTick = ++botCells->tick % botCellEvery == 0;
     bool anyBot = false;
 
+    // perf1-B: the real players on this map this tick, for the "nobody watches this bot" guard
+    uint32 const idleEvery = Instanceable() ? 0 : BotIdleSkipEvery();
+    uint32 const idleNow = getMSTime();
+    BotIdleMap* idleMap;
+    {
+        std::lock_guard<std::mutex> guard(botIdleLock);
+        idleMap = &botIdleMaps[this];
+    }
+    idleMap->idleNow = 0;
+    std::vector<RealPlayerSpot> realPlayers;
+    if (idleEvery)
+    {
+        for (MapRefManager::iterator itr = m_mapRefManager.begin(); itr != m_mapRefManager.end(); ++itr)
+            if (Player* real = itr->GetSource())
+                if (real->IsInWorld() && real->GetSession() && !real->GetSession()->IsBot())
+                    realPlayers.push_back({ real->GetZoneId(), real->GetPositionX(), real->GetPositionY(), real->GetSocial() });
+        if (botCells->tick % 1000 == 0)   // forget bots that left the map
+            for (auto itr = idleMap->bots.begin(); itr != idleMap->bots.end();)
+                itr = itr->second.seenTick + 1000 < botCells->tick ? idleMap->bots.erase(itr) : std::next(itr);
+    }
+    else if (!idleMap->bots.empty())
+        idleMap->bots.clear();   // switched off: everybody updates every tick again (the saved-up time, < 1 s, is dropped)
+
     // the player iterator is stored in the map object
     // to make sure calls to Map::Remove don't invalidate it
     for (m_mapRefIter = m_mapRefManager.begin(); m_mapRefIter != m_mapRefManager.end(); ++m_mapRefIter)
@@ -766,7 +901,32 @@ void Map::Update(const uint32 t_diff)
             continue;
 
         // update players at tick
-        player->Update(t_diff);
+        // perf1-C: a bot nobody watches updates every idleEvery-th tick (spread by guid) with the time it
+        // saved up; the moment a cheap guard fails it is updated at once, with that time
+        uint32 playerDiff = t_diff;
+        BotIdleState* idle = nullptr;
+        if (idleEvery && player->GetSession() && player->GetSession()->IsBot())
+        {
+            idle = &idleMap->bots[player->GetGUID()];
+            idle->seenTick = botCells->tick;
+            if (!idle->calmSince || !BotIsCalm(player))
+            {
+                idle->calmSince = idleNow;
+                idle->idle = false;
+            }
+            else if (idle->idle && (player->GetGUID().GetCounter() + botCells->tick) % idleEvery)
+            {
+                idle->acc += t_diff;
+                ++idleMap->idleNow;
+                anyBot = true;   // its cells still go through the bot-cell path below
+                continue;
+            }
+            playerDiff += idle->acc;
+            idle->acc = 0;
+        }
+        player->Update(playerDiff);
+        if (idle && player->IsInWorld())
+            idle->idle = getMSTimeDiff(idle->calmSince, idleNow) >= 10000 && BotIsUnwatched(player, realPlayers, idleNow, *idle);
 
         if (botCellEvery > 1 && !Instanceable() && player->GetSession() && player->GetSession()->IsBot())
         {
@@ -922,6 +1082,8 @@ void Map::Update(const uint32 t_diff)
         WorldPacket packet(SMSG_UPDATE_OBJECT, 4096);
         for (auto&& it : updatePlayers)
         {
+            if (BotSkipsPackets(it.first))   // perf2-B: 
+                continue;
             it.second.BuildPacket(&packet);
             it.first->GetSession()->SendPacket(&packet);
             packet.clear();
@@ -934,6 +1096,13 @@ void Map::Update(const uint32 t_diff)
         if (m_updateTime > sWorld->getIntConfig(CONFIG_MIN_LOG_UPDATE))
             sWorld->RecordTimeDiff(m_updateTime, "Map::Update map: %u", GetId());
     }
+}
+
+uint32 Map::GetBotIdleCount() const   // perf1-D: bots whose update was skipped on the last tick
+{
+    std::lock_guard<std::mutex> guard(botIdleLock);
+    auto itr = botIdleMaps.find(this);
+    return itr != botIdleMaps.end() ? itr->second.idleNow : 0;
 }
 
 void Map::RemovePlayerFromMap(Player* player, bool remove)

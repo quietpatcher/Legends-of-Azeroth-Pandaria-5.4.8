@@ -1522,11 +1522,19 @@ bool AvoidAoeAction::AvoidGameObjectWithDamage()
 
 bool AvoidAoeAction::AvoidUnitWithDamageAura()
 {
-    GuidVector const triggers = AI_VALUE(GuidVector, "possible triggers");
-    for (ObjectGuid const& guid : triggers)
+    // (hazard-field) a trail of damage zones (Scorched Earth of Brother Korloff: a 2 yd patch every 250 ms while he walks): fleeing
+    // from one patch at a time lands in the next one. Collect every damage-zone trigger within 15 yards live (the cached trigger
+    // list is a second old) and walk to the reachable spot with the largest clearance from all of them.
+    std::vector<std::pair<Position, float>> hazards;   // centre, radius + 2 yd margin
+    Unit* worst = nullptr;
+    float worstRadius = 0.0f;
+    std::list<Unit*> nearUnits;
+    Trinity::AnyUnitInObjectRangeCheck nearCheck(bot, 15.0f);
+    Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> nearSearcher(bot, nearUnits, nearCheck);
+    Cell::VisitAllObjects(bot, nearSearcher, 15.0f);
+    for (Unit* unit : nearUnits)
     {
-        Unit* unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsInWorld())
+        if (!unit || !unit->IsInWorld() || unit == bot)
             continue;
         // (trigger-hazard) not selectable, or an invisible trigger creature
         if (!unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && !(unit->ToCreature() && unit->ToCreature()->IsTrigger()))
@@ -1545,17 +1553,81 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                     if (trigger->Effects[j].Effect != SPELL_EFFECT_SCHOOL_DAMAGE)
                         continue;
                     float const radius = trigger->Effects[j].CalcRadius();
-                    // (trigger-margin) 2 yards early: the trigger list is refreshed once a second, the first tick came before the step
-                    if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius || bot->GetDistance(unit) > radius + 2.0f)
+                    if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius)
                         continue;
-                    if (FleePosition(unit->GetPosition(), radius + 2.0f))
+                    hazards.push_back({ unit->GetPosition(), radius + 2.0f });
+                    if (bot->GetExactDist2d(unit) < radius + 2.0f && (!worst || radius > worstRadius))
                     {
-                        TC_LOG_INFO("playerbots", "BotLife {}: steps out of the damage zone of {} ({}, {:.0f} yd) in map {}", bot->GetName(),
-                            unit->GetName(), unit->GetEntry(), radius, bot->GetMapId());
-                        return true;
+                        worst = unit;
+                        worstRadius = radius;
                     }
+                    break;
                 }
             }
+    }
+    if (worst)
+    {
+        std::list<FleeInfo>& infoList = AI_VALUE(std::list<FleeInfo>&, "recently flee info");
+        uint32 const now = getMSTime();
+        if (!infoList.empty() && infoList.back().timestamp + 500 > now)
+            return false;
+        Unit* target = AI_VALUE(Unit*, "current target");
+        bool const melee = PlayerBotSpec::IsMelee(bot);
+        float const reach = melee ? 5.0f : 25.0f;
+        // candidates by score; the path is only calculated for the best ones until one is reachable
+        std::vector<std::pair<float, Position>> candidates;
+        for (int a = 0; a < 16; ++a)
+            for (float d : { 5.0f, 8.0f, 11.0f })
+            {
+                float const ang = a * float(M_PI) / 8.0f;
+                float x = bot->GetPositionX() + std::cos(ang) * d, y = bot->GetPositionY() + std::sin(ang) * d, z = bot->GetPositionZ();
+                bot->UpdateAllowedPositionZ(x, y, z);
+                if (std::fabs(z - bot->GetPositionZ()) > 4.0f)
+                    continue;
+                Position const p(x, y, z);
+                float clearance = 100.0f;
+                for (auto const& h : hazards)
+                    clearance = std::min(clearance, p.GetExactDist2d(&h.first) - h.second);
+                if (clearance <= 0.0f)
+                    continue;
+                float score = std::min(clearance, 6.0f) - 0.05f * d;
+                if (target && target->IsInWorld())
+                    score -= 0.3f * std::max(0.0f, p.GetExactDist2d(target) - target->GetCombatReach() - reach);
+                candidates.push_back({ score, p });
+            }
+        std::sort(candidates.begin(), candidates.end(), [](auto const& l, auto const& r) { return l.first > r.first; });
+        int tested = 0;
+        for (auto const& c : candidates)
+        {
+            if (++tested > 6)
+                break;
+            PathGenerator path(bot);
+            path.CalculatePath(c.second.GetPositionX(), c.second.GetPositionY(), c.second.GetPositionZ(), false);
+            if (!(path.GetPathType() & PATHFIND_NORMAL))
+                continue;
+            if (MoveTo(bot->GetMapId(), c.second.GetPositionX(), c.second.GetPositionY(), c.second.GetPositionZ(), false, false, true,
+                false, MovementPriority::MOVEMENT_COMBAT))
+            {
+                infoList.push_back({ worst->GetPosition(), worstRadius + 2.0f, bot->GetAngle(&c.second), now });
+                while (infoList.size() > 10)
+                    infoList.pop_front();
+                TC_LOG_INFO("playerbots", "BotLife {}: steps out of the damage zone of {} ({}, {:.0f} yd, {} zones near) in map {}",
+                    bot->GetName(), worst->GetName(), worst->GetEntry(), worstRadius, hazards.size(), bot->GetMapId());
+                return true;
+            }
+        }
+        // no clear spot found: the old step away from the nearest zone
+        if (FleePosition(worst->GetPosition(), worstRadius + 2.0f))
+            return true;
+    }
+    GuidVector const triggers = AI_VALUE(GuidVector, "possible triggers");
+    for (ObjectGuid const& guid : triggers)
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld())
+            continue;
+        if (!unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && !(unit->ToCreature() && unit->ToCreature()->IsTrigger()))
+            continue;
         // a bomb that explodes by script when someone comes close (Sticky Bomb: 2 yards)
         if (bot->GetDistance(unit) < 3.0f && (!unit->GetAuraEffectsByType(SPELL_AURA_PERIODIC_TRIGGER_SPELL).empty()
             || !unit->GetAuraEffectsByType(SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE).empty()) && FleePosition(unit->GetPosition(), 5.0f))

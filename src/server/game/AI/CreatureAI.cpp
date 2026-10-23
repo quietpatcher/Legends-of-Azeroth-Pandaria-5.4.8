@@ -519,14 +519,6 @@ bool CreatureAI::UpdateVictim()
             _leftCombat = false;
             if (me->IsAlive() && !me->IsInEvadeMode() && !me->GetCharmerOrOwnerGUID())
             {
-                // engage-cluster 62b: the fight is still on when an attacker is alive, in range and reachable: put it
-                // back on the threat list instead of evading (to-do 280/295/296)
-                for (Unit* attacker : me->getAttackers())
-                    if (attacker && attacker->IsAlive() && attacker->IsInMap(me) && me->CanCreatureAttack(attacker, false))
-                    {
-                        me->GetThreatManager().AddThreat(attacker, 0.0f, nullptr, true, true);
-                        return me->GetVictim() != nullptr;
-                    }
                 static bool const leftCombatLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);
                 if (leftCombatLog)
                     TC_LOG_INFO("server", "EVADEDIAG left-combat entry={} map={} home={:.1f} hp={:.0f} tapped={}",
@@ -565,7 +557,10 @@ bool CreatureAI::UpdateVictim()
             AttackStart(victim);
         return me->GetVictim();
     }
-    else if (me->GetThreatManager().IsThreatListEmpty())
+    // Passive while engaged (MoveSeekAssistance sets REACT_PASSIVE, CanAIAttack then fails and every threat ref goes
+    // offline, not away): offline refs count, as in TC master (!IsInCombat()). Otherwise a flee-for-assist creature evades
+    // the moment it runs to its ally instead of coming back to fight.
+    else if (me->GetThreatManager().IsThreatListEmpty(true))
     {
         // diagnostic: evade-oorzaak loggen (Debug.EvadeLog = 1)
         static bool const evadeDiagLog = sConfigMgr->GetBoolDefault("Debug.EvadeLog", false);

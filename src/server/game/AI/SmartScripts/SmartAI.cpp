@@ -678,7 +678,7 @@ void SmartAI::JustSummoned(Creature* creature)
 
 void SmartAI::AttackStart(Unit* who)
 {
-    if (who && me->Attack(who, true))
+    if (who && me->Attack(who, mCanAutoAttack))
     {
         SetRun(mRun);
         if (me->GetMotionMaster()->GetMotionSlotType(MOTION_SLOT_ACTIVE) == POINT_MOTION_TYPE)
@@ -851,6 +851,16 @@ bool SmartAI::sOnDummyEffect(Unit* caster, uint32 spellId, SpellEffIndex effInde
 {
     GetScript()->ProcessEventsFor(SMART_EVENT_DUMMY_EFFECT, caster, spellId, (uint32)effIndex);
     return true;
+}
+
+void SmartAI::SetAutoAttack(bool on)
+{
+    if (mCanAutoAttack == on)
+        return;
+
+    mCanAutoAttack = on;
+    if (me->GetVictim())
+        me->Attack(me->GetVictim(), mCanAutoAttack);
 }
 
 void SmartAI::SetCombatMove(bool on)

@@ -509,6 +509,10 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
 
         MapStoredObjectTypesContainer& GetObjectsStore() { return _objectsStore; }
         size_t GetActiveNonPlayersCount() const { return m_activeNonPlayers.size(); }   // .botlife mapstats
+        // perf2-A: no SMSG_UPDATE_OBJECT is built for a bot session (Map.BotNoPackets.Enabled); the counter
+        static bool BotSkipsPackets(Player const* player);
+        static uint64 BotPacketsSkipped();
+        uint32 GetBotIdleCount() const;   // perf1-D: bots whose update was skipped on the last tick
 
         typedef std::unordered_multimap<ObjectGuid::LowType, Creature*> CreatureBySpawnIdContainer;
         CreatureBySpawnIdContainer& GetCreatureBySpawnIdStore() { return _creatureBySpawnIdStore; }

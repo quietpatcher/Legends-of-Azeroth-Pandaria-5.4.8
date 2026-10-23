@@ -1629,7 +1629,11 @@ bool Creature::CanStartAttack(Unit const* who, bool force) const
     if (IsCivilian())
         return false;
 
-    if (HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC))
+    // IMMUNE_TO_NPC only blocks non-player targets, IMMUNE_TO_PC only player-controlled ones (as upstream TrinityCore 3.3.5).
+    // The old check made every creature with IMMUNE_TO_NPC ignore players walking up to it.
+    bool playerControlled = who->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PVP_ATTACKABLE); // 0x8, upstream UNIT_FLAG_PLAYER_CONTROLLED
+    if ((HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC) && !playerControlled)
+        || (HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC) && playerControlled))
         return false;
 
     // Do not attack non-combat pets
@@ -2622,6 +2626,9 @@ bool Creature::CanSwim() const
         return true;
 
     // speed 64A: creature_template_movement.Swim was ignored, every non-flyer swam (to-do 64)
+    // aquatic families keep swimming whatever the movement row says (crocolisks, turtles)
+    if (GetCreatureTemplate()->family == CREATURE_FAMILY_CROCOLISK || GetCreatureTemplate()->family == CREATURE_FAMILY_TURTLE)
+        return !CanFly();
     return !CanFly() && GetMovementTemplate().IsSwimAllowed();
 }
 

@@ -16,3 +16,4 @@ build-asan/
 *.bak.*
 *_reverted
 *_patched
+*.bak_*

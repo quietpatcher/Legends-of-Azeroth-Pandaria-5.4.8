@@ -465,7 +465,9 @@ void BotLifeMgr::LoadDungeons()
                         s.boss = false;
                 }
                 FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(ct->faction);
-                bool const pullTarget = !ct->npcflag
+                // (gossip-boss) a hostile boss whose only npc flag is gossip (Prince Tortheldrin) is fought like any other
+                bool const gossipBoss = s.boss && ct->npcflag == UNIT_NPC_FLAG_GOSSIP && ft && ft->IsHostileToPlayers();
+                bool const pullTarget = (!ct->npcflag || gossipBoss)
                     && ct->type != CREATURE_TYPE_CRITTER && ct->type != CREATURE_TYPE_NON_COMBAT_PET && ct->type != CREATURE_TYPE_TOTEM
                     && !(ct->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC))
                     // triggers/bunnies (invisible, not meant to be fought) are no pull targets
@@ -1192,6 +1194,21 @@ static bool HasFightableAttacker(Player const* member)
             return true;
     return false;
 }
+// (leadcombat-unfightable) an attacker the bot can fight and also sees (not hidden by the instance, not stealthed for it)
+static bool HasVisibleFightableAttacker(Player const* bot)
+{
+    for (Unit* a : bot->getAttackers())
+        if (IsFightableAttacker(a) && a->IsVisible() && bot->CanSeeOrDetect(a))
+            return true;
+    return false;
+}
+static bool EncounterInProgress(Player const* bot)
+{
+    if (InstanceMap* im = bot->GetMap()->ToInstanceMap())
+        if (InstanceScript* script = im->GetInstanceScript())
+            return script->IsEncounterInProgress();
+    return false;
+}
 
 // a member of the bot's party within 40 yards on its map is attacked
 // (door-block) a path that runs through a closed door (dynamic object, e.g. the Foundry Door of Foe Reaper 5000): the spline movement of
@@ -1300,8 +1317,11 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             lc.first = t.dungeonKills;
             lc.second = now;
         }
-        else if (now - lc.second > 180000)
+        // (leadcombat-unfightable) nothing fightable attacks the leader (triggers, hidden or stealthed units) and no boss
+        // fight is running (a boss can be unselectable for a phase): stop after 15 s
+        else if (now - lc.second > 180000 || (now - lc.second > 15000 && !HasVisibleFightableAttacker(bot) && !EncounterInProgress(bot)))
         {
+            uint32 waited = uint32((now - lc.second) / 1000);
             lc.second = now;
             uint32 n = 0;
             for (Unit* attacker : bot->getAttackers())
@@ -1314,7 +1334,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 if (Creature* ac = attacker->ToCreature())
                     t.dungeonSkip.insert(uint32(ac->GetSpawnId()));
             }
-            TC_LOG_INFO("playerbots", "BotLife: leader {} in combat 3 min without a victim or a kill ({} attackers) - combat stop", bot->GetName(), n);
+            TC_LOG_INFO("playerbots", "BotLife: leader {} in combat {} s without a victim or a kill ({} attackers) - combat stop", bot->GetName(), waited, n);
             QueueCombatStop(bot);
         }
         // (unhurt-foe) a victim that cannot be hurt yet (Raigonn before Commander Ri'mok is dead): its health has not changed
@@ -1890,7 +1910,10 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             // (part 2: any target, not only a boss)
             bool const closer = (path.GetPathType() & PATHFIND_INCOMPLETE)
                 && std::sqrt(ex * ex + ey * ey + ez * ez) + 25.0f < bot->GetExactDist(x, y, z);
-            if (((path.GetPathType() & PATHFIND_NORMAL) && ex * ex + ey * ey + ez * ez < 12.0f * 12.0f) || closer)
+            // (incomplete-near) a partial path that ends within 8 yards of the target is good enough (a mesh seam between the
+            // entrance hall and the garden of Scarlet Monastery: the mobs there were skipped as 'no path' while groups loot them)
+            bool const nearEnd = (path.GetPathType() & PATHFIND_INCOMPLETE) && ex * ex + ey * ey + ez * ez < 8.0f * 8.0f;
+            if (((path.GetPathType() & PATHFIND_NORMAL) && ex * ex + ey * ey + ez * ez < 12.0f * 12.0f) || closer || nearEnd)
             {
                 // (door-block) behind a closed door: open what the bots may open, otherwise take the next candidate
                 if (PathCrossesClosedDoor(bot, path))
@@ -2080,7 +2103,9 @@ namespace
                 if (picks != t.dungeonDynPicks.end() && picks->second >= 5)
                     return false;
             }
-            if (!bot->IsWithinDistInMap(c, range) || !c->IsHostileTo(bot))
+            // 328c-5-bossrange: a summoned boss (Majordomo Executus with his Flamewakers, Ragnaros) stands far from the
+            // last listed spawn: a boss counts within 400 yards, the rest within the usual range
+            if (!bot->IsWithinDistInMap(c, boss ? 400.0f : range) || !c->IsHostileTo(bot))
                 return false;
             return bot->IsValidAttackTarget(c, nullptr, nullptr, true);
         }
@@ -2104,7 +2129,8 @@ Creature* BotLifeMgr::PickUnlistedTarget(Player* bot, BotLifeInfo& t, uint32 now
         if (target)
         {
             t.dungeonDynActive += tickDelta;
-            if (t.dungeonDynActive > DUNGEON_UNLISTED_TIMEOUT)
+            // 328c-5-bosswalk: three times the timeout for the walk to a boss up to 400 yards away
+            if (t.dungeonDynActive > (IsBossEntry(target->GetEntry()) ? 3 * DUNGEON_UNLISTED_TIMEOUT : DUNGEON_UNLISTED_TIMEOUT))
             {
                 TC_LOG_INFO("playerbots", "BotLife {}: map {} gives up on unlisted target {} ({}) at dist {:.0f}", bot->GetName(), bot->GetMapId(),
                     target->GetName(), target->GetEntry(), bot->GetExactDist(target));
@@ -2123,7 +2149,7 @@ Creature* BotLifeMgr::PickUnlistedTarget(Player* bot, BotLifeInfo& t, uint32 now
         Cell cell(pair);
         cell.SetNoCreate();
         TypeContainerVisitor<Trinity::CreatureListSearcher<UnlistedTargetCheck>, GridTypeMapContainer> visitor(searcher);
-        cell.Visit(pair, visitor, *bot->GetMap(), *bot, check.range);
+        cell.Visit(pair, visitor, *bot->GetMap(), *bot, 400.0f);   // 328c-5-visit: the check keeps non-bosses to check.range
         for (Creature* c : found)
             if (!target || bot->GetExactDist(c) < bot->GetExactDist(target))
                 target = c;
@@ -2419,7 +2445,11 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
     t.dungeonSealedActive += tickDelta;
     float const tx = bestCreature ? bestCreature->GetPositionX() : best->x, ty = bestCreature ? bestCreature->GetPositionY() : best->y,
         tz = bestCreature ? bestCreature->GetPositionZ() : best->z;
-    if (bestDist < 10.0f)
+    // Captain Cookie (Deadmines) sits not-selectable and only wakes for someone within 5 yd (his
+    // MoveInLineOfSight): a boss in that state is walked up to closely, the rest keep the wide reach
+    bool const wakesClose = bestCreature && bestCreature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE) && bestCreature->IsHostileTo(bot);
+    float const reachDist = wakesClose ? 4.0f : 10.0f;
+    if (bestDist < reachDist)
     {
         describe("reached");
         t.dungeonSealedVisited.insert(best->spawnId);
@@ -2437,9 +2467,9 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
         return true;
     }
     if (!t.hasDest || t.destMap != map->GetId() || std::fabs(t.destX - tx) > 5.0f || std::fabs(t.destY - ty) > 5.0f)
-        SetDest(t, map->GetId(), tx, ty, tz, 6.0f);
+        SetDest(t, map->GetId(), tx, ty, tz, wakesClose ? 2.0f : 6.0f);
     Travel(bot, t, now);
-    if (!t.hasDest && bot->GetExactDist(tx, ty, tz) > 10.0f && !OpenDoorsNear(bot, 45.0f))
+    if (!t.hasDest && bot->GetExactDist(tx, ty, tz) > reachDist && !OpenDoorsNear(bot, 45.0f))
     {
         describe("unreachable");
         t.dungeonSealedVisited.insert(best->spawnId);
@@ -2516,6 +2546,13 @@ void BotLifeMgr::LogRunEnd(BotLifeDungeon const& d, BotLifeParty const& party, P
 // player, take the first option, then stay with that NPC for the event. At most two per run.
 namespace
 {
+    // 328c-1-key: key of an event NPC in gossipUsed / gossipEmpty: its spawn id, or for a summoned one (Majordomo
+    // Executus after his defeat) its guid counter, marked
+    uint32 EventNpcKey(Creature const* c)
+    {
+        return c->GetSpawnId() ? uint32(c->GetSpawnId()) : (uint32(c->GetGUID().GetCounter()) | 0x20000000u);
+    }
+
     struct EventNpcCheck
     {
         Player* bot;
@@ -2524,9 +2561,12 @@ namespace
         {
             uint32 const roles = UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_TRAINER | UNIT_NPC_FLAG_FLIGHTMASTER | UNIT_NPC_FLAG_INNKEEPER
                 | UNIT_NPC_FLAG_BANKER | UNIT_NPC_FLAG_AUCTIONEER | UNIT_NPC_FLAG_REPAIR | UNIT_NPC_FLAG_SPIRITHEALER | UNIT_NPC_FLAG_SPIRITGUIDE;
+            // 328c-2-range: a summoned event NPC has no spawn and is in no list (Majordomo stands 150-210 yd from the
+            // last boss at the Ragnaros room): within 400 yards it counts, a spawned one within 100 as before
+            uint32 const key = EventNpcKey(c);
             return c->IsAlive() && !c->IsInCombat() && c->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP) && !c->HasFlag(UNIT_FIELD_NPC_FLAGS, roles)
-                && c->GetScriptId() && !bot->IsHostileTo(c) && !t.gossipUsed.count(c->GetSpawnId()) && bot->IsWithinDistInMap(c, 100.0f)
-                && !(t.gossipEmpty.count(c->GetSpawnId()) && t.gossipEmpty.at(c->GetSpawnId()) == t.dungeonBosses);
+                && c->GetScriptId() && !bot->IsHostileTo(c) && !t.gossipUsed.count(key) && bot->IsWithinDistInMap(c, c->GetSpawnId() ? 100.0f : 400.0f)
+                && !(t.gossipEmpty.count(key) && t.gossipEmpty.at(key) == t.dungeonBosses);
         }
     };
 }
@@ -2540,15 +2580,21 @@ static bool GossipReached(Player* bot, WorldObject* target)
 }
 
 // 30 seconds at most on the way to an event NPC / object, then the leader gives it up
-bool BotLifeMgr::GossipApproachTimedOut(Player* bot, BotLifeInfo& t, uint32 key, std::string const& name, uint32 now)
+bool BotLifeMgr::GossipApproachTimedOut(Player* bot, BotLifeInfo& t, uint32 key, std::string const& name, uint32 now, uint32 limitMs)   // 328c-3-limit: 
 {
     if (t.gossipApproachKey != key)
     {
         t.gossipApproachKey = key;
         t.gossipApproachSince = now;
+        t.gossipApproachTick = now;
         return false;
     }
-    if (now - t.gossipApproachSince < 30000)
+    // uldaman-altar 3: the walk was interrupted for more than 10 s (combat, another target): the limit starts
+    // again - the bot that came back to the Altar of Archaedas minutes later gave it up 8 yards from it
+    if (now - t.gossipApproachTick > 10000)
+        t.gossipApproachSince = now;
+    t.gossipApproachTick = now;
+    if (now - t.gossipApproachSince < limitMs)   // 328c-3-wait: 
         return false;
     TC_LOG_INFO("playerbots", "BotLife {}: map {} gives up walking to event {} at {:.0f} {:.0f} {:.0f}", bot->GetName(), bot->GetMapId(), name,
         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
@@ -2576,7 +2622,7 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
     Cell cell(pair);
     cell.SetNoCreate();
     TypeContainerVisitor<Trinity::CreatureListSearcher<EventNpcCheck>, GridTypeMapContainer> visitor(searcher);
-    cell.Visit(pair, visitor, *bot->GetMap(), *bot, 100.0f);
+    cell.Visit(pair, visitor, *bot->GetMap(), *bot, 400.0f);   // 328c-2-visit: the check keeps spawned ones to 100 yd
     Creature* npc = nullptr;
     for (Creature* c : npcs)
         if (!clicksDone && (!npc || bot->GetExactDist(c) < bot->GetExactDist(npc)))
@@ -2611,10 +2657,13 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
                 if (clicksDone)
                     return false;   // (door-objects-unlimited)
                 // (event-objects) an altar (summoning ritual) with a script too: Altar of the Keepers / of Archaedas in Uldaman
+                // uldaman-altar 1: on the bot's own floor only (as GossipReached): the Altar of Archaedas lies 25 yards
+                // straight under the Altar of The Keepers, the walk there is the rest of the dungeon, not a MovePoint
                 return (go->GetGoType() == GAMEOBJECT_TYPE_BUTTON || go->GetGoType() == GAMEOBJECT_TYPE_GOOBER
                         || go->GetGoType() == GAMEOBJECT_TYPE_SUMMONING_RITUAL)
                     && go->GetGoState() == GO_STATE_READY && go->GetScriptId()
-                    && bot->IsWithinDistInMap(go, 60.0f);
+                    && bot->IsWithinDistInMap(go, 60.0f)
+                    && std::fabs(bot->GetPositionZ() - go->GetPositionZ()) < 12.0f;
             };
             Trinity::GameObjectListSearcher<decltype(goCheck)> goSearcher(bot, gos, goCheck);
             TypeContainerVisitor<Trinity::GameObjectListSearcher<decltype(goCheck)>, GridTypeMapContainer> goVisitor(goSearcher);
@@ -2733,8 +2782,13 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
                 float const d = bot->GetExactDist(o.x, o.y, o.z);
                 if (d <= 50.0f)
                 {
-                    t.gossipEmpty[farKey] = t.dungeonBosses;   // reached: the search nearby uses it if it can; again after the next boss
-                    continue;
+                    // uldaman-altar 2: reached on this floor only; on another floor it is no walk target either
+                    if (std::fabs(bot->GetPositionZ() - o.z) < 12.0f)
+                    {
+                        t.gossipEmpty[farKey] = t.dungeonBosses;   // reached: the search nearby uses it if it can; again after the next boss
+                        continue;
+                    }
+                    // uldaman-altar 3: on another floor it stays a walk target, else the bot flips between two targets
                 }
                 if (!farGo || d < bestFar)
                 {
@@ -2773,7 +2827,8 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
 
     if (!GossipReached(bot, npc))
     {
-        if (GossipApproachTimedOut(bot, t, npc->GetSpawnId(), npc->GetName(), now))
+        // 328c-3-walk: a summoned one can be 400 yards away - five times the usual 30 seconds for the walk
+        if (GossipApproachTimedOut(bot, t, EventNpcKey(npc), npc->GetName(), now, npc->GetSpawnId() ? 30000 : 150000))
             return true;
         if (!bot->isMoving() || now - t.lastMoveOrder > 2500)
         {
@@ -2784,25 +2839,39 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
     }
 
     bot->StopMoving();
-    t.gossipUsed.insert(npc->GetSpawnId());
+    uint32 const npcKey = EventNpcKey(npc);   // 328c-4-chain: 
+    t.gossipUsed.insert(npcKey);
     bot->PlayerTalkClass->ClearMenus();
-    if (!sScriptMgr->OnGossipHello(bot, npc))
+    if (!sScriptMgr->OnGossipHello(bot, npc) && !npc->AI()->OnGossipHello(bot))   // as NPCHandler.cpp does it for a player
         bot->PrepareGossipMenu(npc, npc->GetGossipMenuId(), false);
     GossipMenu& menu = bot->PlayerTalkClass->GetGossipMenu();
     if (menu.GetMenuItems().empty())
     {
         bot->PlayerTalkClass->ClearMenus();
         // again after the next boss (the Disciple of Naralex talks once the four fanglords are dead)
-        t.gossipUsed.erase(npc->GetSpawnId());
-        t.gossipEmpty[npc->GetSpawnId()] = t.dungeonBosses;
+        t.gossipUsed.erase(npcKey);
+        t.gossipEmpty[npcKey] = t.dungeonBosses;
         return true;   // nothing to choose (the fanglords may still be alive): try another NPC later
     }
-    uint32 item = menu.GetMenuItems().begin()->first;
-    uint32 sender = menu.GetMenuItemSender(item);
-    uint32 action = menu.GetMenuItemAction(item);
-    uint32 menuId = menu.GetMenuId();
-    if (!sScriptMgr->OnGossipSelect(bot, npc, sender, action))
-        bot->OnGossipSelect(npc, item, menuId);
+    // 328c-4-chain: as the gossip handler does it for a player (MiscHandler.cpp): the CreatureScript, then the AI
+    // (Lord Victor Nefarius and Vaelastrasz start their encounter in the AI), then the DB option. A DB option that opens a
+    // sub-menu is followed, first option each time, at most five levels (Nefarius: 21330 -> 21331 -> 21332 "Please do.";
+    // Vaelastrasz: 6021 -> 21334 "Vaelastrasz, no!!!").
+    for (uint8 level = 0; level < 5; ++level)
+    {
+        GossipMenu& current = bot->PlayerTalkClass->GetGossipMenu();
+        if (current.GetMenuItems().empty())
+            break;
+        uint32 const item = current.GetMenuItems().begin()->first;
+        uint32 const sender = current.GetMenuItemSender(item);
+        uint32 const action = current.GetMenuItemAction(item);
+        uint32 const menuId = current.GetMenuId();
+        if (sScriptMgr->OnGossipSelect(bot, npc, sender, action) || npc->AI()->OnGossipSelect(bot, menuId, item))
+            break;
+        bot->OnGossipSelect(npc, item, menuId);   // the DB option: closes the menu or prepares the sub-menu
+        if (bot->PlayerTalkClass->GetGossipMenu().GetMenuId() == menuId)
+            break;   // no sub-menu came up
+    }
     bot->PlayerTalkClass->ClearMenus();
     t.escortNpc = npc->GetGUID();
     t.escortUntil = now + 25 * MINUTE * IN_MILLISECONDS;

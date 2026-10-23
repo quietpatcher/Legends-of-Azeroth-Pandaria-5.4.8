@@ -115,8 +115,9 @@ class boss_archaedas : public CreatureScript
 
             void SpellHit(Unit* /*caster*/, const SpellInfo* spell) override
             {
-                // Being woken up from the altar, start the awaken sequence
-                if (spell == sSpellMgr->GetSpellInfo(SPELL_ARCHAEDAS_AWAKEN))
+                // Being woken up from the altar, start the awaken sequence; SpellHit arrives once per effect of the
+                // awaken spell, so only the first hit speaks and starts the timer (to-do 345: the yell came twice)
+                if (spell == sSpellMgr->GetSpellInfo(SPELL_ARCHAEDAS_AWAKEN) && !bWakingUp)
                 {
                     Talk(SAY_AGGRO);
                     iAwakenTimer = 4000;
@@ -381,13 +382,18 @@ class go_altar_of_archaedas : public GameObjectScript
 
         bool OnGossipHello(Player* player, GameObject* go) override
         {
+            // A click sends both CMSG_GAMEOBJ_USE and CMSG_GAMEOBJ_REPORT_USE and both reach this hook; the altar is flagged
+            // after the first use, so the second call must not wake Archaedas again (double speech, timer reset)
+            if (go->HasFlag(GAMEOBJECT_FIELD_FLAGS, GO_FLAG_INTERACT_COND))
+                return true;
+
             InstanceScript* instance = player->GetInstanceScript();
             if (!instance)
                 return false;
 
             player->CastSpell (player, SPELL_BOSS_OBJECT_VISUAL, false);
 
-            instance->SetData64(0, player->GetGUID());     // activate archaedas
+            instance->SetGuidData(0, player->GetGUID());     // activate archaedas
             go->SetFlag(GAMEOBJECT_FIELD_FLAGS, GO_FLAG_INTERACT_COND);
             return false;
         }

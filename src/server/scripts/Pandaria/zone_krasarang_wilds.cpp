@@ -2438,21 +2438,160 @@ struct npc_krasarang_wilds_sunwalker_dezco_reclaimer : public ScriptedAI
     }
 };
 
-// 64950 Must be as properly scripted event "Wanderer's Festival"...someday...maybe...
+// 64950 Properly scripted event "Wanderer's Festival"
 struct npc_lorewalker_cho_wanderers_festival : public ScriptedAI
 {
     npc_lorewalker_cho_wanderers_festival(Creature* c) : ScriptedAI(c) { }
 
-    enum { SPELL_WANDERERS_DREAMERS_AND_YOU_CREDIT = 131331 };
+    TaskScheduler scheduler;
 
-    void sOnGameEvent(bool, uint16 eventId)
+    enum
     {
-        if (eventId == 96)
+        NPC_LOREWALKER_SHUCHUN                  = 64953,
+        NPC_WANDERING_HERALD                    = 73594,
+
+        SPELL_WANDERERS_DREAMERS_AND_YOU_CREDIT = 131331,
+
+        SPELL_FIREWORK_YELLOW                   = 124556,
+        SPELL_FIREWORK_BLUE                     = 126169,
+        SPELL_FIREWORK_GREEN                    = 128313,
+        SPELL_FIREWORK_RED                      = 128314,
+
+        GAME_EVENT_WANDERERS_FESTIVAL           = 96,
+
+        SHUCHUN_TALK_OPENING_1                  = 0,
+        SHUCHUN_TALK_OPENING_2                  = 1,
+        SHUCHUN_TALK_OPENING_3                  = 2,
+        SHUCHUN_TALK_OPENING_4                  = 3,
+        SHUCHUN_TALK_CLOSING_1                  = 4,
+        SHUCHUN_TALK_CLOSING_2                  = 5,
+        SHUCHUN_TALK_CLOSING_3                  = 6,
+        SHUCHUN_TALK_CLOSING_4                  = 7,
+        SHUCHUN_TALK_CLOSING_5                  = 8
+
+    };
+
+    void Reset() override
+    {
+        scheduler.CancelAll();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        scheduler.Update(diff);
+        ScriptedAI::UpdateAI(diff);
+    }
+
+    void GrantAchievementCredit()
+    {
+        std::list<Player*> players;
+        me->GetPlayerListInGrid(players, 80.0f);
+        for (auto&& player : players)
+            player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_BE_SPELL_TARGET, SPELL_WANDERERS_DREAMERS_AND_YOU_CREDIT);
+    }
+
+    void sOnGameEvent(bool start, uint16 eventId) override
+    {
+        if (eventId != GAME_EVENT_WANDERERS_FESTIVAL)
+            return;
+
+        if (start)
         {
-            std::list<Player*> players;
-            me->GetPlayerListInGrid(players, 80.0f);
-            for (auto&& player : players)
-                player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_BE_SPELL_TARGET, SPELL_WANDERERS_DREAMERS_AND_YOU_CREDIT);
+            scheduler.CancelAll();
+
+            // Delay 3s to allow spawned event creatures to appear on map
+            scheduler.Schedule(Milliseconds(3000), [this](TaskContext /*context*/)
+            {
+                if (Creature* herald = me->FindNearestCreature(NPC_WANDERING_HERALD, 60.0f, true))
+                    herald->GetMotionMaster()->MovePoint(0, -1080.0f, -444.0f, 0.4f);
+
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_OPENING_1);
+            });
+
+            scheduler.Schedule(Milliseconds(8000), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_OPENING_2);
+            });
+
+            scheduler.Schedule(Milliseconds(13000), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_OPENING_3);
+            });
+
+            // Cho sings the Song of Liu Lang (source: Warcraft Wiki, Wanderer's Festival); achievement credit for those present
+            scheduler.Schedule(Milliseconds(18000), [this](TaskContext /*context*/)
+            {
+                me->HandleEmoteCommand(EMOTE_ONESHOT_CHEER);
+                GrantAchievementCredit();
+            });
+
+            // Shuchun thanks Cho
+            scheduler.Schedule(Milliseconds(28000), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_OPENING_4);
+            });
+
+            // Fireworks launch sequence
+            scheduler.Schedule(Milliseconds(31000), [this](TaskContext /*context*/)
+            {
+                me->CastSpell(me, SPELL_FIREWORK_YELLOW, true);
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->CastSpell(shuchun, SPELL_FIREWORK_BLUE, true);
+            });
+
+            scheduler.Schedule(Milliseconds(34000), [this](TaskContext /*context*/)
+            {
+                me->CastSpell(me, SPELL_FIREWORK_RED, true);
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->CastSpell(shuchun, SPELL_FIREWORK_GREEN, true);
+            });
+
+            scheduler.Schedule(Milliseconds(37000), [this](TaskContext /*context*/)
+            {
+                me->CastSpell(me, SPELL_FIREWORK_BLUE, true);
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->CastSpell(shuchun, SPELL_FIREWORK_YELLOW, true);
+            });
+
+            // Closing ceremony scheduled at 115 minutes (6900 seconds)
+            scheduler.Schedule(Minutes(115), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_CLOSING_1);
+            });
+
+            scheduler.Schedule(Minutes(115) + Milliseconds(5000), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_CLOSING_2);
+            });
+
+            scheduler.Schedule(Minutes(115) + Milliseconds(11000), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_CLOSING_3);
+            });
+
+            scheduler.Schedule(Minutes(115) + Milliseconds(17000), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_CLOSING_4);
+            });
+
+            scheduler.Schedule(Minutes(115) + Milliseconds(23000), [this](TaskContext /*context*/)
+            {
+                if (Creature* shuchun = me->FindNearestCreature(NPC_LOREWALKER_SHUCHUN, 30.0f, true))
+                    shuchun->AI()->Talk(SHUCHUN_TALK_CLOSING_5);
+                GrantAchievementCredit();
+            });
+        }
+        else
+        {
+            scheduler.CancelAll();
         }
     }
 };

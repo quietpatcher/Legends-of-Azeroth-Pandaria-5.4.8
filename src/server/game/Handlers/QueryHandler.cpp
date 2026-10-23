@@ -478,6 +478,9 @@ void WorldSession::HandleCorpseQueryOpcode(WorldPackets::Query::QueryCorpse& /*p
 }
 
 // hack fix
+// Broadcast text of npc_text 68 (DEFAULT_GOSSIP_MESSAGE): "Greetings, $n."
+static constexpr uint32 DEFAULT_GOSSIP_BROADCAST_TEXT = 50429;
+
 void WorldSession::HandleNpcTextQueryOpcode(WorldPackets::Query::QueryNPCText& packet)
 {
     uint32 textID = packet.TextID;
@@ -493,30 +496,25 @@ void WorldSession::HandleNpcTextQueryOpcode(WorldPackets::Query::QueryNPCText& p
     // hackfix
     if (!pGossip)
     {
-        data << float(0);
+        // no npc_text: show the generic greeting, the client drops the window without a broadcast text
+        data << float(1);
         for (int i = 0; i < MAX_GOSSIP_TEXT_OPTIONS - 1; i++)
             data << float(0);
 
-        data << uint32(1);
+        data << uint32(DEFAULT_GOSSIP_BROADCAST_TEXT);
                             
         for (int i = 0; i < MAX_GOSSIP_TEXT_OPTIONS - 1; i++)
             data << uint32(0); 
     }
     else
     {
-        data << float(pGossip->Options[0].Probability);
+        // text without a broadcast id (not in the 5.4.8 client): generic greeting instead of an empty window
+        bool hasBroadcast = pGossip->Options[0].BroadcastTextID > 0;
+        data << float(hasBroadcast ? pGossip->Options[0].Probability : 1.0f);
         for (int i = 0; i < MAX_GOSSIP_TEXT_OPTIONS - 1; i++)
             data << float(0);
 
-        //data << textID;    // should be a broadcast id   
-        if (pGossip->Options[0].BroadcastTextID > 0)
-        {
-            data << pGossip->Options[0].BroadcastTextID;
-        }
-        else
-        {
-            data << uint32(1);
-        }
+        data << uint32(hasBroadcast ? pGossip->Options[0].BroadcastTextID : DEFAULT_GOSSIP_BROADCAST_TEXT);
                             
         for (int i = 0; i < MAX_GOSSIP_TEXT_OPTIONS - 1; i++)
             data << uint32(0); 

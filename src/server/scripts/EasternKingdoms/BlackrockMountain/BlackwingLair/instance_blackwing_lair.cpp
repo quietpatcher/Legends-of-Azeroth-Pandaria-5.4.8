@@ -88,6 +88,7 @@ class instance_blackwing_lair : public InstanceMapScript
 
             // Chormaggus
             ObjectGuid ChromaggusGUID;
+            ObjectGuid ChromaggusDoorGUID;   // bwl 328a-2-member: 
 
             // Nefarian
             ObjectGuid LordVictorNefariusGUID;
@@ -112,6 +113,7 @@ class instance_blackwing_lair : public InstanceMapScript
                 FlamegorGUID = ObjectGuid::Empty;
                 // Chormaggus
                 ChromaggusGUID = ObjectGuid::Empty;
+                ChromaggusDoorGUID = ObjectGuid::Empty;   // bwl 328a-2-init: 
                 // Nefarian
                 LordVictorNefariusGUID = ObjectGuid::Empty;
                 NefarianGUID = ObjectGuid::Empty;
@@ -173,6 +175,13 @@ class instance_blackwing_lair : public InstanceMapScript
                     case GO_PORTCULLIS_NEFARIAN:
                         AddDoor(go, true);
                         break;
+                    case GO_CHROMAGGUS_DOOR:
+                        // bwl 328a-2-create: the pen door opens with the lever (go_chromaggus_lever); once Chromaggus is
+                        // down it stays open, also after a reload of the instance
+                        ChromaggusDoorGUID = go->GetGUID();
+                        if (GetBossState(BOSS_CHROMAGGUS) == DONE)
+                            HandleGameObject(ObjectGuid::Empty, true, go);
+                        break;
                 }
             }
 
@@ -194,6 +203,11 @@ class instance_blackwing_lair : public InstanceMapScript
                             for (auto &&eggItr : EggList)
                                 if (GameObject* egg = instance->GetGameObject(eggItr))
                                     egg->SetPhaseMask(2, true);
+                        break;
+                    case BOSS_CHROMAGGUS:
+                        // bwl 328a-2-done: the lever is used up, the pen door stays open
+                        if (state == DONE)
+                            HandleGameObject(ChromaggusDoorGUID, true);
                         break;
                     case BOSS_NEFARIAN:
                         switch (state)
@@ -231,6 +245,7 @@ class instance_blackwing_lair : public InstanceMapScript
                     case DATA_CHROMAGGUS:             return ChromaggusGUID;
                     case DATA_LORD_VICTOR_NEFARIUS:   return LordVictorNefariusGUID;
                     case DATA_NEFARIAN:               return NefarianGUID;
+                    case DATA_GO_CHROMAGGUS_DOOR:     return ChromaggusDoorGUID;   // bwl 328a-2-guid: 
                 }
 
                 return ObjectGuid::Empty;

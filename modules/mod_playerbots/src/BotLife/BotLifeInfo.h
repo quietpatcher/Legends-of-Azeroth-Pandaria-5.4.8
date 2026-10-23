@@ -183,6 +183,7 @@ struct BotLifeInfo
     uint32 nextGossipTry = 0;
     uint32 gossipApproachKey = 0;      // the event NPC / object the bot walks up to, since when
     uint32 gossipApproachSince = 0;
+    uint32 gossipApproachTick = 0;     // uldaman-altar 3: last tick of that approach
     std::map<uint32, uint32> gossipEmpty;   // event NPCs with nothing to say yet -> bosses down then
     uint32 noVictimCombatSince = 0;    // phantom-combat watchdog (see BotLife.cpp)
     bool weaponChecked = false;
@@ -296,6 +297,7 @@ struct BotLifeInfo
         gossipEmpty.clear();
         gossipApproachKey = 0;
         gossipApproachSince = 0;
+        gossipApproachTick = 0;   // uldaman-altar 3: 
         eventFarVisited.clear();
         nextGossipTry = 0;
         escortNpc.Clear();

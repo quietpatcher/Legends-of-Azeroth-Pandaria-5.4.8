@@ -124,6 +124,11 @@ public:
 
         void JustEngagedWith(Unit* /*who*/) override
         {
+            // ubrs-emberseer 1: still caged (the altar event has not freed him): no combat. The core pulls him into
+            // combat and strips IMMUNE_TO_PC (Unit::SetInCombatState) while NOT_SELECTABLE stays - an untargetable boss that
+            // pyroblasted bot parties to death (1341 deaths, 77 stalled runs in three days). UpdateAI drops the combat again.
+            if (me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE))
+                return;
             // ### TODO Check combat timing ###
             events.ScheduleEvent(EVENT_FIRENOVA,    6000);
             events.ScheduleEvent(EVENT_FLAMEBUFFET, 3000);
@@ -207,6 +212,19 @@ public:
 
         void UpdateAI(uint32 diff) override
         {
+            // ubrs-emberseer 2: a caged Emberseer fights nobody. Whatever put him in combat (Fire Shield ticks, the
+            // incarcerators' threat) is undone here and the immunity the core removed on combat entry is restored, so the
+            // out-of-combat event path below (respawn, fire shield, player check, growing) keeps running until he is freed.
+            if (me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE))
+            {
+                if (!me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC))
+                    me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
+                if (me->IsInCombat())
+                {
+                    me->CombatStop(true);
+                    me->GetThreatManager().ClearAllThreat();
+                }
+            }
             if (!UpdateVictim())
             {
                 events.Update(diff);

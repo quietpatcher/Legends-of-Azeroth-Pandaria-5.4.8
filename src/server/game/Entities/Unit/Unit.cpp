@@ -449,15 +449,8 @@ void Unit::Update(uint32 p_time)
                     {
                         Unit* target = threat->GetOwner();
                         if (Creature* creature = target->ToCreature())
-                        {
-                            // engage-cluster 62a: a creature that still fights us keeps its threat; the short leash used
-                            // here (timer is 0) reset fights in progress (to-do 280/295/296)
-                            if (creature->IsAlive() && creature->IsInMap(this) && creature->GetVictim() == this
-                                && isInAccessiblePlaceFor(creature))
-                                continue;
                             if (!creature->CanCreatureAttack(this, false))
                                 threat->ClearThreat();
-                        }
                     }
                     if (GetThreatManager().GetThreatenedByMeList().empty())
                         ClearInCombat();
@@ -12671,17 +12664,6 @@ Unit* Creature::SelectVictim()
         if (!target && !GetThreatManager().IsThreatListEmpty(true))
             // No taunt aura or taunt aura caster is dead standard target selection
             target = GetThreatManager().GetCurrentVictim();
-        // engage-cluster 62c: a guardian of a creature (Hellcaller voidwalker, to-do 294) fights what its owner fights;
-        // its own threat list is empty because nobody hit it
-        if (!target && IsSummon() && !IsControlledByPlayer() && !HasReactState(REACT_PASSIVE))
-            if (Unit* owner = ToTempSummon()->GetOwner())
-                if (owner->IsInCombat())
-                    if (Unit* ownerTarget = owner->getAttackerForHelper())
-                        if (_IsTargetAcceptable(ownerTarget) && CanCreatureAttack(ownerTarget))
-                        {
-                            GetThreatManager().AddThreat(ownerTarget, 0.0f, nullptr, true, true);
-                            target = ownerTarget;
-                        }
     }
     else if (!HasReactState(REACT_PASSIVE))
     {

@@ -16,6 +16,8 @@
 */
 
 #include "Object.h"
+#include "Map.h"            // perf2-inc: Map::BotSkipsPackets
+#include "WorldSession.h"
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
 #include "CellImpl.h"
@@ -3910,8 +3912,10 @@ struct WorldObjectChangeAccumulator
         // Only send update once to a player
         if (plr_list.find(player->GetGUID()) == plr_list.end() && player->HaveAtClient(&i_object))
         {
-            i_object.BuildFieldsUpdate(player, i_updateDatas);
             plr_list.insert(player->GetGUID());
+            if (Map::BotSkipsPackets(player))   // perf2-E: no values update for a bot
+                return;
+            i_object.BuildFieldsUpdate(player, i_updateDatas);
         }
     }
 
