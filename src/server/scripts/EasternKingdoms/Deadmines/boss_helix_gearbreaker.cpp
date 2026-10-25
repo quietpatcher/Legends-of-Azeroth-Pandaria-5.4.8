@@ -76,6 +76,7 @@ enum Events
     EVENT_HELIX_RIDE    = 12,   // recast of Helix Ride on the players
     EVENT_RIDE_FACE     = 13,   // leap onto a player's face
     EVENT_RIDE_FACE_END = 14,   // ten seconds later: Chest Bomb (heroic) and the leap back onto the Oaf / the next player
+    EVENT_SEAT_CHECK    = 15,   // stage one: Helix is on the Oaf or on a face, never on foot
 };
 
 enum Points
@@ -131,6 +132,14 @@ class boss_helix_gearbreaker : public CreatureScript
             {
                 Creature* oaf = GetOaf();
                 return oaf && oaf->IsAlive() && oaf->GetStandState() != UNIT_STAND_STATE_DEAD;
+            }
+
+            // Stage one: back onto seat 0 of the Oaf. Fully triggered, a normal Ride Vehicle cast fails on range or line of sight
+            // while the Oaf charges across the room, and Helix was left walking around (to-do 365)
+            void ReturnToOaf()
+            {
+                if (Creature* oaf = GetOaf())
+                    me->EnterVehicle(oaf, 0, true);
             }
 
             // Random living player that carries the Helix Ride vehicle kit; prefers one Helix is not riding right now
@@ -215,6 +224,7 @@ class boss_helix_gearbreaker : public CreatureScript
                 DoCastAOE(SPELL_HELIX_RIDE, true);
                 events.ScheduleEvent(EVENT_HELIX_RIDE, 56000);
                 events.ScheduleEvent(EVENT_THROW_HELIX, 34000);
+                events.ScheduleEvent(EVENT_SEAT_CHECK, 2000);
                 Talk(SAY_AGGRO);
                 DoZoneInCombat();
             }
@@ -301,6 +311,7 @@ class boss_helix_gearbreaker : public CreatureScript
                             me->GetThreatManager().AddThreat(target, 1000000.0f, nullptr, true, true);
                             AttackStart(target);
                             events.ScheduleEvent(EVENT_RIDE_FACE_END, 10000);
+                            events.RescheduleEvent(EVENT_SEAT_CHECK, 2000);   // give the leap time to land
                             break;
                         }
                         case EVENT_RIDE_FACE_END:
@@ -317,13 +328,29 @@ class boss_helix_gearbreaker : public CreatureScript
                             if (!_stageTwo && OafIsUp())
                             {
                                 // second leap: back onto the Oaf's back
-                                if (Creature* oaf = GetOaf())
-                                    me->EnterVehicle(oaf, 0);
+                                ReturnToOaf();
+                                events.RescheduleEvent(EVENT_SEAT_CHECK, 1500);
                             }
                             else
                                 events.ScheduleEvent(EVENT_RIDE_FACE, 1);   // stage two: immediately the next player (wiki)
                             break;
                         }
+                        case EVENT_SEAT_CHECK:
+                            if (_stageTwo || !OafIsUp())
+                                break;
+                            if (!me->GetVehicle())
+                            {
+                                // the ridden player died or was thrown off before the ten seconds were up
+                                if (!_rideGuid.IsEmpty())
+                                {
+                                    events.CancelEvent(EVENT_RIDE_FACE_END);
+                                    me->RemoveAurasDueToSpell(SPELL_RIDE_FACE_TIMER);
+                                    _rideGuid.Clear();
+                                }
+                                ReturnToOaf();
+                            }
+                            events.ScheduleEvent(EVENT_SEAT_CHECK, 1000);
+                            break;
                         case EVENT_STICKY_BOMB:
                             if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 0, 0.0f, true))
                             {
@@ -395,6 +422,7 @@ class npc_lumbering_oaf : public CreatureScript
                     instance->SendEncounterUnit(ENCOUNTER_FRAME_DISENGAGE, me);
 
                 m_fake = false;
+                me->SetControlled(false, UNIT_STATE_ROOT);
                 me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_PACIFIED | UNIT_FLAG_NON_ATTACKABLE);
                 me->SetStandState(UNIT_STAND_STATE_STAND);
                 me->SetReactState(REACT_AGGRESSIVE);
@@ -405,9 +433,18 @@ class npc_lumbering_oaf : public CreatureScript
                 switch (action)
                 {
                     case ACTION_CHARGE:
-                        events.ScheduleEvent(EVENT_CHARGE_OAF1, 500);
+                        if (!m_fake)
+                            events.ScheduleEvent(EVENT_CHARGE_OAF1, 500);
                         break;
                 }
+            }
+
+            // Down for good: a later attack start (threat, the end of a charge) must not make him chase again (to-do 366)
+            void AttackStart(Unit* who) override
+            {
+                if (m_fake)
+                    return;
+                ScriptedAI::AttackStart(who);
             }
 
             void JustEngagedWith(Unit* who) override
@@ -438,17 +475,30 @@ class npc_lumbering_oaf : public CreatureScript
 
             void DamageTaken(Unit* attacker, uint32& damage) override
             {
-                if (me->GetHealth() <= damage && !m_fake)
+                if (m_fake)
                 {
                     damage = 0;
+                    return;
+                }
+
+                if (me->GetHealth() <= damage)
+                {
+                    damage = 0;
+                    // Down for good: stop the chase or the charge in flight, or the Oaf slid after the players lying on the
+                    // ground and the charge end made him aggressive again (to-do 366)
+                    m_fake = true;
+                    me->GetMotionMaster()->Clear();
+                    me->GetMotionMaster()->MoveIdle();
+                    me->StopMoving();
 
                     if (Vehicle* vehicle = me->GetVehicleKit())
                         vehicle->RemoveAllPassengers();
 
-                    me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE);
+                    me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_PACIFIED);
                     me->SetReactState(REACT_PASSIVE);
                     me->SetStandState(UNIT_STAND_STATE_DEAD);
                     me->AttackStop();
+                    me->SetControlled(true, UNIT_STATE_ROOT);
 
                     if (instance)
                         instance->SendEncounterUnit(ENCOUNTER_FRAME_DISENGAGE, me);
@@ -459,6 +509,9 @@ class npc_lumbering_oaf : public CreatureScript
 
             void MovementInform(uint32 type, uint32 pointId) override
             {
+                if (m_fake)
+                    return;
+
                 if (type == POINT_MOTION_TYPE)
                 {
                     switch (pointId)
@@ -475,6 +528,14 @@ class npc_lumbering_oaf : public CreatureScript
 
             void UpdateAI(uint32 diff) override
             {
+                if (m_fake)
+                {
+                    // measured 23-10: the downed Oaf still got a victim and a chase back after the stop above
+                    if (me->GetVictim())
+                        me->AttackStop();
+                    return;
+                }
+
                 if (!UpdateVictim())
                     return;
 

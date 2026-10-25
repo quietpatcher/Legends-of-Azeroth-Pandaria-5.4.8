@@ -2050,6 +2050,41 @@ bool PlayerbotAI::CanCastSpell(std::string const name, Unit* target, Item* itemT
     return CanCastSpell(_aiObjectContext->GetValue<uint32>("spell id", name)->Get(), target, true, itemTarget);
 }
 
+// The client sends the base spell of an action bar override and WorldSession::HandleCastSpellOpcode swaps it
+// (Mangle 33917 -> Mangle (Bear) 33878 in Bear Form). Bots cast directly, so do the same swap here, or they cast the base
+// spell, which for Mangle only has a dummy effect.
+uint32 PlayerbotAI::GetActionbarOverride(uint32 spellId) const
+{
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+    if (!spellInfo)
+        return spellId;
+
+    for (auto&& overrideId : spellInfo->OverrideSpellList)
+    {
+        if (bot->HasSpell(overrideId))
+        {
+            if (SpellInfo const* overrideInfo = sSpellMgr->GetSpellInfo(overrideId))
+            {
+                spellInfo = overrideInfo;
+                spellId = overrideId;
+            }
+            break;
+        }
+    }
+
+    Unit::AuraEffectList swaps = bot->GetAuraEffectsByType(SPELL_AURA_OVERRIDE_ACTIONBAR_SPELLS);
+    Unit::AuraEffectList const& swaps2 = bot->GetAuraEffectsByType(SPELL_AURA_OVERRIDE_ACTIONBAR_SPELLS_2);
+    if (!swaps2.empty())
+        swaps.insert(swaps.end(), swaps2.begin(), swaps2.end());
+
+    for (auto&& itr : swaps)
+        if (itr->IsAffectingSpell(spellInfo))
+            if (SpellInfo const* newInfo = sSpellMgr->GetSpellInfo(itr->GetAmount()))
+                return newInfo->Id;
+
+    return spellId;
+}
+
 bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell, Item* itemTarget, Item* castItem)
 {
     if (!_spellRetryBlock.empty())   // , see CastSpell
@@ -2104,6 +2139,8 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         }
         return false;
     }
+
+    spellid = GetActionbarOverride(spellid);
 
     if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) != nullptr)
     {
@@ -2405,6 +2442,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     {
         return false;
     }
+
+    if (!bot->GetPet() || !bot->GetPet()->HasSpell(spellId))
+        spellId = GetActionbarOverride(spellId);
 
     if (!target)
         target = bot;

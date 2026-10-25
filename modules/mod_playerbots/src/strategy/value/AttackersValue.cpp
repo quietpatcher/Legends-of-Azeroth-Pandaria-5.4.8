@@ -15,6 +15,37 @@
 #include "ReputationMgr.h"
 #include "ServerFacade.h"
 
+// An NPC that fights next to the bot in a dungeon and that the bot may assist (an escort such as Muyoh in Wailing Caverns):
+// its attackers are the group's enemies, as they are for players (382). Escort scripts often switch the NPC to a neutral
+// escortee faction, so the friend check is IsValidAssistTarget, not IsFriendlyTo. An NPC that the player side attacks is
+// skipped, and only attackers hostile to the bot and not controlled by a player are taken.
+static void AddAttackersOfEscort(Player* bot, std::unordered_set<Unit*>& targets)
+{
+    std::list<Unit*> nearby;
+    float const range = 40.0f;
+    Trinity::AnyUnitInObjectRangeCheck check(bot, range);
+    Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(bot, nearby, check);
+    bot->VisitNearbyGridObject(range, searcher);
+    for (Unit* unit : nearby)
+    {
+        Creature* creature = unit->ToCreature();
+        if (!creature || !creature->IsAlive() || !creature->IsInCombat() || creature->IsControlledByPlayer() || creature->IsTotem() ||
+            creature->IsTrigger() || creature->GetCreatureType() == CREATURE_TYPE_CRITTER)
+            continue;
+        if (bot->IsHostileTo(creature) || !bot->IsValidAssistTarget(creature))
+            continue;
+        bool attackedByPlayerSide = false;
+        for (Unit* attacker : creature->getAttackers())
+            if (attacker->GetCharmerOrOwnerPlayerOrPlayerItself())
+                attackedByPlayerSide = true;
+        if (attackedByPlayerSide)
+            continue;
+        for (Unit* attacker : creature->getAttackers())
+            if (attacker->IsAlive() && bot->IsHostileTo(attacker) && bot->GetDistance(attacker) < sPlayerbotAIConfig->sightDistance)
+                targets.insert(attacker);
+    }
+}
+
 GuidVector AttackersValue::Calculate()
 {
     std::unordered_set<Unit*> targets;
@@ -27,6 +58,9 @@ GuidVector AttackersValue::Calculate()
 
     if (Group* group = bot->GetGroup())
         AddAttackersOf(group, targets);
+
+    if (bot->GetMap()->IsDungeon())
+        AddAttackersOfEscort(bot, targets);
 
     RemoveNonThreating(targets);
 
@@ -185,8 +219,11 @@ bool AttackersValue::IsPossibleTarget(Unit* attacker, Player* bot, float range)
         bot->CanSeeOrDetect(attacker) &&
         !(sPlayerbotAIConfig->IsPvpProhibited(attacker->GetZoneId(), attacker->GetAreaId()) &&
             (attacker->GetGUID().IsPlayer() || attacker->GetGUID().IsPet())) &&
-        !(attacker->IsPlayer() && !attacker->IsPvP() && !attacker->IsFFAPvP() &&
-            (!bot->duel || bot->duel->opponent != attacker)) &&
+        // a player, or anything a player controls (pet, guardian, totem): no target unless that player is flagged
+        !(attacker->GetCharmerOrOwnerPlayerOrPlayerItself() &&
+            !attacker->GetCharmerOrOwnerPlayerOrPlayerItself()->IsPvP() &&
+            !attacker->GetCharmerOrOwnerPlayerOrPlayerItself()->IsFFAPvP() &&
+            (!bot->duel || bot->duel->opponent != attacker->GetCharmerOrOwnerPlayerOrPlayerItself())) &&
         (!c ||
             (!c->IsInEvadeMode() &&
                 ((!isMemberBotGroup && botAI->HasStrategy("attack tagged", BOT_STATE_NON_COMBAT)) || leaderHasThreat ||

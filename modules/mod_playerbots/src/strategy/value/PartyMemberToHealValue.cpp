@@ -8,6 +8,11 @@
 #include "Playerbots.h"
 #include "PlayerbotSpec.h"
 #include "ServerFacade.h"
+#include "CellImpl.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "GameTime.h"
+#include <unordered_map>
 
 class IsTargetOfHealingSpell : public SpellEntryPredicate
 {
@@ -98,6 +103,62 @@ Unit* PartyMemberToHeal::Calculate()
                 calc.probe(probeValue, charm);
             }
         }
+    }
+
+    // an NPC that fights next to the group in a dungeon (an escort such as Muyoh in Wailing Caverns): players heal it, the
+    // healer only looked at group members, their pets and charms (382). Escort scripts often switch the NPC to a neutral
+    // escortee faction (Muyoh: 250), so a friendly-only search never returned it; take every unit the bot may assist and
+    // accept a non-friendly one only while it fights enemies of the bot and nobody on the player side attacks it.
+    if (bot->GetMap()->IsDungeon())
+    {
+        std::list<Unit*> nearby;
+        float const range = sPlayerbotAIConfig->healDistance;
+        Trinity::AnyUnitInObjectRangeCheck check(bot, range);
+        Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(bot, nearby, check);
+        bot->VisitNearbyGridObject(range, searcher);
+        for (Unit* unit : nearby)
+        {
+            Creature* creature = unit->ToCreature();
+            if (!creature || creature->IsControlledByPlayer() || creature->IsTotem() || creature->IsTrigger() || creature->GetCreatureType() == CREATURE_TYPE_CRITTER || !creature->IsInCombat())
+                continue;
+            if (bot->IsHostileTo(creature) || !bot->IsValidAssistTarget(creature))
+                continue;
+            if (!bot->IsFriendlyTo(creature))
+            {
+                bool fightsEnemy = false, attackedByPlayerSide = false;
+                if (Unit* victim = creature->GetVictim())
+                    fightsEnemy = bot->IsHostileTo(victim);
+                for (Unit* attacker : creature->getAttackers())
+                {
+                    if (attacker->GetCharmerOrOwnerPlayerOrPlayerItself())
+                        attackedByPlayerSide = true;
+                    else if (bot->IsHostileTo(attacker))
+                        fightsEnemy = true;
+                }
+                if (!fightsEnemy || attackedByPlayerSide)
+                    continue;
+            }
+            uint8 health = creature->GetHealthPct();
+            if (health >= sPlayerbotAIConfig->mediumHealth)
+                continue;
+            uint32 probeValue = health + 10;
+            if (probeValue < calc.minValue && Check(creature))
+                calc.probe(probeValue, creature);
+        }
+        if (Unit* chosen = (Unit*)calc.param)
+            if (chosen->GetTypeId() == TYPEID_UNIT && !chosen->IsControlledByPlayer())
+            {
+                // diag (382): the NPC became the heal target, every 10 s per bot
+                thread_local std::unordered_map<ObjectGuid::LowType, uint32> lastChosen;
+                uint32 const nowMs = GameTime::GetGameTimeMS();
+                uint32& last = lastChosen[bot->GetGUID().GetCounter()];
+                if (!last || nowMs - last > 10000)
+                {
+                    last = nowMs;
+                    TC_LOG_INFO("playerbots", "Healer {} picks NPC {} ({}) at {}% as heal target (382)",
+                        bot->GetName(), chosen->GetName(), chosen->GetEntry(), uint32(chosen->GetHealthPct()));
+                }
+            }
     }
     return (Unit*)calc.param;
 }

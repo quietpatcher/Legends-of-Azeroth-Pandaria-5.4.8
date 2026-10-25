@@ -35,7 +35,7 @@ void BattlePetAura::OnApply()
             m_auraStates[stateEntry->StateId] = 0;
 
         int32 newValue = stateEntry->Value + m_target->States[stateEntry->StateId];
-        m_auraStates[stateEntry->StateId] += newValue;
+        m_auraStates[stateEntry->StateId] += stateEntry->Value;
 
         // update state
         m_petBattle->UpdatePetState(m_caster, m_target, 0, stateEntry->StateId, newValue);
@@ -140,4 +140,14 @@ void BattlePetAura::Expire()
     m_petBattle->Cast(m_target, m_ability, m_turn, PET_BATTLE_ABILITY_PROC_ON_AURA_REMOVED);
 
     OnExpire();
+}
+
+void BattlePetAura::Refresh(int32 duration, BattlePet* caster)
+{
+    m_duration = duration;
+    m_maxDuration = duration;
+    m_turn = 1;
+    if (caster)
+        m_caster = caster;
+    m_expired = false;
 }

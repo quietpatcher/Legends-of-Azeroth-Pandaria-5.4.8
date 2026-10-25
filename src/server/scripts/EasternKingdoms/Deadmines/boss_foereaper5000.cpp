@@ -390,10 +390,12 @@ class boss_foereaper5000 : public CreatureScript
 
             bool GetOverdriveDestination(float& x, float& y, float& z)
             {
+                // Wild movement stays on the foundry floor: a point around the centre of the room, not around the
+                // current position (chained steps of 15 yards walked the boss out of the room, report 369).
                 for (uint8 i = 0; i < 5; ++i)
                 {
-                    me->GetRandomPoint(me->GetPosition(), 15.0f, x, y, z);
-                    if (std::fabs(z - me->GetPositionZ()) <= 10.0f)
+                    me->GetRandomPoint(foundryCenterPos, 15.0f, x, y, z);
+                    if (std::fabs(z - foundryCenterPos.GetPositionZ()) <= 4.0f)
                         return true;
                 }
                 return false;
@@ -407,6 +409,16 @@ class boss_foereaper5000 : public CreatureScript
                 me->RemoveAurasDueToSpell(SPELL_OVERDRIVE);
                 me->GetMotionMaster()->Clear();
                 me->SetReactState(REACT_AGGRESSIVE);
+            }
+
+            // Overdrive (88481) is a 10 s channel (SPELL_ATTR1_CHANNELED_1, ChannelInterruptFlags 0): the boss keeps
+            // channelling while it runs. The generic casting guard must not block the move events during that channel,
+            // otherwise EVENT_MOVE_OVERDRIVE only runs when the channel ends, in the same tick as EVENT_END_OVERDRIVE.
+            // The Harvest aura (88497, triggered when the 5 s Harvest cast ends) is a channel without duration that only
+            // EndHarvest() removes: blocking on it held EVENT_HARVEST and the failsafe forever, the boss stood passive.
+            bool IsCastingOutsideOverdrive() const
+            {
+                return me->HasUnitState(UNIT_STATE_CASTING) && !_overdriveActive && !_harvestActive;
             }
 
             // --- Heroic speaker ---
@@ -532,7 +544,7 @@ class boss_foereaper5000 : public CreatureScript
 
                 events.Update(diff);
 
-                if (me->HasUnitState(UNIT_STATE_CASTING))
+                if (IsCastingOutsideOverdrive())
                     return;
 
                 CheckSafetyRestrictions(0); // DamageTaken fires before the damage is applied, so check here as well
@@ -540,7 +552,7 @@ class boss_foereaper5000 : public CreatureScript
                 while (uint32 eventId = events.ExecuteEvent())
                 {
                     ExecuteEvent(eventId);
-                    if (me->HasUnitState(UNIT_STATE_CASTING))
+                    if (IsCastingOutsideOverdrive())
                         return;
                 }
 

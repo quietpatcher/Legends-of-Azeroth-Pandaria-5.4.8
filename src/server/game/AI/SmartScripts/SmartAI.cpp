@@ -686,6 +686,13 @@ void SmartAI::AttackStart(Unit* who)
 
         if (mCanCombatMove)
             me->GetMotionMaster()->MoveChase(who);
+        else if (!HasEscortState(SMART_ESCORT_ESCORTING))
+        {
+            // A caster that may not combat-move (SMARTCAST_COMBAT_MOVE kept it on the spot in an earlier fight) stops its
+            // patrol or wander here; PauseMovement is a stub in this core. JustReachedHome restores the path after the fight (358)
+            me->StopMoving();
+            me->GetMotionMaster()->MoveIdle();
+        }
 
         mLastOOCPos = me->GetPosition();
     }
@@ -872,7 +879,10 @@ void SmartAI::SetCombatMove(bool on)
     {
         if (on && me->GetVictim())
         {
-            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE)
+            // also from a patrol or wander default, not only from idle: else a patrolling caster never closes in on a target
+            // out of range or line of sight (358)
+            MovementGeneratorType const current = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            if (current == IDLE_MOTION_TYPE || current == WAYPOINT_MOTION_TYPE || current == RANDOM_MOTION_TYPE)
             {
                 SetRun(mRun);
                 me->GetMotionMaster()->MoveChase(me->GetVictim());

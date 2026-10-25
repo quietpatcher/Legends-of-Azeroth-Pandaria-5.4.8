@@ -64,6 +64,9 @@ SmartScript::~SmartScript()
     mCounterList.clear();
 }
 
+// a timed cast did not start: retry soon instead of after the repeat timer (358); per map-update thread
+static thread_local bool sCastRetry = false;
+
 void SmartScript::OnReset()
 {
     SetPhase(0);
@@ -468,6 +471,7 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             if (!targets)
                 break;
 
+            bool castTried = false, castStarted = false;
             for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
             {
                 if (!IsUnit(*itr))
@@ -503,7 +507,21 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                         else if (e.action.cast.flags & SMARTCAST_DEST)
                             (*itr)->ToUnit()->CastSpell(e.target.x, e.target.y, e.target.z, e.action.cast.spell, (e.action.cast.flags & SMARTCAST_TRIGGERED));
                         else
+                        {
                             me->CastSpell((*itr)->ToUnit(), e.action.cast.spell, (e.action.cast.flags & SMARTCAST_TRIGGERED));
+                            // a spell with a cast time that is not being cast now did not start (no line of sight, moving, ...)
+                            if (!(e.action.cast.flags & SMARTCAST_TRIGGERED))
+                                if (SpellInfo const* castInfo = sSpellMgr->GetSpellInfo(e.action.cast.spell))
+                                {
+                                    castTried = true;
+                                    Spell const* generic = me->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                                    Spell const* channeled = me->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+                                    if (!castInfo->CalcCastTime(me->GetLevel()) && !castInfo->IsChanneled())
+                                        castStarted = true;
+                                    else if ((generic && generic->m_spellInfo->Id == castInfo->Id) || (channeled && channeled->m_spellInfo->Id == castInfo->Id))
+                                        castStarted = true;
+                                }
+                        }
                     }
                     else if (go)
                         go->CastSpell((*itr)->ToUnit(), e.action.cast.spell);
@@ -514,6 +532,9 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                 else
                     TC_LOG_DEBUG("scripts.ai", "Spell {} not casted because it has flag SMARTCAST_AURA_NOT_PRESENT and the target (Guid: " "{}" " Entry: {} Type: {}) already has the aura", e.action.cast.spell, (*itr)->GetGUID().GetRawValue(), (*itr)->GetEntry(), uint32((*itr)->GetTypeId()));
             }
+
+            if (castTried && !castStarted)
+                sCastRetry = true;
 
             delete targets;
             break;
@@ -2540,10 +2561,15 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
 
 void SmartScript::ProcessTimedAction(SmartScriptHolder& e, uint32 const& min, uint32 const& max, Unit* unit, uint32 var0, uint32 var1, bool bvar, const SpellInfo* spell, GameObject* gob)
 {
+    sCastRetry = false;
     if (sConditionMgr->IsObjectMeetingSmartEventConditions(e.entryOrGuid, e.event_id, e.source_type, unit, GetBaseObject()))
         ProcessAction(e, unit, var0, var1, bvar, spell, gob);
 
     RecalcTimer(e, min, max);
+    // the cast did not start: try again soon, like RetryLater in upstream TrinityCore (358)
+    if (sCastRetry && e.timer > 1200)
+        e.timer = 1200;
+    sCastRetry = false;
 }
 
 void SmartScript::InstallTemplate(SmartScriptHolder const& e)
@@ -3610,6 +3636,11 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
         return;
 
     if (e.GetEventType() == SMART_EVENT_UPDATE_IC && (!me || !me->IsInCombat()))
+        return;
+
+    // In the first tick of a fight that started from a spell or damage the victim is not picked yet (UpdateVictim runs after
+    // the script update); an event aimed at the victim would find no target and still roll its repeat timer (358)
+    if (e.GetEventType() == SMART_EVENT_UPDATE_IC && e.GetTargetType() == SMART_TARGET_VICTIM && !me->GetVictim())
         return;
 
     if (e.GetEventType() == SMART_EVENT_UPDATE_OOC && (me && me->IsInCombat()))//can be used with me=NULL (go script)

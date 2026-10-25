@@ -4,7 +4,9 @@
  */
 
 #include "MovementActions.h"
+#include "TemporarySummon.h"
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -1528,10 +1530,17 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
     std::vector<std::pair<Position, float>> hazards;   // centre, radius + 2 yd margin
     Unit* worst = nullptr;
     float worstRadius = 0.0f;
+    // A bot that holds a creature whose damage zones are a trail behind that creature (Scorched Earth of Brother Korloff)
+    // drags the trail along: every short step pulls the creature over the spot it just left, so the tank is back in the
+    // fire two seconds later and the melee with it. That tank looks further for one clean spot and moves it there in one go.
+    Unit* const current = AI_VALUE(Unit*, "current target");
+    bool const holding = current && current->IsInWorld() && current->GetVictim() == bot;
+    bool heldTrail = false;
+    float const scanRange = holding ? 25.0f : 15.0f;
     std::list<Unit*> nearUnits;
-    Trinity::AnyUnitInObjectRangeCheck nearCheck(bot, 15.0f);
+    Trinity::AnyUnitInObjectRangeCheck nearCheck(bot, scanRange);
     Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> nearSearcher(bot, nearUnits, nearCheck);
-    Cell::VisitAllObjects(bot, nearSearcher, 15.0f);
+    Cell::VisitAllObjects(bot, nearSearcher, scanRange);
     for (Unit* unit : nearUnits)
     {
         if (!unit || !unit->IsInWorld() || unit == bot)
@@ -1556,6 +1565,8 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                     if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius)
                         continue;
                     hazards.push_back({ unit->GetPosition(), radius + 2.0f });
+                    if (holding && unit->IsSummon() && unit->ToTempSummon()->GetSummonerGUID() == current->GetGUID())
+                        heldTrail = true;
                     if (bot->GetExactDist2d(unit) < radius + 2.0f && (!worst || radius > worstRadius))
                     {
                         worst = unit;
@@ -1576,8 +1587,10 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
         float const reach = melee ? 5.0f : 25.0f;
         // candidates by score; the path is only calculated for the best ones until one is reachable
         std::vector<std::pair<float, Position>> candidates;
+        bool const dragTrail = holding && heldTrail;
+        std::array<float, 3> const dists = dragTrail ? std::array<float, 3>{ 10.0f, 15.0f, 20.0f } : std::array<float, 3>{ 5.0f, 8.0f, 11.0f };
         for (int a = 0; a < 16; ++a)
-            for (float d : { 5.0f, 8.0f, 11.0f })
+            for (float d : dists)
             {
                 float const ang = a * float(M_PI) / 8.0f;
                 float x = bot->GetPositionX() + std::cos(ang) * d, y = bot->GetPositionY() + std::sin(ang) * d, z = bot->GetPositionZ();
@@ -1588,10 +1601,10 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                 float clearance = 100.0f;
                 for (auto const& h : hazards)
                     clearance = std::min(clearance, p.GetExactDist2d(&h.first) - h.second);
-                if (clearance <= 0.0f)
+                if (clearance <= (dragTrail ? 4.0f : 0.0f))
                     continue;
-                float score = std::min(clearance, 6.0f) - 0.05f * d;
-                if (target && target->IsInWorld())
+                float score = std::min(clearance, dragTrail ? 10.0f : 6.0f) - 0.05f * d;
+                if (!dragTrail && target && target->IsInWorld())   // the held creature follows the tank
                     score -= 0.3f * std::max(0.0f, p.GetExactDist2d(target) - target->GetCombatReach() - reach);
                 candidates.push_back({ score, p });
             }

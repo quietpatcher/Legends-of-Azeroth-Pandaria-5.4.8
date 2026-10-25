@@ -403,6 +403,8 @@ void BotLifeMgr::SocialTick(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
     {
         if (!player || !player->IsInWorld() || player->FindMap() != bot->FindMap() || player->IsGameMaster())
             continue;
+        if (player->GetTeam() != bot->GetTeam())   // no staring and waving at a player of the other faction
+            continue;
         float d = bot->GetExactDist(player);
         if (d < best)
         {

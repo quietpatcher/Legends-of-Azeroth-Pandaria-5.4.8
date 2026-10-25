@@ -17,6 +17,7 @@
 #include "GenericTriggers.h"
 
 #include <string>
+#include <unordered_map>
 
 #include "DatabaseEnvFwd.h"
 #include "BattlegroundWS.h"
@@ -26,6 +27,7 @@
 #include "ObjectGuid.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "Pet.h"
 #include "SharedDefines.h"
 #include "TemporarySummon.h"
 #include "Group.h"
@@ -47,6 +49,24 @@ bool MediumManaTrigger::IsActive()
 
 bool NoPetTrigger::IsActive()
 {
+    // a warlock with its voidwalker (1860) out of combat in a group or dungeon summons its damage demon instead (372)
+    if (bot->GetClass() == CLASS_WARLOCK && !bot->IsInCombat() && (bot->GetGroup() || bot->GetMap()->IsDungeon()))
+        if (Pet* pet = bot->GetPet())
+            if (pet->GetEntry() == 1860 && !AI_VALUE2(bool, "mounted", "self target"))
+            {
+                // diag (372): how often the swap is asked for, once a minute per bot (map threads: thread_local)
+                thread_local std::unordered_map<ObjectGuid::LowType, uint32> lastLog;
+                uint32 const nowMs = GameTime::GetGameTimeMS();
+                uint32& last = lastLog[bot->GetGUID().GetCounter()];
+                if (!last || nowMs - last > 60000)
+                {
+                    last = nowMs;
+                    TC_LOG_INFO("playerbots", "Warlock {} (level {}, map {}, group {}) has its voidwalker out of combat: summons its damage demon (372)",
+                        bot->GetName(), bot->GetLevel(), bot->GetMapId(), bot->GetGroup() ? 1 : 0);
+                }
+                return true;
+            }
+
     // a summoned hunter/warlock pet is not always the minion GUID here; Call Pet was recast every ~10 s
     return !bot->GetPet() && (bot->GetMinionGUID().IsEmpty()) && (!AI_VALUE(Unit*, "pet target")) && (!bot->GetGuardianPet()) &&
         (!bot->GetFirstControlled()) && (!AI_VALUE2(bool, "mounted", "self target"));

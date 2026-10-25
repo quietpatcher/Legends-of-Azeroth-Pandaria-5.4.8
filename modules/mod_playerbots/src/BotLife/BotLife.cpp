@@ -2309,7 +2309,15 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     // (skinning dungeon mobs, ore/herbs there) - not for whoever leads a dungeon run (the run would stall)
     bool leadsRun = bot->GetMap()->Instanceable() && (t.lfgLeadInstance == bot->GetInstanceId()
         || ((t.party == BOTLIFE_PARTY_DUNGEON || t.party == BOTLIFE_PARTY_RAID) && bot->GetGroup() && bot->GetGroup()->GetLeaderGUID() == bot->GetGUID()));
-    if (_professions && !walker && bot->IsAlive() && !bot->IsInCombat() && !bot->IsMounted() && !leadsRun
+    // (398) inside an instance nobody of the group gathers while another member fights: the healer of a dungeon finder group
+    // cast Herb Gathering 29 times while the tank and the escort NPC took damage (Wailing Caverns, 24-10)
+    bool groupFights = false;
+    if (bot->GetMap()->Instanceable())
+        if (Group* g = bot->GetGroup())
+            for (GroupReference* ref = g->GetFirstMember(); ref && !groupFights; ref = ref->next())
+                if (Player* m = ref->GetSource())
+                    groupFights = m != bot && m->IsInWorld() && m->FindMap() == bot->FindMap() && m->IsInCombat();
+    if (_professions && !walker && bot->IsAlive() && !bot->IsInCombat() && !bot->IsMounted() && !leadsRun && !groupFights
         && GatherBusiness(botAI, t, now))
         return true;
     // a few casts with the fishing line when there is water in front of the bot
@@ -8992,10 +9000,39 @@ void BotLifeMgr::BalanceLevels(uint32 /*now*/)
     if (total < 100)
         return;
     float const top = std::min(0.5f, std::max(0.0f, sPlayerbotAIConfig->randomBotMaxLevelChance));
+    // (389) weighted targets per expansion: Classic 1-59 > TBC/WotLK > Cata keeps lower zones populated.
+    // Weights: 0=1-9 starter, 1-5=10-59 classic, 6=60-69 TBC, 7=70-79 WotLK, 8=80-84 Cata
+    static const float BAND_WEIGHT[9] = { 1.5f, 2.0f, 1.8f, 1.8f, 1.5f, 1.5f, 1.0f, 1.0f, 0.8f };
+    float weightSum = 0.0f;
+    for (uint32 b = 0; b < 9; ++b) weightSum += BAND_WEIGHT[b];
     std::array<float, 10> target;
     for (uint32 b = 0; b < 9; ++b)
-        target[b] = float(total) * (1.0f - top) / 9.0f;
+        target[b] = float(total) * (1.0f - top) * (BAND_WEIGHT[b] / weightSum);
     target[9] = float(total) * top;
+    // (389) content-type snapshot per band every 30 min
+    static time_t s_lastContentLog = 0;
+    time_t const nowSec = time(nullptr);
+    if (nowSec - s_lastContentLog >= 1800)
+    {
+        s_lastContentLog = nowSec;
+        std::array<uint32, 10> inDungeon = {}, inBG = {}, inWorld = {};
+        for (auto const& kv : sRandomPlayerbotMgr->GetAllBots())
+        {
+            Player* b2 = kv.second; if (!b2 || !b2->IsInWorld()) continue;
+            uint32 const bnd = b2->GetLevel() >= 90 ? 9u : std::min<uint32>(8u, b2->GetLevel() / 10);
+            if (b2->InBattleground()) ++inBG[bnd];
+            else if (b2->GetMap()->Instanceable()) ++inDungeon[bnd];
+            else ++inWorld[bnd];
+        }
+        TC_LOG_INFO("playerbots", "LEVELBAND snapshot: bands 0-9 world/dungeon/bg: "
+            "{}/{}/{} {}/{}/{} {}/{}/{} {}/{}/{} {}/{}/{} "
+            "{}/{}/{} {}/{}/{} {}/{}/{} {}/{}/{} {}/{}/{}",
+            inWorld[0],inDungeon[0],inBG[0], inWorld[1],inDungeon[1],inBG[1],
+            inWorld[2],inDungeon[2],inBG[2], inWorld[3],inDungeon[3],inBG[3],
+            inWorld[4],inDungeon[4],inBG[4], inWorld[5],inDungeon[5],inBG[5],
+            inWorld[6],inDungeon[6],inBG[6], inWorld[7],inDungeon[7],inBG[7],
+            inWorld[8],inDungeon[8],inBG[8], inWorld[9],inDungeon[9],inBG[9]);
+    }
     uint32 moved = 0;
     for (uint32 i = 0; i < _levelBalanceMoves; ++i)
     {

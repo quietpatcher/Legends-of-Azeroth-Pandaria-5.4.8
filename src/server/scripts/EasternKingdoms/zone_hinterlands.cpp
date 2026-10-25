@@ -35,18 +35,19 @@ EndContentData */
 ## npc_00x09hl
 ######*/
 
+// Since patch 3.2 the escort is short: one ambush of three Marauding Owlbeasts on the road south of the start; when they are
+// dead the robot says its flight line, the quest completes and it flies off to Booty Bay (the Vilebranch troll ambush and
+// the long route to the coast are pre-3.2). Text groups: 0 start, 1 aggro, 2 danger, 4 flight; group 3 is a Tanaris line.
 enum eOOX
 {
     SAY_OOX_START           = 0,
     SAY_OOX_AGGRO           = 1,
-    SAY_OOX_AMBUSH          = 3,
-    SAY_OOX_AMBUSH_REPLY    = 4,
-    SAY_OOX_END             = 5,
+    SAY_OOX_AMBUSH          = 2,
+    SAY_OOX_END             = 4,
 
     QUEST_RESQUE_OOX_09     = 836,
 
     NPC_MARAUDING_OWL       = 7808,
-    NPC_VILE_AMBUSHER       = 7809,
 
     FACTION_ESCORTEE_A      = 774,
     FACTION_ESCORTEE_H      = 775
@@ -71,7 +72,12 @@ public:
             creature->AI()->Talk(SAY_OOX_START, player);
 
             if (npc_00x09hlAI* pEscortAI = CAST_AI(npc_00x09hl::npc_00x09hlAI, creature->AI()))
+            {
+                // the AI object survives the despawn after a finished run: start every run with a fresh ambush
+                if (!pEscortAI->HasEscortState(STATE_ESCORT_ESCORTING))
+                    pEscortAI->ClearRun();
                 pEscortAI->Start(false, player->GetGUID(), quest);
+            }
         }
         return true;
     }
@@ -83,54 +89,98 @@ public:
 
     struct npc_00x09hlAI : public EscortAI
     {
-        npc_00x09hlAI(Creature* creature) : EscortAI(creature) { }
+        npc_00x09hlAI(Creature* creature) : EscortAI(creature), _owlsAlive(0), _done(false), _flightTimer(0) { }
 
         void Reset() override { }
 
-        void WaypointReached(uint32 waypointId, uint32 pathId) override
+        void ClearRun()
+        {
+            _owlsAlive = 0;
+            _done = false;
+            _flightTimer = 0;
+        }
+
+        void UpdateAI(uint32 diff) override
+        {
+            // rockets: the robot rises for a few seconds, then it is taken away on the ground rules. Despawning it while it
+            // still flies made the corpse fall (MoveFall) and that fall overrode the relocation to the spawn point, so the
+            // robot came back at the ambush instead of at the start of the quest
+            if (_flightTimer)
+            {
+                if (_flightTimer <= diff)
+                {
+                    _flightTimer = 0;
+                    me->GetMotionMaster()->Clear();
+                    me->StopMoving();
+                    me->SetDisableGravity(false);
+                    me->SetCanFly(false);
+                    me->DespawnOrUnsummon();
+                }
+                else
+                    _flightTimer -= diff;
+                return;
+            }
+
+            EscortAI::UpdateAI(diff);
+        }
+
+        void WaypointReached(uint32 waypointId, uint32 /*pathId*/) override
         {
             switch (waypointId)
             {
                 case 26:
                     Talk(SAY_OOX_AMBUSH);
                     break;
-                case 43:
-                    Talk(SAY_OOX_AMBUSH);
-                    break;
-                case 64:
-                    Talk(SAY_OOX_END);
-                    if (Player* player = GetPlayerForEscort())
-                        player->GroupEventHappens(QUEST_RESQUE_OOX_09, me);
+                case 28:
+                    // wait on the road until the ambush is dead
+                    if (_owlsAlive && !_done)
+                        SetEscortPaused(true);
                     break;
             }
         }
 
         void WaypointStart(uint32 uiPointId) override
         {
-            switch (uiPointId)
+            if (uiPointId != 27 || _done)
+                return;
+
+            _owlsAlive = 0;
+            for (uint8 i = 0; i < 3; ++i)
             {
-                case 27:
-                    for (uint8 i = 0; i < 3; ++i)
-                    {
-                        const Position src = {147.927444f, -3851.513428f, 130.893f, 0};
-                        Position dst = me->GetRandomPoint(src, 7.0f);
-                        DoSummon(NPC_MARAUDING_OWL, dst, 25000ms, TEMPSUMMON_CORPSE_TIMED_DESPAWN);
-                    }
-                    break;
-                case 44:
-                    for (uint8 i = 0; i < 3; ++i)
-                    {
-                        const Position src = {-141.151581f, -4291.213867f, 120.130f, 0};
-                        Position dst = me->GetRandomPoint(src, 7.0f);
-                        me->SummonCreature(NPC_VILE_AMBUSHER, dst, TEMPSUMMON_CORPSE_TIMED_DESPAWN, 25000ms);
-                    }
-                    break;
+                const Position src = {147.927444f, -3851.513428f, 130.893f, 0};
+                Position dst = me->GetRandomPoint(src, 7.0f);
+                if (DoSummon(NPC_MARAUDING_OWL, dst, 25000ms, TEMPSUMMON_CORPSE_TIMED_DESPAWN))
+                    ++_owlsAlive;
             }
+        }
+
+        void SummonedCreatureDies(Creature* summon, Unit* /*killer*/) override
+        {
+            if (summon->GetEntry() != NPC_MARAUDING_OWL || _done || !_owlsAlive)
+                return;
+
+            if (--_owlsAlive)
+                return;
+
+            _done = true;
+            Player* player = GetPlayerForEscort();
+            Talk(SAY_OOX_END, player);
+            if (player)
+                player->GroupEventHappens(QUEST_RESQUE_OOX_09, me);
+
+            // rockets on: up and away, the robot comes back at its spawn after the respawn time
+            if (!HasEscortState(STATE_ESCORT_PAUSED))
+                SetEscortPaused(true);
+            me->SetCanFly(true);
+            me->SetDisableGravity(true);
+            me->GetMotionMaster()->Clear();
+            me->GetMotionMaster()->MovePoint(1, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + 40.0f, false);
+            _flightTimer = 5000;
         }
 
         void JustEngagedWith(Unit* who) override
         {
-            if (who->GetEntry() == NPC_MARAUDING_OWL || who->GetEntry() == NPC_VILE_AMBUSHER)
+            if (who->GetEntry() == NPC_MARAUDING_OWL)
                 return;
 
             Talk(SAY_OOX_AGGRO);
@@ -138,8 +188,20 @@ public:
 
         void JustSummoned(Creature* summoned) override
         {
+            // the ambush goes for the robot: a walk to its position at summon time left the owlbeasts standing on the
+            // road behind it while the robot waited for them at the next point
+            if (summoned->GetEntry() == NPC_MARAUDING_OWL && summoned->AI())
+            {
+                summoned->AI()->AttackStart(me);
+                return;
+            }
             summoned->GetMotionMaster()->MovePoint(0, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ());
         }
+
+    private:
+        uint8 _owlsAlive;
+        bool _done;
+        uint32 _flightTimer;
     };
 };
 

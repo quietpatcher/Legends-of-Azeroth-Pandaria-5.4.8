@@ -20,6 +20,7 @@
 #include "ScriptedGossip.h"
 #include "ScriptedEscortAI.h"
 #include "CreatureTextMgr.h"
+#include "MoveSplineInit.h"
 
 const Position MySerpentPath[2]
 {
@@ -4843,6 +4844,66 @@ class spell_reverse_cast_ride_seat_1 : public SpellScript
     }
 };
 
+// Rappelling Rope 130960 (Hellscream's Fist, quest Touching Ground 31766)
+// The spell summons the rope (66640) and triggers the server-side descent 130999, which is not in the client data.
+// The descent is done here: the player slides down from the ship to the ground in about 12 s and gets the credit
+// for General Nazgrim (66646) on landing.
+enum RappellingRope
+{
+    SPELL_RAPPELLING_ROPE       = 130960,
+    SPELL_RAPPELLING_ROPE_AURA  = 130970,
+    NPC_RAPPELLING_ROPE         = 66640,
+    NPC_RAPPEL_CREDIT_NAZGRIM   = 66646,
+};
+
+class spell_jade_forest_rappelling_rope : public SpellScript
+{
+    PrepareSpellScript(spell_jade_forest_rappelling_rope);
+
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        if (!player)
+            return;
+
+        float x = player->GetPositionX();
+        float y = player->GetPositionY();
+        float z = player->GetPositionZ();
+        // terrain only: the gunship is a gameobject and must not count as floor
+        float groundZ = player->GetMap()->GetHeight(x, y, z - 5.0f, true, 200.0f);
+        if (groundZ <= INVALID_HEIGHT || groundZ > z - 20.0f)
+        {
+            // fallback: the landing spot in Honeydew Glade below the ship
+            x = 3120.98f;
+            y = -749.341f;
+            groundZ = 227.332f;
+        }
+
+        Movement::MoveSplineInit init(player);
+        init.MoveTo(x, y, groundZ + 0.5f, false, true);
+        init.SetFly();
+        init.SetVelocity(std::max(1.0f, (z - groundZ) / 12.0f));
+        int32 duration = init.Launch();
+
+        player->m_Events.Schedule(uint32(std::max(duration, 1000)), [player]()
+        {
+            player->RemoveAurasDueToSpell(SPELL_RAPPELLING_ROPE);
+            player->RemoveAurasDueToSpell(SPELL_RAPPELLING_ROPE_AURA);
+            std::list<Creature*> ropes;
+            player->GetCreatureListWithEntryInGrid(ropes, NPC_RAPPELLING_ROPE, 150.0f);
+            for (Creature* rope : ropes)
+                if (rope->IsSummon() && rope->ToTempSummon()->GetSummonerGUID() == player->GetGUID())
+                    rope->DespawnOrUnsummon();
+            player->KilledMonsterCredit(NPC_RAPPEL_CREDIT_NAZGRIM);
+        });
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_jade_forest_rappelling_rope::HandleAfterCast);
+    }
+};
+
 void AddSC_jade_forest()
 {
     // Rare mobs
@@ -4935,4 +4996,5 @@ void AddSC_jade_forest()
     new creature_script<npc_jade_forest_instant_message_camera_bunny>("npc_jade_forest_instant_message_camera_bunny");
     new aura_script<spell_jade_forest_signal_flare_initialize>("spell_jade_forest_signal_flare_initialize");
     new spell_script<spell_reverse_cast_ride_seat_1>("spell_reverse_cast_ride_seat_1");
+    new spell_script<spell_jade_forest_rappelling_rope>("spell_jade_forest_rappelling_rope");
 }

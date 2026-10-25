@@ -197,7 +197,20 @@ public:
 };
 
 // -- summons
-BUFF_ACTION(CastSummonVoidwalkerAction, "summon voidwalker");
+// the voidwalker tanks; in a group or dungeon the chain falls through to the imp (372)
+class CastSummonVoidwalkerAction : public CastBuffSpellAction
+{
+public:
+    CastSummonVoidwalkerAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "summon voidwalker") {}
+
+    bool isPossible() override
+    {
+        if (bot->GetGroup() || bot->GetMap()->IsDungeon())
+            return false;
+
+        return CastBuffSpellAction::isPossible();
+    }
+};
 BUFF_ACTION(CastSummonFelguardAction, "summon felguard");
 BUFF_ACTION(CastSummonFelhunterAction, "summon felhunter");
 BUFF_ACTION(CastSummonImpAction, "summon imp");

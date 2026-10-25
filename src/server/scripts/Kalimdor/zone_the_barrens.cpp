@@ -1113,6 +1113,8 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
         // (caravan-road) the caravan of Halga Bloodeye comes up the road to the player beside her and waits there
         if (!delivery)
             me->GetMotionMaster()->MovePoint(1, 318.5f, -3677.0f, 27.19f);
+        else   // the caravan of Rocco Whipshank walks out of the fence into the field in front of him (point 2 of its road) (222)
+            me->GetMotionMaster()->MovePoint(1, 207.0f, -2936.0f, 92.49f);
         DoCast(me, delivery ? SPELL_CALL_A_PACK_KODO_2 : SPELL_CALL_A_PACK_KODO, true);
     }
 
@@ -1126,8 +1128,7 @@ struct npc_crossroads_caravan_kodo : public ScriptedAI
                 packGUID = summon->GetGUID();
                 summon->SetReactState(REACT_PASSIVE);
                 summon->SetSpeed(MOVE_RUN, me->GetSpeedRate(MOVE_RUN));   // (caravan-road) the speed of the lead kodo: faster made it stop and start
-                if (!delivery)
-                    summon->GetMotionMaster()->MoveFollow(me, 9.0f, float(M_PI));   // up the road to the player with the lead kodo
+                summon->GetMotionMaster()->MoveFollow(me, 9.0f, float(M_PI));   // up the road to the player with the lead kodo (222: also out of the fence)
                 break;
             case NPC_RAZORMANE_RAIDER:
                 // no leash: they stay on the caravan until the minute of their summon spell is up
@@ -1830,7 +1831,7 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
         init.Launch();
     }
 
-    // (cart260) Delivery: the Mor'shan Caravan Cart is a guardian of the Master Caravan Kodo in the client data
+    // (cart260) The Mor'shan Caravan Cart is a guardian of the Master Caravan Kodo in the client data
     // (Call a Pack Kodo 4, summon properties 186) and trails it at the follow distance of a guardian, 1 yard plus the combat
     // reaches (cart 6, kodo 1.5), so about 9 yards from centre to centre. MoveFollow(7) with those reaches left it 14.5 to 15.5
     // yards behind. As with the pack kodo of the Crossroads caravan the cart runs the road of the kodo at its speed, 9 yards behind.
@@ -1884,13 +1885,9 @@ struct npc_morshan_caravan_kodo : public ScriptedAI
         me->SetControlled(false, UNIT_STATE_ROOT);
         me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
         ambushTimer = 20 * IN_MILLISECONDS;
+        // (cart260) both rides: the pick-up cart trailed 14.5 to 15.5 yards behind with MoveFollow(7) as well (259)
         if (Creature* cart = ObjectAccessor::GetCreature(*me, cartGUID))
-        {
-            if (delivery)
-                PrepareCart(cart);   // (cart260)
-            else
-                cart->GetMotionMaster()->MoveFollow(me, 7.0f, float(M_PI));
-        }
+            PrepareCart(cart);
         Launch();
     }
 

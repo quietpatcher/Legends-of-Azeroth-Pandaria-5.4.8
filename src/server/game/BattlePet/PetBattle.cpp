@@ -884,6 +884,33 @@ void PetBattle::UpdatePetState(BattlePet* source, BattlePet* target, uint32 abil
 
 void PetBattle::AddAura(BattlePet* source, BattlePet* target, uint32 ability, uint32 abilityEffect, int32 duration, PetBattleEffectFlags flags, uint8 maxAllowed)
 {
+    if (!maxAllowed)
+        maxAllowed = 1;
+
+    if (!duration && duration != -1)
+        duration++;
+
+    // check if aura already exists on target and refresh if maxAllowed == 1
+    if (maxAllowed == 1)
+    {
+        if (auto existingAura = target->GetAura(ability))
+        {
+            // notify client of aura update: a change of the existing instance, an apply with the same instance id
+            // shows up in the client as one more aura (Stampede gave 1, 3, 5 Shattered Defenses icons, 339)
+            PetBattleEffect effect{ PET_BATTLE_EFFECT_AURA_CHANGE, source->GetGlobalIndex(), flags, abilityEffect };
+            effect.SetTurn(GetTeam(source->GetTeamIndex())->GetTurn(), 1);
+            effect.UpdateAura(target->GetGlobalIndex(), existingAura->GetId(), ability, duration, 1);
+
+            m_effects.push_back(effect);
+
+            if (flags)
+                return;
+
+            existingAura->Refresh(duration, source);
+            return;
+        }
+    }
+
     // count current auras for ability
     uint32 id = 0;
     uint32 auraCount = 0;
@@ -899,9 +926,6 @@ void PetBattle::AddAura(BattlePet* source, BattlePet* target, uint32 ability, ui
 
     id++;
 
-    if (!duration && duration != -1)
-        duration++;
-
     // notify client of aura update
     PetBattleEffect effect{ PET_BATTLE_EFFECT_AURA_APPLY, source->GetGlobalIndex(), flags, abilityEffect };
     effect.SetTurn(GetTeam(source->GetTeamIndex())->GetTurn(), 1);
@@ -913,7 +937,7 @@ void PetBattle::AddAura(BattlePet* source, BattlePet* target, uint32 ability, ui
         return;
 
     // expire auras above the allowed count
-    if (maxAllowed && auraCount >= maxAllowed)
+    if (auraCount >= maxAllowed)
     {
         uint8 removeCount = 1 + auraCount - maxAllowed;
         for (auto&& aura : target->Auras)

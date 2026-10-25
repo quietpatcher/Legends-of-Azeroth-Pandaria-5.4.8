@@ -98,7 +98,7 @@ namespace
         uint32 players = 0;
         for (MapReference const& ref : map->GetPlayers())
             if (Player const* player = ref.GetSource())
-                if (player->GetExactDist2dSq(creature) < 250.0f * 250.0f)
+                if (!(player->GetSession() && player->GetSession()->IsBot()) && player->GetExactDist2dSq(creature) < 250.0f * 250.0f)   // real players only, bots do not speed it up (361)
                     ++players;
         if (players <= threshold)
             return delay;
@@ -2348,6 +2348,16 @@ bool Creature::LoadCreaturesAddon(bool reload)
 
     if (creatureAddon->emote != 0)
         SetEmoteState(Emote(creatureAddon->emote));
+
+    // the anim kits of creature_addon were loaded but never applied (sniffed poses such as scouts hanging from a ledge)
+    if (creatureAddon->aiAnimKit != 0)
+        SetAIAnimKitId(creatureAddon->aiAnimKit);
+
+    if (creatureAddon->movementAnimKit != 0)
+        SetMovementAnimKitId(creatureAddon->movementAnimKit);
+
+    if (creatureAddon->meleeAnimKit != 0)
+        SetMeleeAnimKitId(creatureAddon->meleeAnimKit);
 
     // Check if visibility distance different
     if (creatureAddon->visibilityDistanceType != VisibilityDistanceType::Normal)

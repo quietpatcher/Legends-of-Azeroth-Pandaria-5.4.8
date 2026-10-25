@@ -1096,7 +1096,7 @@ public:
         else
         {
             CharacterDatabase.PExecute("UPDATE characters SET map = {}, position_x = {}, position_y = {}, position_z = {}, zone = {}, "
-                "trans_x = 0, trans_y = 0,trans_z = 0, transguid = 0, taxi_path='', instance_id = 0 WHERE guid = %u",
+                "trans_x = 0, trans_y = 0,trans_z = 0, transguid = 0, taxi_path='', instance_id = 0 WHERE guid = {}",
                 map, x, y, z, zone, guid);
         }
 

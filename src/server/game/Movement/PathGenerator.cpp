@@ -686,6 +686,24 @@ void PathGenerator::BuildShortcut()
     _type = PATHFIND_SHORTCUT;
 }
 
+// 373: the tile flags written by the mmaps generator are 1 << (NAV_AREA_MAX_VALUE - area): lava and slime polys carry
+// flag 8 (area NAV_AREA_MAGMA_SLIME), not NAV_MAGMA/NAV_SLIME of NavTerrain (those bits are other terrain in the tiles). The earlier
+// bot filter (clear NAV_MAGMA | NAV_SLIME) therefore left the lava in and only removed steep ground and water for bots
+static constexpr uint16 NAV_POLY_MAGMA_SLIME = 1 << (NAV_AREA_MAX_VALUE - NAV_AREA_MAGMA_SLIME);
+
+// A bot stays out of lava and slime, unless it already touches them (then it keeps them to find the way out). Real players and
+// creatures are not affected
+static bool BotAvoidsLava(WorldObject const* source)
+{
+    Player const* player = source->ToPlayer();
+    if (!player || !player->GetSession() || !player->GetSession()->IsBot())
+        return false;
+
+    return !(player->GetMap()->GetLiquidStatus(player->GetPhaseMask(), player->GetPositionX(), player->GetPositionY(),
+        player->GetPositionZ(), MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_SLIME, nullptr, player->GetCollisionHeight())
+        & MAP_LIQUID_STATUS_IN_CONTACT);
+}
+
 void PathGenerator::CreateFilter()
 {
     uint16 includeFlags = 0;
@@ -705,14 +723,9 @@ void PathGenerator::CreateFilter()
     {
         // perfect support not possible, just stay 'safe'
         includeFlags |= (NAV_GROUND | NAV_WATER | NAV_MAGMA | NAV_SLIME);
-        // a bot walks its paths for real - not through lava and slime (Ragefire Chasm); a bot that touches
-        // it keeps them to find the way out (UpdateFilter only adds the terrain under a unit that is in it, not on its surface)
-        if (Player const* player = _source->ToPlayer())
-            if (player->GetSession() && player->GetSession()->IsBot()
-                && !(player->GetMap()->GetLiquidStatus(player->GetPhaseMask(), player->GetPositionX(), player->GetPositionY(),
-                    player->GetPositionZ(), MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_SLIME, nullptr, player->GetCollisionHeight())
-                    & MAP_LIQUID_STATUS_IN_CONTACT))
-                includeFlags &= ~(NAV_MAGMA | NAV_SLIME);
+        // 373: a bot walks its paths for real - not through lava and slime (Ragefire Chasm, Slagmaw)
+        if (BotAvoidsLava(_source))
+            includeFlags &= ~NAV_POLY_MAGMA_SLIME;
     }
 
     _filter.setIncludeFlags(includeFlags);
@@ -733,6 +746,9 @@ void PathGenerator::UpdateFilter()
             includedFlags |= GetNavTerrain(_source->GetPositionX(),
                                            _source->GetPositionY(),
                                            _source->GetPositionZ());
+            // 373: swimming in plain water does not open the lava polys for a bot (GetNavTerrain returns NAV_WATER = 8)
+            if (BotAvoidsLava(_source))
+                includedFlags &= ~NAV_POLY_MAGMA_SLIME;
 
             _filter.setIncludeFlags(includedFlags);
         }

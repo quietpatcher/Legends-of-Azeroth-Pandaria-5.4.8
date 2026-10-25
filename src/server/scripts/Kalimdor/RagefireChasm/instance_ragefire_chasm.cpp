@@ -24,6 +24,7 @@ gets instead the deserter debuff.
 
 #include "ScriptMgr.h"
 #include "InstanceScript.h"
+#include "Player.h"
 #include "ragefire_chasm.h"
 
 class instance_ragefire_chasm : public InstanceMapScript
@@ -39,10 +40,14 @@ class instance_ragefire_chasm : public InstanceMapScript
             ObjectGuid CoranthalGUID;
             ObjectGuid SlagmawGUID;
             ObjectGuid GordothGUID;
+            uint32 TeamInInstance = 0;
+            GuidVector HordeSet;
+            GuidVector AllianceSet;
 
             void Initialize() override
             {
                 SetBossNumber(TOTAL_ENCOUNTERS);
+                TeamInInstance = 0;
 
                 AdaroggGUID = ObjectGuid::Empty;
                 CoranthalGUID = ObjectGuid::Empty;
@@ -50,10 +55,66 @@ class instance_ragefire_chasm : public InstanceMapScript
                 GordothGUID = ObjectGuid::Empty;
             }
 
+            // ragefire 370-team: the dungeon has a Horde and an Alliance quest giver set; only the set of
+            // the instance team exists. Hiding alone is not enough: a hidden creature still sees and attacks players.
+            void HideTeamNpc(Creature* creature)
+            {
+                if (!creature->IsVisible())
+                    return;
+                creature->SetVisible(false);
+                creature->SetReactState(REACT_PASSIVE);
+                creature->SetRespawnDelay(7 * DAY);
+                creature->DespawnOrUnsummon(1);
+            }
+
+            void HideOtherTeamSet()
+            {
+                GuidVector const& set = TeamInInstance == ALLIANCE ? HordeSet : AllianceSet;
+                for (ObjectGuid const& guid : set)
+                    if (Creature* creature = instance->GetCreature(guid))
+                        HideTeamNpc(creature);
+            }
+
+            void OnPlayerEnter(Player* player) override
+            {
+                if (!TeamInInstance)
+                {
+                    TeamInInstance = player->GetTeam();
+                    HideOtherTeamSet();
+                }
+            }
+
             void OnCreatureCreate(Creature* creature) override
             {
+                if (!TeamInInstance)
+                {
+                    Map::PlayerList const& players = instance->GetPlayers();
+                    if (!players.isEmpty())
+                        if (Player* player = players.begin()->GetSource())
+                            TeamInInstance = player->GetTeam();
+                    if (TeamInInstance)
+                        HideOtherTeamSet();
+                }
+
                 switch (creature->GetEntry())
                 {
+                    case NPC_KORKRON_ELITE:
+                    case NPC_KORKRON_SCOUT:
+                    case NPC_INVOKER_XORENTH:
+                    case NPC_COMMANDER_BAGRAN:
+                        HordeSet.push_back(creature->GetGUID());
+                        if (TeamInInstance == ALLIANCE)
+                            HideTeamNpc(creature);
+                        break;
+                    case NPC_SI7_RANGER:
+                    case NPC_SI7_COMMANDO:
+                    case NPC_FIELD_COMMANDER_DIRKEN:
+                    case NPC_HIGH_SORCERESS_ARYNA:
+                    case NPC_STORMWIND_PORTAL:
+                        AllianceSet.push_back(creature->GetGUID());
+                        if (TeamInInstance == HORDE)
+                            HideTeamNpc(creature);
+                        break;
                     case NPC_ADAROGG:
                         AdaroggGUID = creature->GetGUID();
                         break;

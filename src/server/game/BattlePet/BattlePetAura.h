@@ -43,6 +43,7 @@ public:
     void OnExpire();
     void Process();
     void Expire();
+    void Refresh(int32 duration, BattlePet* caster = nullptr);
 
 private:
     uint32 m_id;

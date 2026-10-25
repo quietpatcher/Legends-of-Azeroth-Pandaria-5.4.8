@@ -995,8 +995,9 @@ namespace MMAP
             float p0[3], p1[3];
             uint32 mid, tx, ty;
             float size;
-            if (sscanf(buf, "%u %u,%u (%f %f %f) (%f %f %f) %f", &mid, &tx, &ty,
-                &p0[0], &p0[1], &p0[2], &p1[0], &p1[1], &p1[2], &size) != 10)
+            uint32 bothWays = 1;   // optional 11th field: 0 = one way only, from the first point to the second (a drop or a jump)
+            if (sscanf(buf, "%u %u,%u (%f %f %f) (%f %f %f) %f %u", &mid, &tx, &ty,
+                &p0[0], &p0[1], &p0[2], &p1[0], &p1[1], &p1[2], &size, &bothWays) < 10)
                 continue;
 
             if (mapID == mid && tileX == tx && tileY == ty)
@@ -1009,7 +1010,7 @@ namespace MMAP
                 meshData.offMeshConnections.append(p1[2]);
                 meshData.offMeshConnections.append(p1[0]);
 
-                meshData.offMeshConnectionDirs.append(1);          // 1 - both direction, 0 - one sided
+                meshData.offMeshConnectionDirs.append(bothWays ? 1 : 0);   // 1 - both direction, 0 - one sided
                 meshData.offMeshConnectionRads.append(size);       // agent size equivalent
                 // can be used same way as polygon flags
                 meshData.offMeshConnectionsAreas.append((unsigned char)0xFF);

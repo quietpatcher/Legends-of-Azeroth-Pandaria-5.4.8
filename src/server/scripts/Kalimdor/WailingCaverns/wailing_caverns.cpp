@@ -98,6 +98,7 @@ public:
             creature->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
 
             CAST_AI(EscortAI, (creature->AI()))->Start(false, player->GetGUID());
+            CAST_AI(EscortAI, (creature->AI()))->SetRun(); // since Cataclysm Muyoh runs his route (380)
             CAST_AI(EscortAI, (creature->AI()))->SetDespawnAtFar(false);
             CAST_AI(EscortAI, (creature->AI()))->SetDespawnAtEnd(false);
         }
@@ -169,6 +170,8 @@ public:
                     instance->SetData(TYPE_NARALEX_PART1, DONE);
                     break;
                 case 11:
+                    // wait here until the caverns are purified, not for a fixed time that stops counting in combat (381)
+                    SetEscortPaused(true);
                     eventProgress = 1;
                     currentEvent = TYPE_NARALEX_PART2;
                     instance->SetData(TYPE_NARALEX_PART2, IN_PROGRESS);
@@ -251,6 +254,7 @@ public:
                                 //CAST_AI(npc_escort::EscortAI, me->AI())->SetCanDefend(true);
                                 Talk(SAY_CAVERNS_PURIFIED);
                                 instance->SetData(TYPE_NARALEX_PART2, DONE);
+                                SetEscortPaused(false);
                                 if (me->HasAura(SPELL_SERPENTINE_CLEANSING))
                                     me->RemoveAura(SPELL_SERPENTINE_CLEANSING);
                             }

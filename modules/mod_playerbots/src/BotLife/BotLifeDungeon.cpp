@@ -39,6 +39,7 @@
 #include "RandomPlayerbotMgr.h"
 #include "PathGenerator.h"
 #include "Timer.h"
+#include "CreatureAI.h"
 #include "SpellMgr.h"
 
 #include <algorithm>
@@ -1040,6 +1041,38 @@ namespace
             return go->GetGoType() == GAMEOBJECT_TYPE_DOOR && go->GetGoState() == GO_STATE_READY && obj->IsWithinDist(go, range, false);
         }
     };
+
+    // (door-held) a scripted button or goober that is not used yet (Defias Cannon)
+    struct DoorOpenerCheck
+    {
+        GameObject const* door;
+        float range;
+        bool operator()(GameObject* go) const
+        {
+            return (go->GetGoType() == GAMEOBJECT_TYPE_BUTTON || go->GetGoType() == GAMEOBJECT_TYPE_GOOBER) && go->GetScriptId()
+                && go->GetGoState() == GO_STATE_READY && door->IsWithinDist(go, range, false);
+        }
+    };
+
+    // (door-held) the scripted object that opens a locked door, within 30 yards of it (nullptr: none)
+    GameObject* DoorOpener(GameObject* door)
+    {
+        if (!door->HasFlag(GAMEOBJECT_FIELD_FLAGS, GO_FLAG_LOCKED))
+            return nullptr;
+        std::list<GameObject*> openers;
+        DoorOpenerCheck check{ door, 30.0f };
+        Trinity::GameObjectListSearcher<DoorOpenerCheck> searcher(door, openers, check);
+        door->VisitNearbyGridObject(30.0f, searcher);
+        return openers.empty() ? nullptr : openers.front();
+    }
+
+    // (door-held) a closed door that stays shut for the bots: its encounter keeps it closed, or it is locked and a scripted
+    // object next to it opens it (Iron Clad Door, Deadmines: the Defias Cannon blasts it). Other locked doors are still opened
+    // by OpenDoorsNear as before.
+    bool DoorHeld(InstanceScript* instance, GameObject* door)
+    {
+        return (instance && instance->IsHeldEncounterDoor(door->GetEntry())) || DoorOpener(door);
+    }
 }
 
 // closed doors near a stuck leader: the bots cannot run the encounter scripts that open them
@@ -1053,8 +1086,8 @@ uint32 BotLifeMgr::OpenDoorsNear(Player* bot, float range)
     InstanceScript* instance = bot->GetInstanceScript();
     for (GameObject* door : doors)
     {
-        // (held-door) the exit door of a boss that is still alive stays shut (Thalnos, Scarlet Monastery)
-        if (instance && instance->IsHeldEncounterDoor(door->GetEntry()))
+        // (held-door) the exit door of a boss that is still alive stays shut (Thalnos, Scarlet Monastery), a locked door too
+        if (DoorHeld(instance, door))
             continue;
         door->SetGoState(GO_STATE_ACTIVE);
         ++opened;
@@ -1213,34 +1246,112 @@ static bool EncounterInProgress(Player const* bot)
 // a member of the bot's party within 40 yards on its map is attacked
 // (door-block) a path that runs through a closed door (dynamic object, e.g. the Foundry Door of Foe Reaper 5000): the spline movement of
 // a bot has no collision, so it would walk through. Segments are tested at chest height against dynamic objects only.
-static bool PathCrossesClosedDoor(Player* bot, PathGenerator const& path)
+// (door-held) the first held door the path runs through: a segment that crosses the door plane next to the door, or a chest
+// height ray that hits the door model (the ray alone missed the Foundry Door on the way down from the balcony)
+static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path)
 {
+    InstanceScript* instance = bot->GetInstanceScript();
+    if (!instance)
+        return nullptr;
+    std::list<GameObject*> doors;
+    ClosedDoorCheck check{ bot, 250.0f };
+    Trinity::GameObjectListSearcher<ClosedDoorCheck> searcher(bot, doors, check);
+    bot->VisitNearbyGridObject(250.0f, searcher);
+    doors.remove_if([instance](GameObject* door) { return !DoorHeld(instance, door); });
+    if (doors.empty())
+        return nullptr;
     Map* map = bot->GetMap();
     G3D::Vector3 const* prev = nullptr;
     for (G3D::Vector3 const& p : path.GetPath())
     {
         if (prev)
         {
+            for (GameObject* door : doors)
+            {
+                float const nx = std::cos(door->GetOrientation()), ny = std::sin(door->GetOrientation());
+                float const s0 = nx * (prev->x - door->GetPositionX()) + ny * (prev->y - door->GetPositionY());
+                float const s1 = nx * (p.x - door->GetPositionX()) + ny * (p.y - door->GetPositionY());
+                if (s0 * s1 > 0.0f || s0 == s1)
+                    continue;
+                float const f = s0 / (s0 - s1);
+                float const cx = prev->x + (p.x - prev->x) * f, cy = prev->y + (p.y - prev->y) * f, cz = prev->z + (p.z - prev->z) * f;
+                if (door->GetExactDist2d(cx, cy) < 6.0f && std::fabs(cz - door->GetPositionZ()) < 8.0f)
+                    return door;
+            }
             float rx, ry, rz;
             if (map->getObjectHitPos(1, prev->x, prev->y, prev->z + 1.5f, p.x, p.y, p.z + 1.5f, rx, ry, rz, 0.0f))
-            {
-                // only a closed door that its encounter keeps shut counts (other doors are opened by OpenDoorsNear, other
-                // dynamic objects are decoration)
-                InstanceScript* instance = bot->GetInstanceScript();
-                if (!instance)
-                    return false;
-                std::list<GameObject*> doors;
-                ClosedDoorCheck check{ bot, 250.0f };
-                Trinity::GameObjectListSearcher<ClosedDoorCheck> searcher(bot, doors, check);
-                bot->VisitNearbyGridObject(250.0f, searcher);
                 for (GameObject* door : doors)
-                    if (door->GetExactDist(rx, ry, rz) < 8.0f && instance->IsHeldEncounterDoor(door->GetEntry()))
-                        return true;
-            }
+                    if (door->GetExactDist(rx, ry, rz) < 8.0f)
+                        return door;
         }
         prev = &p;
     }
-    return false;
+    return nullptr;
+}
+
+static bool GossipReached(Player* bot, WorldObject* target);
+
+// (door-held) a locked door is opened the way a player opens it: walk to the scripted object next to it and use it (Defias Cannon)
+static bool UseDoorOpener(Player* bot, BotLifeInfo& t, GameObject* door, uint32 now)
+{
+    GameObject* opener = door ? DoorOpener(door) : nullptr;
+    if (!opener)
+        return false;
+    // the key of TryEventGossip: an opener that was used, or given up on after 60 s of walking, is not tried again (the door
+    // then counts as held for the 5 minutes of the wait)
+    uint32 const key = uint32(opener->GetDBTableGUIDLow()) | 0x80000000u;
+    if (t.gossipUsed.count(key))
+        return false;
+    if (!GossipReached(bot, opener))
+    {
+        if (sBotLife->GossipApproachTimedOut(bot, t, key, opener->GetName(), now, 60000))
+            return false;
+        if (!bot->isMoving() || now - t.lastMoveOrder > 2000)
+        {
+            bot->GetMotionMaster()->MovePoint(0, opener->GetPositionX(), opener->GetPositionY(), opener->GetPositionZ(), true);
+            t.lastMoveOrder = now;
+        }
+        return true;
+    }
+    bot->StopMoving();
+    t.gossipUsed.insert(key);
+    t.gossipApproachKey = 0;
+    opener->Use(bot);
+    TC_LOG_INFO("playerbots", "BotLife {}: used {} ({}) to open {} ({}) in map {}", bot->GetName(), opener->GetName(), opener->GetEntry(),
+        door->GetName(), door->GetEntry(), bot->GetMapId());
+    return true;
+}
+
+// (door-held) the leader does not walk to x/y/z through a held door: it opens it the player's way, or - dropTarget, the target
+// of the target choice - gives the target up without skipping it (the target choice leaves it out while the door is shut and
+// takes the kill-gate, Deadmines: the Defias Watchers that wake the Foe Reaper), or waits (5 minutes at most)
+static bool LeaderRouteBlocked(Player* bot, BotLifeInfo& t, float x, float y, float z, uint32 now, bool dropTarget = false)
+{
+    PathGenerator path(bot);
+    path.CalculatePath(x, y, z, false);
+    GameObject* door = ClosedDoorOnPath(bot, path);
+    if (!door)
+        return false;
+    if (UseDoorOpener(bot, t, door, now))
+        return true;
+    if (dropTarget)
+    {
+        if (bot->isMoving())
+            bot->StopMoving();
+        t.dungeonTarget = 0;
+        t.dungeonGateTarget = false;
+        t.dungeonEngageSince = 0;
+        t.hasDest = false;
+        return true;
+    }
+    if (!t.doorBlockedSince)
+        t.doorBlockedSince = now;
+    if (now - t.doorBlockedSince >= 300000)
+        return false;
+    if (bot->isMoving())
+        bot->StopMoving();
+    t.hasDest = false;
+    return true;
 }
 
 static bool PartyMemberAttacked(Player* bot)
@@ -1293,6 +1404,41 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 TC_LOG_INFO("playerbots", "BotLife {}: sets off area trigger {} on map {}", bot->GetName(), at->ID, bot->GetMapId());
                 sScriptMgr->OnAreaTrigger(bot, at, true);
             }
+    }
+    // (escort-of-player) a player of the group started an escort (Muyoh in Wailing Caverns, started by the real player of a
+    // dungeon finder group): the leader takes it on as if it had started it, so it stays with the NPC and the group with it (382). Checked before the combat handling: a leader that fights
+    // elsewhere when the player starts the escort goes to the NPC after that fight.
+    if (t.escortNpc.IsEmpty() && bot->IsAlive() && bot->GetGroup() && bot->GetMap()->IsDungeon())
+    {
+        thread_local std::unordered_map<ObjectGuid::LowType, uint32> nextEscortScan;
+        uint32& next = nextEscortScan[bot->GetGUID().GetCounter()];
+        if (now >= next)
+        {
+            next = now + 2000;
+            // search around the real players of the group: the leader may be far away on its own route when the player
+            // starts the escort (Richaranor at Lord Serpentis, 24-10 13:38)
+            for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref && t.escortNpc.IsEmpty(); ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || !member->GetSession() || member->GetSession()->IsBot() || !member->IsAlive() || member->FindMap() != bot->FindMap())
+                    continue;
+                std::list<Unit*> near;
+                Trinity::AnyUnitInObjectRangeCheck check(member, 40.0f);
+                Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(member, near, check);
+                member->VisitNearbyGridObject(40.0f, searcher);
+                for (Unit* u : near)
+                {
+                    Creature* c = u->ToCreature();
+                    if (!c || !c->IsAlive() || !c->AI() || !c->AI()->IsEscorted())
+                        continue;
+                    t.escortNpc = c->GetGUID();
+                    t.escortUntil = now + 25 * MINUTE * IN_MILLISECONDS;
+                    TC_LOG_INFO("playerbots", "BotLife: leader {} stays with {} ({}), escorted by {} of the group", bot->GetName(),
+                        c->GetName(), c->GetEntry(), member->GetName());
+                    break;
+                }
+            }
+        }
     }
     // a boss that does not die by a player's hand never counted (Wise Mari ends herself, councils,
     // bosses that give up): what the instance itself books as done during this run counts as well
@@ -1889,13 +2035,40 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
         // nearest one the navmesh can actually reach (floors above / below are close but far away on foot)
         uint32 tried = 0;
         uint32 doorBlocked = 0;   // (door-block)
+        uint32 doorUntested = 0;  // (door-held)
         for (auto const& cand : candidates)
         {
             BotLifeInstanceSpawn const* s = std::get<1>(cand);
             Creature* c = std::get<2>(cand);
             float x = c ? c->GetPositionX() : s->x, y = c ? c->GetPositionY() : s->y, z = c ? c->GetPositionZ() : s->z;
+            // A creature that stands in lava or slime is no pull target: the path ends in the liquid and the party burns there.
+            // Blackrock Depths: the twelve Fireguard Destroyers in the lava lake (x 1000-1160, y -240 to -360) were taken one after the other, about
+            // 4,000 bot deaths a day by lava on the live server (22-24 Oct). A boss is still fought.
+            if (!s->boss && (bot->GetMap()->GetLiquidStatus(bot->GetPhaseMask(), x, y, z, MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_SLIME,
+                nullptr, bot->GetCollisionHeight()) & MAP_LIQUID_STATUS_IN_CONTACT))
+            {
+                t.dungeonTarget = s->spawnId;
+                SkipDungeonTarget(bot, t, "in lava or slime");
+                t.dungeonTarget = 0;
+                continue;
+            }
             if (++tried > 6)
             {
+                // (door-held) once a door has held a target back, the pick that is not tested any more must not lie behind it
+                // either (24-10, Deadmines: the first six were behind the Foundry Door, the seventh was taken untested and the
+                // leader stood in front of the door until it timed out - the kill-gate never came)
+                if (doorBlocked)
+                {
+                    if (++doorUntested > 40)
+                        break;   // that many behind the door: the kill-gate or the wait below
+                    PathGenerator untested(bot);
+                    untested.CalculatePath(x, y, z, false);
+                    if (ClosedDoorOnPath(bot, untested))
+                    {
+                        ++doorBlocked;
+                        continue;
+                    }
+                }
                 current = s;   // stop testing paths, the stuck detection handles the rest
                 creature = c;
                 break;
@@ -1916,9 +2089,9 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             if (((path.GetPathType() & PATHFIND_NORMAL) && ex * ex + ey * ey + ez * ez < 12.0f * 12.0f) || closer || nearEnd)
             {
                 // (door-block) behind a closed door: open what the bots may open, otherwise take the next candidate
-                if (PathCrossesClosedDoor(bot, path))
+                if (GameObject* door = ClosedDoorOnPath(bot, path))
                 {
-                    if (OpenDoorsNear(bot, 45.0f))
+                    if (UseDoorOpener(bot, t, door, now) || OpenDoorsNear(bot, 45.0f))
                         return true;
                     ++doorBlocked;
                     continue;
@@ -1939,7 +2112,10 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             SkipDungeonTarget(bot, t, "no path");
             t.dungeonTarget = 0;
         }
-        // (door-block) every target lies behind a closed door that stays shut: wait (5 minutes at most) instead of leaving the dungeon
+        // (door-block) every target lies behind a closed door that stays shut: the kill-gate, the unlisted targets, an event or a
+        // sealed boss come first (a player kills what opens the door, Deadmines: the Defias Watchers and the Foe Reaper), then
+        // the leader waits (5 minutes at most) instead of leaving the dungeon
+        bool doorWait = false;
         if (!current && doorBlocked)
         {
             if (!t.doorBlockedSince)
@@ -1947,8 +2123,8 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             if (now - t.doorBlockedSince < 300000)
             {
                 if (now - t.doorBlockedSince < 2000)
-                    TC_LOG_INFO("playerbots", "BotLife: {} dungeon map {}: {} targets lie behind a closed door, waiting", bot->GetName(), bot->GetMapId(), doorBlocked);
-                return true;
+                    TC_LOG_INFO("playerbots", "BotLife: {} dungeon map {}: {} targets lie behind a closed door, kill-gate or wait", bot->GetName(), bot->GetMapId(), doorBlocked);
+                doorWait = true;
             }
         }
         else if (current)
@@ -1965,6 +2141,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             {
                 current = gate;
                 gatePicked = true;
+                t.doorBlockedSince = 0;   // (door-held) the wait starts again when the gate is done
                 Count(BLC_KILL_GATE);
             }
         // what an encounter summoned, or a boss that opened up during the run, is in no spawn list
@@ -1980,10 +2157,13 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 return true;
             }
         // nothing to fight - maybe an event has to be started by talking to an NPC first
-        if (!current && TryEventGossip(botAI, t, now))
+        // (door-held) not while targets wait behind a held door: the walk to an event object would run through that door
+        if (!current && !doorWait && TryEventGossip(botAI, t, now))
             return true;
         // a boss that is still sealed - walk up to it, many encounters begin when a player comes near
         if (!current && VisitSealedBoss(bot, t, map, diffBit, now, tickDelta))
+            return true;
+        if (!current && doorWait)   // (door-held) nothing else to do: the door opens when its boss is down (the boss wakes up in 15 s)
             return true;
         if (!current)
         {
@@ -2051,7 +2231,11 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     }
 
     if (!t.hasDest || t.destMap != map->GetId() || std::fabs(t.destX - tx) > 5.0f || std::fabs(t.destY - ty) > 5.0f)
+    {
+        if (LeaderRouteBlocked(bot, t, tx, ty, tz, now, true))   // (door-held)
+            return true;
         SetDest(t, map->GetId(), tx, ty, tz, 8.0f);
+    }
     Travel(bot, t, now);
     if (!t.hasDest)
     {
@@ -2368,7 +2552,11 @@ bool BotLifeMgr::EngageUnlistedTarget(PlayerbotAI* botAI, BotLifeInfo& t, Creatu
     }
     float const tx = creature->GetPositionX(), ty = creature->GetPositionY(), tz = creature->GetPositionZ();
     if (!t.hasDest || t.destMap != bot->GetMapId() || std::fabs(t.destX - tx) > 5.0f || std::fabs(t.destY - ty) > 5.0f)
+    {
+        if (LeaderRouteBlocked(bot, t, tx, ty, tz, now))   // (door-held)
+            return true;
         SetDest(t, bot->GetMapId(), tx, ty, tz, 8.0f);
+    }
     Travel(bot, t, now);
     if (!t.hasDest && bot->GetExactDist(creature) > 12.0f)
         return OpenDoorsNear(bot, 45.0f) > 0;   // a closed door, or not reachable
@@ -2467,7 +2655,11 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
         return true;
     }
     if (!t.hasDest || t.destMap != map->GetId() || std::fabs(t.destX - tx) > 5.0f || std::fabs(t.destY - ty) > 5.0f)
+    {
+        if (LeaderRouteBlocked(bot, t, tx, ty, tz, now))   // (door-held)
+            return true;
         SetDest(t, map->GetId(), tx, ty, tz, wakesClose ? 2.0f : 6.0f);
+    }
     Travel(bot, t, now);
     if (!t.hasDest && bot->GetExactDist(tx, ty, tz) > reachDist && !OpenDoorsNear(bot, 45.0f))
     {

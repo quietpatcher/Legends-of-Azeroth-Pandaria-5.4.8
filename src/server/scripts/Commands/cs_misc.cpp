@@ -2194,7 +2194,7 @@ public:
             {
                 QueryResult result = LoginDatabase.PQuery("SELECT m.mute_timer, am.muted_by, am.mute_reason, am.public_channels_only "
                     "FROM mute_active AS m, account_muted AS am "
-                    "WHERE m.realmid = '%u' AND m.account = '%u' AND m.mute_id = am.id", realm.Id.Realm, accId);
+                    "WHERE m.realmid = '{}' AND m.account = '{}' AND m.mute_id = am.id", realm.Id.Realm, accId);
                 if (result)
                 {
                     Field* fields = result->Fetch();
@@ -2500,13 +2500,13 @@ public:
         {
             //                                    0        1          2          3         4          5            6
             result = LoginDatabase.PQuery("SELECT char_id, mute_name, mute_date, muted_by, mute_time, mute_reason, id = '{}' FROM account_muted "
-                                          "WHERE realmid = '%u' AND mute_acc = '%s' AND char_id <> '%u' ORDER BY mute_date ASC", activeMuteId, realm.Id.Realm, acc.c_str(), excludeCharId);
+                                          "WHERE realmid = '{}' AND mute_acc = '{}' AND char_id <> '{}' ORDER BY mute_date ASC", activeMuteId, realm.Id.Realm, acc.c_str(), excludeCharId);
         }
         else
         {
             //                                                   0        1          2          3         4          5            6
             result = LoginDatabase.PQuery("SELECT * FROM (SELECT char_id, mute_name, mute_date, muted_by, mute_time, mute_reason, id = '{}' FROM account_muted "
-                                          "               WHERE realmid = '%u' AND mute_acc = '%s' AND char_id <> '%u' ORDER BY mute_date DESC LIMIT %u) AS last_muted "
+                                          "               WHERE realmid = '{}' AND mute_acc = '{}' AND char_id <> '{}' ORDER BY mute_date DESC LIMIT {}) AS last_muted "
                                           "ORDER BY last_muted.mute_date ASC", activeMuteId, realm.Id.Realm, acc.c_str(), excludeCharId, limit);
         }
 
@@ -2569,13 +2569,13 @@ public:
         {
             //                                    0        1         2          3          4         5          6            7
             result = LoginDatabase.PQuery("SELECT char_id, mute_acc, mute_name, mute_date, muted_by, mute_time, mute_reason, id = '{}' FROM account_muted "
-                                          "WHERE realmid = '%u' AND (char_id = '%u' OR mute_name = '%s') ORDER BY mute_date ASC", activeMuteId, realm.Id.Realm, charId, name.c_str());
+                                          "WHERE realmid = '{}' AND (char_id = '{}' OR mute_name = '{}') ORDER BY mute_date ASC", activeMuteId, realm.Id.Realm, charId, name.c_str());
         }
         else
         {
             //                                                   0        1         2          3          4         5          6            7
             result = LoginDatabase.PQuery("SELECT * FROM (SELECT char_id, mute_acc, mute_name, mute_date, muted_by, mute_time, mute_reason, id = '{}' FROM account_muted "
-                                          "               WHERE realmid = %u AND (char_id = '%u' OR mute_name = '%s') ORDER BY mute_date DESC LIMIT %u) AS last_muted "
+                                          "               WHERE realmid = {} AND (char_id = '{}' OR mute_name = '{}') ORDER BY mute_date DESC LIMIT {}) AS last_muted "
                                           "ORDER BY last_muted.mute_date ASC", activeMuteId, realm.Id.Realm, charId, name.c_str(), limit);
         }
 

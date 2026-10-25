@@ -798,11 +798,15 @@ class npc_scarlet_zealot : public CreatureScript
                     GetCreatureListWithEntryInGrid(CorpsedScarlet, me, NPC_SCARLET_ZEALOT, 50.0f);
                     GetCreatureListWithEntryInGrid(CorpsedScarlet, me, NPC_SCARLET_JUDICATOR, 50.0f);
 
+                    // Only a body that still lies there can be resurrected: a creature whose corpse already despawned
+                    // (death state DEAD, waiting for its respawn timer) was picked as well, so every Zealot in combat kept
+                    // bringing back long-dead Crusaders from up to 50 yards away. Take the nearest body.
+                    Creature* nearest = nullptr;
                     for (auto&& itr : CorpsedScarlet)
-                        if (!itr->IsAlive()) // ignore alive targets
-                            return itr->GetGUID(); // just take first corpse on our way
+                        if (itr->getDeathState() == CORPSE && (!nearest || me->GetDistance(itr) < me->GetDistance(nearest)))
+                            nearest = itr;
 
-                    return ObjectGuid::Empty;
+                    return nearest ? nearest->GetGUID() : ObjectGuid::Empty;
                 }
         };
 

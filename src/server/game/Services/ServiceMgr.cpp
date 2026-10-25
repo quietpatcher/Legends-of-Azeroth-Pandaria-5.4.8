@@ -173,7 +173,7 @@ void ServiceMgr::InsertServiceEntry(uint32 guid, uint32 service, uint32 data1, u
     std::string real = data4;
     CharacterDatabase.EscapeString(real);
     CharacterDatabase.PExecute("INSERT INTO character_service (guid, service, data1, data2, data3, data4, creation_date) "
-        "VALUES (%u, %u, %u, %u, %u, '%s', UNIX_TIMESTAMP());",
+        "VALUES ({}, {}, {}, {}, {}, '{}', UNIX_TIMESTAMP());",
         guid, service, data1, data2, data3, real.c_str());
 }
 
