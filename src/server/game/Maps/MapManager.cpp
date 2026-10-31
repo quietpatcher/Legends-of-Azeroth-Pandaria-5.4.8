@@ -353,7 +353,10 @@ bool MapManager::CanPlayerEnter(uint32 mapid, Player* player, bool loginCheck)
             instaceIdToCheck = save->GetInstanceId();
 
         // instanceId can never be 0 - will not be found
-        if (!player->CheckInstanceCount(instaceIdToCheck) && !player->isDead() && targetDifficulty != DUNGEON_DIFFICULTY_CHALLENGE)
+        // (344-instancelimit) the 5-instances-per-hour limit is per account and the BotLife dungeon bots share a few accounts across
+        // several characters: a party member whose account was at 5 was refused every teleport into the dungeon and the party ran with
+        // a member short. The limit exists for real players, bots are exempt.
+        if (!player->GetSession()->IsBot() && !player->CheckInstanceCount(instaceIdToCheck) && !player->isDead() && targetDifficulty != DUNGEON_DIFFICULTY_CHALLENGE)
         {
             player->SendTransferAborted(mapid, TRANSFER_ABORT_TOO_MANY_INSTANCES);
             return false;

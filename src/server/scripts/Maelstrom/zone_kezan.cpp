@@ -304,7 +304,16 @@ class spell_kezan_kick_footbomb : public SpellScript
             return;
 
         Creature* target = caster->FindNearestCreature(FourthAndGoal::NPC_GOAL_TARGET, 300.0f);
-        if (!target || target->GetExactDist2d(dest->GetPositionX(), dest->GetPositionY()) > float(FourthAndGoal::GOAL_RANGE))
+        if (!target)
+            return;
+        // the client sends the destination on the camera ray (~300 yd out, high up), so a landing next to the goal is
+        // not reachable from the fixed shredder: accept either a landing near the goal or a destination inside the
+        // box around the goal (Y 1437..1527, Z 100..300, X -8520..-8300)
+        bool const nearGoal = target->GetExactDist2d(dest->GetPositionX(), dest->GetPositionY()) <= float(FourthAndGoal::GOAL_RANGE);
+        bool const inBox = dest->GetPositionX() > -8520.0f && dest->GetPositionX() < -8300.0f
+            && dest->GetPositionY() > 1437.0f && dest->GetPositionY() < 1527.0f
+            && dest->GetPositionZ() > 100.0f && dest->GetPositionZ() < 300.0f;
+        if (!nearGoal && !inBox)
             return;
 
         // goal: the credit, and Deathwing for this player alone

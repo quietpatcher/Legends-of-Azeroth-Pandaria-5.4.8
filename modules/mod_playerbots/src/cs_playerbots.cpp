@@ -230,17 +230,33 @@ public:
             handler->PSendSysMessage("aggrodiag: next %d bots fighting neutral creatures log AGGRODIAG lines", n);
             return true;
         }
+        if (args && !strncmp(args, "roles", 5))   // to-do 265: ".botlife roles" role split per faction + level band
+        {
+            sBotLife->PrintRoles(handler);
+            return true;
+        }
         if (args && !strncmp(args, "testlevel", 9))   // ".botlife testlevel <level> <count>" (test lab)
         {
             uint32 level = 0;
             int32 count = 0;
-            if (sscanf(args + 9, "%u %d", &level, &count) != 2 || level < 2 || level > 90 || count < 1)
+            char roleStr[16] = {};   // optional "tank" / "heal" class filter
+            int const parsed = sscanf(args + 9, "%u %d %15s", &level, &count, roleStr);
+            uint8 role = 0;
+            if (parsed == 3)
             {
-                handler->PSendSysMessage("usage: .botlife testlevel <level 2-90> <count>");
+                if (!strcmp(roleStr, "tank"))
+                    role = 1;
+                else if (!strcmp(roleStr, "heal"))
+                    role = 2;
+            }
+            if (parsed < 2 || (parsed == 3 && !role) || level < 2 || level > 90 || count < 1)
+            {
+                handler->PSendSysMessage("usage: .botlife testlevel <level 2-90> <count> [tank|heal]");
                 return true;
             }
-            sBotLife->StartTestLevel(level, count);
-            handler->PSendSysMessage("testlevel: the next %d solo bots below level %u are raised to it (TESTLEVEL lines)", count, level);
+            sBotLife->StartTestLevel(level, count, role);
+            handler->PSendSysMessage("testlevel: the next %d solo %sbots below level %u are raised to it (TESTLEVEL lines)", count,
+                role == 1 ? "tank-class " : role == 2 ? "healer-class " : "", level);
             return true;
         }
         if (args && !strncmp(args, "movediag", 8))   // to-do #64: creature spline speeds (MOVEDIAG)

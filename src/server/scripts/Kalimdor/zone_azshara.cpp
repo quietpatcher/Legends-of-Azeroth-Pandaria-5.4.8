@@ -179,6 +179,9 @@ enum ancientEnemy
         EVENT_INTRO                 = 1,
         SPELL_FIRES                 = 72250,
         SPELL_FIRES_BEAM            = 73294,
+        SPELL_ICE_ENCASE            = 45438,   // Ice Block: visual for Vanira/Zuni encased in ice (UNVERIFIED id vs 5.4.8 dbc)
+        ACTION_VOLJIN_BATTLE_ON     = 10,      // Vol'jin starts/resumes casting at Zar'jira
+        ACTION_VOLJIN_BATTLE_OFF    = 11,      // Vol'jin stops casting (ice/drain phase)
 };
 
 static const uint32 npcId[3] = { NPC_ZUNI, NPC_VANIRA, NPC_VOLJIN };
@@ -213,6 +216,7 @@ class npc_voljin_ancient_enemy : public CreatureScript
         void Reset() override
         {
             EventInProgress = false;
+            battle = false;
             eventTime = 0;
             events.Reset();
             me->SetFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
@@ -223,8 +227,26 @@ class npc_voljin_ancient_enemy : public CreatureScript
             ScriptedAI::AttackStartNoMove(who);
         }
 
-        void DoAction(int32 /*action*/) override
+        void DoAction(int32 action) override
         {
+            if (action == ACTION_VOLJIN_BATTLE_ON)
+            {
+                // the casts run from here, not from JustEngagedWith (he is passive/AttackStartNoMove and has no victim of his own)
+                battle = true;
+                events.CancelEvent(EVENT_SHOOT);
+                events.CancelEvent(EVENT_SHADOW_SHOCK);
+                events.ScheduleEvent(EVENT_SHOOT, 1500);
+                events.ScheduleEvent(EVENT_SHADOW_SHOCK, 4000);
+                return;
+            }
+            if (action == ACTION_VOLJIN_BATTLE_OFF)
+            {
+                battle = false;
+                events.CancelEvent(EVENT_SHOOT);
+                events.CancelEvent(EVENT_SHADOW_SHOCK);
+                me->InterruptNonMeleeSpells(false);
+                return;
+            }
             if(EventInProgress)
                 return;
             EventInProgress = true;
@@ -242,12 +264,6 @@ class npc_voljin_ancient_enemy : public CreatureScript
             events.ScheduleEvent(EVENT_INTRO, 10000);
         }
 
-        void JustEngagedWith(Unit * /*who*/) override
-        {
-            events.ScheduleEvent(EVENT_SHOOT, 2000);
-            events.ScheduleEvent(EVENT_SHADOW_SHOCK, 5000);
-        }
-
         void UpdateAI(uint32 diff) override
         {
             if(!EventInProgress)
@@ -256,7 +272,7 @@ class npc_voljin_ancient_enemy : public CreatureScript
             // an event that never got to its fight (Zar'jira dead or gone, the player left) gave the
             // gossip back only after a restart - nobody could start it again
             eventTime += diff;
-            if (eventTime > 3 * MINUTE * IN_MILLISECONDS && !me->IsInCombat())
+            if (eventTime > 3 * MINUTE * IN_MILLISECONDS && !me->IsInCombat() && !battle)
             {
                 for (uint32 entry : { uint32(NPC_ZUNI), uint32(NPC_VANIRA) })
                     if (Creature* helper = me->FindNearestCreature(entry, 60.0f))
@@ -278,11 +294,18 @@ class npc_voljin_ancient_enemy : public CreatureScript
                             zarjira->AI()->DoAction(1);
                         break;
                     case EVENT_SHOOT:
-                        DoCastVictim(SPELL_SHOOT);
+                        if (battle)
+                            if (Creature* zar = me->FindNearestCreature(NPC_ZARJIRA, 60.0f, true))
+                            {
+                                me->SetFacingToObject(zar);
+                                DoCast(zar, SPELL_SHOOT);
+                            }
                         events.ScheduleEvent(EVENT_SHOOT, urand(2000, 2500));
                         break;
                     case EVENT_SHADOW_SHOCK:
-                        DoCastVictim(SPELL_SHADOW_SHOCK);
+                        if (battle)
+                            if (Creature* zar = me->FindNearestCreature(NPC_ZARJIRA, 60.0f, true))
+                                DoCast(zar, SPELL_SHADOW_SHOCK);
                         events.ScheduleEvent(EVENT_SHADOW_SHOCK, urand(8000, 10000));
                         break;
                     default:
@@ -293,6 +316,7 @@ class npc_voljin_ancient_enemy : public CreatureScript
         }
     private:
         bool EventInProgress;
+        bool battle = false;
         uint32 eventTime = 0;
         EventMap events;
     };
@@ -317,6 +341,9 @@ public:
         if (Creature* zarjira = creature->FindNearestCreature(NPC_ZARJIRA, 60.0f, false))
             if (!zarjira->IsAlive())
                 zarjira->Respawn(true);
+        if (Creature* zuni = creature->FindNearestCreature(NPC_ZUNI, 60.0f, false))
+            if (!zuni->IsAlive())
+                zuni->Respawn(true);
         if (action == GOSSIP_ACTION_INFO_DEF+1)
             creature->AI()->DoAction(1);
         player->KilledMonsterCredit(NPC_VOLJIN);
@@ -357,8 +384,31 @@ class npc_zarjira : public CreatureScript
 
         void Reset() override
         {
+            events.Reset();
+            icePhase = false;
+            finale = false;
             me->SetReactState(REACT_PASSIVE);
             me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
+        }
+
+        void DamageTaken(Unit* attacker, uint32& damage) override
+        {
+            // the event is Vol'jin's fight: players never hurt her; Vol'jin's hits are capped (3% per hit) and she
+            // stays above 35% until the fires have been stamped out (finale)
+            if (!attacker || attacker->GetTypeId() == TYPEID_PLAYER || attacker->GetOwnerGUID().IsPlayer())
+            {
+                damage = 0;
+                return;
+            }
+            uint32 const maxHp = me->GetMaxHealth();
+            damage = std::min(damage, maxHp * 3 / 100);
+            if (!finale)
+            {
+                uint32 const floorHp = maxHp * 35 / 100;
+                uint32 const hp = me->GetHealth();
+                damage = hp > floorHp ? std::min(damage, hp - floorHp) : 0;
+            }
         }
 
         void AttackStart(Unit * who) override
@@ -375,9 +425,27 @@ class npc_zarjira : public CreatureScript
                 events.ScheduleEvent(EVENT_INTRO, 12000);
             if(action == 2)
             {
+                if (!icePhase)
+                    return;
+                icePhase = false;
+                finale = true;
                 Talk(SAY_FIRES);
                 if(Creature * voljin = me->FindNearestCreature(NPC_VOLJIN, 30.0f))
+                {
                     voljin->RemoveAllAuras();
+                    voljin->AI()->DoAction(ACTION_VOLJIN_BATTLE_ON);
+                }
+                // the ice breaks: Zuni falls, Vanira kneels beside him
+                if (Creature* zuni = me->FindNearestCreature(NPC_ZUNI, 30.0f))
+                {
+                    zuni->RemoveAurasDueToSpell(SPELL_ICE_ENCASE);
+                    me->Kill(zuni, false);
+                }
+                if (Creature* vanira = me->FindNearestCreature(NPC_VANIRA, 30.0f))
+                {
+                    vanira->RemoveAurasDueToSpell(SPELL_ICE_ENCASE);
+                    vanira->SetStandState(UNIT_STAND_STATE_KNEEL);
+                }
             }
         }
 
@@ -393,12 +461,7 @@ class npc_zarjira : public CreatureScript
                 player->KilledMonsterCredit(NPC_ZARJIRA, ObjectGuid::Empty);
         }
 
-        void JustEngagedWith(Unit *) override
-        {
-            events.ScheduleEvent(EVENT_FROSTBOLT, 3000);
-            events.ScheduleEvent(EVENT_MANIFESTATION, 10000);
-            events.ScheduleEvent(EVENT_FIRES, 60000);
-        }
+        void JustEngagedWith(Unit *) override { }   // the timers start in EVENT_COMBAT (JustEngagedWith is not reliable here)
 
         void UpdateAI(uint32 diff) override
         {
@@ -468,6 +531,15 @@ class npc_zarjira : public CreatureScript
                             }
                         }
                         me->SetReactState(REACT_PASSIVE);
+                        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);   // attackable-looking, but players cannot damage her
+                        if(Creature * voljin = me->FindNearestCreature(NPC_VOLJIN, 30.0f))
+                            voljin->AI()->DoAction(ACTION_VOLJIN_BATTLE_ON);
+                        events.CancelEvent(EVENT_FROSTBOLT);
+                        events.CancelEvent(EVENT_MANIFESTATION);
+                        events.CancelEvent(EVENT_FIRES);
+                        events.ScheduleEvent(EVENT_FROSTBOLT, 3000);
+                        events.ScheduleEvent(EVENT_MANIFESTATION, 10000);
+                        events.ScheduleEvent(EVENT_FIRES, 30000);
                     }
                     break;
                 case EVENT_FROSTBOLT:
@@ -506,6 +578,8 @@ class npc_zarjira : public CreatureScript
                 }
                 case EVENT_FIRES:
                     {
+                        if (finale || icePhase)
+                            break;
                         if (Creature* ancientenemy = me->FindNearestCreature(38225, 100.0f, true))
                             ancientenemy->AI()->Talk(SAY_INTRO, me);
                         std::list<Creature*> cList;
@@ -527,7 +601,13 @@ class npc_zarjira : public CreatureScript
                             (*i)->CastSpell(me, SPELL_FIRES_BEAM, true);
                             (*i)->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);                            
                         }
-                        events.ScheduleEvent(EVENT_FIRES, urand(90000, 120000));
+                        // ice/drain phase: Vol'jin stops, Vanira and Zuni are encased until all fires are out
+                        icePhase = true;
+                        if (Creature* voljin = me->FindNearestCreature(NPC_VOLJIN, 30.0f))
+                            voljin->AI()->DoAction(ACTION_VOLJIN_BATTLE_OFF);
+                        for (uint32 entry : { uint32(NPC_ZUNI), uint32(NPC_VANIRA) })
+                            if (Creature* helper = me->FindNearestCreature(entry, 30.0f))
+                                helper->CastSpell(helper, SPELL_ICE_ENCASE, true);
                     }
                     break;
                 default:
@@ -538,6 +618,8 @@ class npc_zarjira : public CreatureScript
     private:
         EventMap events;
         uint32 diagTimer = 0;
+        bool icePhase = false;
+        bool finale = false;
     };
 
 public:

@@ -4,9 +4,7 @@
  */
 
 #include "MovementActions.h"
-#include "TemporarySummon.h"
 
-#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -1408,10 +1406,188 @@ namespace
     };
 }
 
+// (452) Stormstout Brewery (961), Hoptallus: a dead Bopper leaves a Big Ol' Hammer (59539, spellclick, boss_hoptallus.cpp npc_hammer);
+// clicking it gives aura 111662 (three charges of the extra button Smash 111666). Smash knocks back and kills every hopling and
+// hopper within 6 yards that carries the hopper animation aura 114284 (spell_hammer_smash; the Hopper 56718 only gets the knock back).
+// A dps bot picks the hammer up while hoplings swarm and smashes when three or more stand around it.
+namespace
+{
+    enum StormstoutMechanic
+    {
+        MAP_STORMSTOUT_BREWERY      = 961,
+        NPC_BIG_OL_HAMMER           = 59539,
+        NPC_EXPLOSIVE_HOPPER_SSB    = 56718,
+        SPELL_HAMMER_SMASH_AURA     = 111662,
+        SPELL_HAMMER_SMASH          = 111666,
+        SPELL_HOPPER_ANIMATION      = 114284
+    };
+
+    // hostile hoplings and boppers around the bot that Smash would kill (not the Hopper 56718: it is only knocked back)
+    uint32 SmashableAround(Player* bot, float range)
+    {
+        std::list<Unit*> units;
+        Trinity::AnyUnfriendlyUnitInObjectRangeCheck check(bot, bot, range);
+        Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitAllObjects(bot, searcher, range);
+        uint32 count = 0;
+        for (Unit* unit : units)
+            if (unit->IsAlive() && unit->GetEntry() != NPC_EXPLOSIVE_HOPPER_SSB && unit->HasAura(SPELL_HOPPER_ANIMATION))
+                ++count;
+        return count;
+    }
+}
+
+// (455) Yan-Zhu the Uncasked (59479), Carbonation: while the boss carries aura 115003 the spell 115003 hits everybody in range that
+// is not higher than the boss + 4.9 yards (boss_yanzhu_the_uncasked.cpp spell_carbonation::SelectTargets). It summons five Fizzy
+// Bubbles (59799, spellclick, 12 s); the click gives aura 114459 = flight (spell_fizzi_buble: SetCanFly). A bot clicks the nearest
+// bubble, rises to boss + 5.3 yards straight up and stays there until Carbonation is over, then comes down.
+namespace
+{
+    enum YanZhuMechanic
+    {
+        NPC_YAN_ZHU                 = 59479,
+        NPC_FIZZY_BUBBLE_BOT        = 59799,
+        SPELL_YZ_CARBONATION        = 115003,
+        SPELL_YZ_FIZZY_FLIGHT       = 114459
+    };
+    constexpr float YZ_FLIGHT_ABOVE_BOSS = 5.3f;   // the filter drops everything higher than boss + 4.9
+}
+
+bool AvoidAoeAction::YanZhuStep(bool dryRun)
+{
+    Creature* yan = bot->FindNearestCreature(NPC_YAN_ZHU, 120.0f, true);
+    if (!yan || !yan->IsInCombat())
+        return false;
+    uint32 const now = getMSTime();
+    float const bossZ = yan->GetPositionZ();
+    bool const carbonation = yan->HasAura(SPELL_YZ_CARBONATION);
+
+    if (bot->HasAura(SPELL_YZ_FIZZY_FLIGHT))
+    {
+        if (!carbonation)
+            return false;   // flying is free; the fight goes on
+        float const wantZ = bossZ + YZ_FLIGHT_ABOVE_BOSS;
+        if (bot->GetPositionZ() >= wantZ - 0.3f)
+        {
+            if (!dryRun)
+                liftedByBubble = true;
+            return true;   // hold: the engine would chase the boss back down
+        }
+        if (!dryRun && now - lastRiseTimer > 700)
+        {
+            lastRiseTimer = now;
+            liftedByBubble = true;
+            bot->GetMotionMaster()->MovePoint(0, bot->GetPositionX(), bot->GetPositionY(), wantZ, false);
+            TC_LOG_INFO("playerbots", "BotLife {}: rises on a Fizzy Bubble above the Carbonation of Yan-Zhu in map {}", bot->GetName(), bot->GetMapId());
+        }
+        return true;
+    }
+
+    // a bubble to click while Carbonation runs (the bubbles come with it)
+    Creature* bubble = nullptr;
+    float best = 40.0f;
+    for (Creature* c : bot->FindNearestCreatures(NPC_FIZZY_BUBBLE_BOT, 40.0f))
+        if (c->IsAlive() && c->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK) && bot->GetExactDist(c) < best)
+        {
+            best = bot->GetExactDist(c);
+            bubble = c;
+        }
+    if (bubble && now - lastClickTimer >= 1500)
+    {
+        if (dryRun)
+            return true;
+        if (bot->GetExactDist2d(bubble) > 3.5f || bot->GetExactDist(bubble) > 6.0f)
+        {
+            if (now - lastGrabTimer > 500)
+            {
+                lastGrabTimer = now;
+                MoveTo(bot->GetMapId(), bubble->GetPositionX(), bubble->GetPositionY(), bot->GetPositionZ(), false, false, true, false,
+                    MovementPriority::MOVEMENT_COMBAT);
+            }
+            return true;
+        }
+        bot->StopMoving();
+        bubble->HandleSpellClick(bot);
+        lastClickTimer = now;
+        TC_LOG_INFO("playerbots", "BotLife {}: clicks a Fizzy Bubble of Yan-Zhu in map {}", bot->GetName(), bot->GetMapId());
+        return true;
+    }
+
+    // the flight is over: back to the floor under the bot (it only hangs there, nothing pulls it down)
+    if (liftedByBubble && !bot->CanFly())
+    {
+        if (bot->GetPositionZ() > bossZ + 1.0f)
+        {
+            if (!dryRun && now - lastRiseTimer > 700)
+            {
+                lastRiseTimer = now;
+                bot->GetMotionMaster()->MovePoint(0, bot->GetPositionX(), bot->GetPositionY(), bossZ, false);
+            }
+            return true;
+        }
+        if (!dryRun)
+            liftedByBubble = false;
+    }
+    return false;
+}
+
+bool AvoidAoeAction::StormstoutStep(bool dryRun)
+{
+    if (bot->GetMapId() != MAP_STORMSTOUT_BREWERY || !bot->IsAlive() || !bot->IsInCombat())
+        return false;
+    if (YanZhuStep(dryRun))   // (455)
+        return true;
+    if (bot->HasUnitState(UNIT_STATE_CASTING))
+        return false;
+    uint32 const now = getMSTime();
+
+    // Smash with the hammer in hand: three or more hoplings within the 6 yards of the knock back
+    if (bot->HasAura(SPELL_HAMMER_SMASH_AURA))
+    {
+        if (now - lastSmashTimer < 1500 || SmashableAround(bot, 5.5f) < 3)
+            return false;
+        if (!dryRun)
+        {
+            bot->CastSpell(bot, SPELL_HAMMER_SMASH, true);
+            lastSmashTimer = now;
+            TC_LOG_INFO("playerbots", "BotLife {}: smashes the hoplings with the Big Ol' Hammer in map {}", bot->GetName(), bot->GetMapId());
+        }
+        return true;
+    }
+
+    // pick up a hammer: dps only (tank and healer keep their job), while a swarm is around
+    if (PlayerBotSpec::IsTank(bot, true) || PlayerBotSpec::IsHeal(bot, true))
+        return false;
+    if (now - lastClickTimer < 3000)   // a click that gave nothing is not repeated every tick
+        return false;
+    Creature* hammer = bot->FindNearestCreature(NPC_BIG_OL_HAMMER, 25.0f, true);
+    if (!hammer || !hammer->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK) || SmashableAround(bot, 30.0f) < 3)
+        return false;
+    if (dryRun)
+        return true;
+    if (bot->GetExactDist2d(hammer) > 3.0f || bot->GetExactDist(hammer) > 5.0f)
+    {
+        if (now - lastGrabTimer > 700)
+        {
+            lastGrabTimer = now;
+            MoveTo(bot->GetMapId(), hammer->GetPositionX(), hammer->GetPositionY(), hammer->GetPositionZ(), false, false, true, false,
+                MovementPriority::MOVEMENT_COMBAT);
+        }
+        return true;
+    }
+    bot->StopMoving();
+    hammer->HandleSpellClick(bot);
+    lastClickTimer = now;
+    TC_LOG_INFO("playerbots", "BotLife {}: picks up the Big Ol' Hammer in map {}", bot->GetName(), bot->GetMapId());
+    return true;
+}
+
 bool AvoidAoeAction::isUseful()
 {
     if (!bot->IsInWorld() || !bot->GetMap()->Instanceable() || bot->GetMap()->IsBattlegroundOrArena())
         return false;
+    if (StormstoutStep(true))   // (452)
+        return true;
     Position aside;
     if (getMSTime() - lastMoveTimer >= 300 && SweepingHazardNear(bot, aside))   // (sweeping-hazard) it does not wait
         return true;
@@ -1438,6 +1614,8 @@ bool AvoidAoeAction::Execute(Event /*event*/)
 {
     // an aura with a dynamic object (Rain of Fire), a trap object with a spell (lava bomb), a trigger unit (shadow
     // fissure, sticky bomb)
+    if (StormstoutStep(false))   // (452)
+        return true;
     Position aside;
     if (SweepingHazardNear(bot, aside) && MoveTo(bot->GetMapId(), aside.GetPositionX(), aside.GetPositionY(), aside.GetPositionZ(),
         false, false, true, false, MovementPriority::MOVEMENT_COMBAT))
@@ -1530,17 +1708,11 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
     std::vector<std::pair<Position, float>> hazards;   // centre, radius + 2 yd margin
     Unit* worst = nullptr;
     float worstRadius = 0.0f;
-    // A bot that holds a creature whose damage zones are a trail behind that creature (Scorched Earth of Brother Korloff)
-    // drags the trail along: every short step pulls the creature over the spot it just left, so the tank is back in the
-    // fire two seconds later and the melee with it. That tank looks further for one clean spot and moves it there in one go.
-    Unit* const current = AI_VALUE(Unit*, "current target");
-    bool const holding = current && current->IsInWorld() && current->GetVictim() == bot;
-    bool heldTrail = false;
-    float const scanRange = holding ? 25.0f : 15.0f;
+    Unit* heldTrail = nullptr;   // (trail-source held) the creature that lays the patches while it walks and has this bot as its victim
     std::list<Unit*> nearUnits;
-    Trinity::AnyUnitInObjectRangeCheck nearCheck(bot, scanRange);
+    Trinity::AnyUnitInObjectRangeCheck nearCheck(bot, 15.0f);
     Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> nearSearcher(bot, nearUnits, nearCheck);
-    Cell::VisitAllObjects(bot, nearSearcher, scanRange);
+    Cell::VisitAllObjects(bot, nearSearcher, 15.0f);
     for (Unit* unit : nearUnits)
     {
         if (!unit || !unit->IsInWorld() || unit == bot)
@@ -1564,10 +1736,17 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                     float const radius = trigger->Effects[j].CalcRadius();
                     if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius)
                         continue;
-                    hazards.push_back({ unit->GetPosition(), radius + 2.0f });
-                    if (holding && unit->IsSummon() && unit->ToTempSummon()->GetSummonerGUID() == current->GetGUID())
-                        heldTrail = true;
-                    if (bot->GetExactDist2d(unit) < radius + 2.0f && (!worst || radius > worstRadius))
+                    // (trail-source held) the victim of the creature that lays the patches: a hop out of its melee range makes it
+                    // walk and lay a new trail (boss_brother_korloff.cpp spell_scorched_earth::PeriodicTick only ticks while the
+                    // owner isMoving()), so only the real radius counts for it, not the 2 yd margin for a bot that has to run
+                    TempSummon* summon = unit->ToTempSummon();
+                    Unit* source = summon ? summon->GetSummoner() : nullptr;
+                    bool const held = source && source != bot && source->IsAlive() && source->GetVictim() == bot;
+                    if (held)
+                        heldTrail = source;
+                    float const margin = held ? 0.5f : 2.0f;
+                    hazards.push_back({ unit->GetPosition(), radius + margin });
+                    if (bot->GetExactDist2d(unit) < radius + margin && (!worst || radius > worstRadius))
                     {
                         worst = unit;
                         worstRadius = radius;
@@ -1587,13 +1766,21 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
         float const reach = melee ? 5.0f : 25.0f;
         // candidates by score; the path is only calculated for the best ones until one is reachable
         std::vector<std::pair<float, Position>> candidates;
-        bool const dragTrail = holding && heldTrail;
-        std::array<float, 3> const dists = dragTrail ? std::array<float, 3>{ 10.0f, 15.0f, 20.0f } : std::array<float, 3>{ 5.0f, 8.0f, 11.0f };
+        // (trail-source held) the victim only moves along the circle around the creature, inside its melee range: it turns in place
+        // and does not walk, so no new patches; the old ones burn out after 30 s (despawn in npc_trigger_scorched_flame::IsSummonedBy)
+        float const ring = heldTrail ? std::min(bot->GetExactDist2d(heldTrail), heldTrail->GetMeleeRange(bot) - 0.5f) : 0.0f;
         for (int a = 0; a < 16; ++a)
-            for (float d : dists)
+            for (float d : { 5.0f, 8.0f, 11.0f })
             {
+                if (heldTrail && d != 5.0f)
+                    continue;   // one ring of 16 spots
                 float const ang = a * float(M_PI) / 8.0f;
                 float x = bot->GetPositionX() + std::cos(ang) * d, y = bot->GetPositionY() + std::sin(ang) * d, z = bot->GetPositionZ();
+                if (heldTrail)
+                {
+                    x = heldTrail->GetPositionX() + std::cos(ang) * ring;
+                    y = heldTrail->GetPositionY() + std::sin(ang) * ring;
+                }
                 bot->UpdateAllowedPositionZ(x, y, z);
                 if (std::fabs(z - bot->GetPositionZ()) > 4.0f)
                     continue;
@@ -1601,10 +1788,10 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                 float clearance = 100.0f;
                 for (auto const& h : hazards)
                     clearance = std::min(clearance, p.GetExactDist2d(&h.first) - h.second);
-                if (clearance <= (dragTrail ? 4.0f : 0.0f))
+                if (clearance <= 0.0f)
                     continue;
-                float score = std::min(clearance, dragTrail ? 10.0f : 6.0f) - 0.05f * d;
-                if (!dragTrail && target && target->IsInWorld())   // the held creature follows the tank
+                float score = std::min(clearance, 6.0f) - 0.05f * d;
+                if (target && target->IsInWorld())
                     score -= 0.3f * std::max(0.0f, p.GetExactDist2d(target) - target->GetCombatReach() - reach);
                 candidates.push_back({ score, p });
             }
@@ -1629,8 +1816,8 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                 return true;
             }
         }
-        // no clear spot found: the old step away from the nearest zone
-        if (FleePosition(worst->GetPosition(), worstRadius + 2.0f))
+        // no clear spot found: the old step away from the nearest zone (not for the victim of a trail creature: stay in its melee range)
+        if (!heldTrail && FleePosition(worst->GetPosition(), worstRadius + 2.0f))
             return true;
     }
     GuidVector const triggers = AI_VALUE(GuidVector, "possible triggers");

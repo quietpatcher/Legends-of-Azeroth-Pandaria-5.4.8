@@ -182,6 +182,11 @@ bool AttackersValue::IsPossibleTarget(Unit* attacker, Player* bot, float range)
     // (avoid-in-dungeon) a foe the party leaves alone for now (one that cannot be hurt yet, Raigonn before Ri'mok): no target
     if (c && bot->GetMap()->IsDungeon() && sBotLife->IsAvoidedTarget(bot, c))
         return false;
+    // (immune-boss) a dungeon creature immune to physical AND magic damage (Wise Mari inside her Water Bubble, aura 106062,
+    // until her four Corrupt Living Waters are dead): no target, the party goes for the adds that lift the immunity
+    if (c && bot->GetMap()->IsDungeon() && c->IsAlive() && c->IsImmunedToDamage(SPELL_SCHOOL_MASK_NORMAL) &&
+        c->IsImmunedToDamage(SPELL_SCHOOL_MASK_MAGIC))
+        return false;
     bool rti = false;
     if (attacker && bot->GetGroup())
         rti = bot->GetGroup()->GetTargetIcon(7) == attacker->GetGUID();

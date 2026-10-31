@@ -147,10 +147,11 @@ struct DynamicTreeIntersectionCallback
 {
     bool did_hit;
     uint32 phase_mask;
-    DynamicTreeIntersectionCallback(uint32 phasemask) : did_hit(false), phase_mask(phasemask) { }
+    VMAP::ModelIgnoreFlags ignore_flags;
+    DynamicTreeIntersectionCallback(uint32 phasemask, VMAP::ModelIgnoreFlags ignoreFlags = VMAP::ModelIgnoreFlags::Nothing) : did_hit(false), phase_mask(phasemask), ignore_flags(ignoreFlags) { }
     bool operator()(const G3D::Ray& r, const GameObjectModel& obj, float& distance)
     {
-        did_hit = obj.intersectRay(r, distance, true, phase_mask, VMAP::ModelIgnoreFlags::Nothing);
+        did_hit = obj.intersectRay(r, distance, true, phase_mask, ignore_flags);
         return did_hit;
     }
     bool didHit() const { return did_hit;}
@@ -266,7 +267,7 @@ bool DynamicMapTree::getObjectHitPos(const uint32 phasemask, const G3D::Vector3&
     return result;
 }
 
-bool DynamicMapTree::isInLineOfSight(float x1, float y1, float z1, float x2, float y2, float z2, uint32 phasemask) const
+bool DynamicMapTree::isInLineOfSight(float x1, float y1, float z1, float x2, float y2, float z2, uint32 phasemask, VMAP::ModelIgnoreFlags ignoreFlags) const
 {
     G3D::Vector3 v1(x1, y1, z1), v2(x2, y2, z2);
 
@@ -276,7 +277,7 @@ bool DynamicMapTree::isInLineOfSight(float x1, float y1, float z1, float x2, flo
         return true;
 
     G3D::Ray r(v1, (v2-v1) / maxDist);
-    DynamicTreeIntersectionCallback callback(phasemask);
+    DynamicTreeIntersectionCallback callback(phasemask, ignoreFlags);
     impl->intersectRay(r, callback, maxDist, v2, true);
 
     return !callback.did_hit;

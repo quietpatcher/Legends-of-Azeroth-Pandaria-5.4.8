@@ -25,6 +25,10 @@ static std::vector<DoorData> const doorData =
 {
     { GAMEOBJECT_DOOR_LOREWALKER_STONSTEP,  DATA_LOREWALKER,   DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
     { GAMEOBJECT_DOOR_WISE_MARI,            DATA_WISE_MARI,    DOOR_TYPE_ROOM,    BOUNDARY_NONE },
+    // (door-held) not registered with AddDoor (the script opens these itself): only the bots' held-door check reads them
+    { GAMEOBJECT_DOOR_LIU_FLAMEHEART,       DATA_WISE_MARI,    DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
+    { GAMEOBJECT_DOOR_LIU_FLAMEHEART,       DATA_LOREWALKER,   DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
+    { GAMEOBJECT_DOOR_SHA_OF_DOUBT,         DATA_LIU,          DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
 };
 
 static std::vector<ScenarioBosses> const scenarioBosses =

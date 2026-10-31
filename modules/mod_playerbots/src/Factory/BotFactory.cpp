@@ -1,4 +1,5 @@
 #include "BotFactory.h"
+#include "BotLife.h"   // to-do 265: role-aware spec pick
 #include "Pet.h"
 #include "DatabaseEnv.h"
 
@@ -328,7 +329,7 @@ void BotFactory::InitPet()
     }
 }
 #include <fstream>
-void BotFactory::InitTalentsTree(bool reset)
+void BotFactory::InitTalentsTree(bool reset, int32 forceRole)
 {
     /*std::map<uint32, std::list<const TalentEntry*>> talents_dbc;
     for (auto entry = sTalentStore.begin(); entry != sTalentStore.end(); ++entry)
@@ -378,7 +379,10 @@ void BotFactory::InitTalentsTree(bool reset)
         if (bot->GetLevel() >= 10)
         {
             // (healer-mana) the druid has four specializations (restoration is the fourth); the others three
-            uint32 tab = std::rand() % (bot->GetClass() == CLASS_DRUID ? 4 : 3);
+            // to-do 265: weighted pick on the role shares of the faction + level band (cached snapshot);
+            // the old random pick when there is no snapshot yet
+            int32 picked = sBotLife->PickSpecTab(bot, forceRole);
+            uint32 tab = picked >= 0 ? uint32(picked) : std::rand() % (bot->GetClass() == CLASS_DRUID ? 4 : 3);
             WorldPacket p(CMSG_SET_PRIMARY_TALENT_TREE);
             p << tab;
             bot->GetSession()->HandeSetTalentSpecialization(p);

@@ -27,7 +27,8 @@ EndContentData */
 
 enum eQuests
 {
-    QUEST_SCHOLOMANCER = 27162,
+    QUEST_SCHOLOMANCER_A = 27162,
+    QUEST_SCHOLOMANCER_H = 26924,
 };
 
 enum eCreatures
@@ -35,13 +36,15 @@ enum eCreatures
     NPC_THASSARIAN           = 44453,
     NPC_KOLTIRA_DEATHVIEWER  = 44452,
     NPC_DARK_MASTER_GANDLING = 44323,
+
+    FACTION_ANDORHAL_HELPER  = 1727, // friendly to Alliance and Horde players, hostile to monsters (Gandling = faction 21)
 };
 
 enum eSpells
 {
     SPELL_SHADOWBOLT      = 79932,
-    SPELL_SHADOW_ERUPTION = 79932,
-    SPELL_SHADOW_PRISON   = 86780,
+    SPELL_SHADOW_ERUPTION = 79932, // real id is 86845 (shadow pools), untested, left as it was
+    SPELL_SHADOW_PRISON   = 86780, // 15 s stun, nothing else (SpellEffect: Apply Aura Stun)
 };
 
 enum eEvents
@@ -52,17 +55,41 @@ enum eEvents
 
 enum eTalks
 {
-    SAY_INTRO,
-    SAY_SPECIAL_1,
-    SAY_SPECIAL_2,
-    SAY_SPECIAL_3,
-    SAY_SPECIAL_4,
+    // Darkmaster Gandling, creature_text 44323
+    SAY_INTRO,      // Prepare to die, $r!
+    SAY_SPECIAL_1,  // Your life is forfeit.
+    SAY_SPECIAL_2,  // Enough of this. The Cult of the Damned doesn't need Andorhal...
+
+    // Thassarian 44453 and Koltira Deathweaver 44452 share the first groups
+    SAY_HELPER_QUEST_ACCEPT = 0, // 45516
+    SAY_HELPER_BATTLE_CRY   = 1, // 45042 / 45043
+    SAY_HELPER_WHISPER      = 10, // Thassarian 45056
+    SAY_KOLTIRA_WHISPER     = 5,  // Koltira 45056
+
+    // dialogue after Gandling left, see broadcast_text 45045-45055
+    SAY_THASSARIAN_1       = 2, // 45045
+    SAY_KOLTIRA_1          = 2, // 45046
+    SAY_THASSARIAN_LAUGH   = 3, // 45047
+    SAY_THASSARIAN_2       = 4, // 45048
+    SAY_KOLTIRA_2          = 3, // 45049
+    SAY_THASSARIAN_3       = 5, // 45050
+    SAY_THASSARIAN_4       = 6, // 45051
+    SAY_THASSARIAN_5       = 7, // 45052
+    SAY_KOLTIRA_3          = 4, // 45053
+    SAY_THASSARIAN_LAUGH_2 = 8, // 45054
+    SAY_THASSARIAN_6       = 9, // 45055
+};
+
+enum eActions
+{
+    ACTION_HELP_AGAINST_GANDLING = 1, // battle cry, attack Gandling
+    ACTION_GANDLING_LEFT         = 2, // both helpers: stop fighting and go home; Thassarian also runs the dialogue with Koltira and whispers the players
 };
 
 // Dark Master Gandling 44323
 struct npc_dark_master_gandling_quest : public ScriptedAI
 {
-    npc_dark_master_gandling_quest(Creature* creature) : ScriptedAI(creature) { }
+    npc_dark_master_gandling_quest(Creature* creature) : ScriptedAI(creature), eventDone(false) { }
 
     EventMap events;
     bool eventDone;
@@ -75,6 +102,15 @@ struct npc_dark_master_gandling_quest : public ScriptedAI
         me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_PACIFIED);
     }
 
+    // The outro ends combat on its own; an evade in the middle would Reset() him and open him up for another "kill"
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (eventDone)
+            return;
+
+        ScriptedAI::EnterEvadeMode(why);
+    }
+
     void JustEngagedWith(Unit* who) override
     {
         Talk(SAY_INTRO);
@@ -85,30 +121,68 @@ struct npc_dark_master_gandling_quest : public ScriptedAI
     void DamageTaken(Unit* attacker, uint32& damage) override
     {
         if (eventDone)
-            damage = 0;
-
-        if (me->GetHealth() <= damage && !eventDone)
         {
-            damage = 0;
-            eventDone = true;
-            Talk(SAY_SPECIAL_1);
-            me->InterruptNonMeleeSpells(true);
-            events.Reset();
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_PACIFIED);
-            DoCast(attacker, SPELL_SHADOW_PRISON);
-
-            me->m_Events.Schedule(16000, [this]()
-            {
-                Talk(SAY_SPECIAL_2);
-                HandleCompleteQuest();
-                me->CombatStop();
-                me->DespawnOrUnsummon(5 * IN_MILLISECONDS);
-            });
+            // Thassarian and Koltira hit him for real, but nobody finishes him: he leaves on his own
+            if (damage >= me->GetHealth())
+                damage = me->GetHealth() - 1;
+            return;
         }
+
+        // "At low health, Gandling traps the hero within a shadow prison" (threshold itself is not documented)
+        if (!me->HealthBelowPctDamaged(15, damage))
+            return;
+
+        damage = 0;
+        eventDone = true;
+        events.Reset();
+        me->InterruptNonMeleeSpells(true);
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_PACIFIED);
+        Talk(SAY_SPECIAL_1);
+
+        Unit* victim = attacker ? attacker->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+        if (!victim)
+            victim = attacker;
+        if (victim)
+            DoCast(victim, SPELL_SHADOW_PRISON);
+
+        // Thassarian and Koltira stand in the square (sniff: 1291,-1531 and 1289,-1536) and now join in
+        me->m_Events.Schedule(2500, [this]() { CallHelper(NPC_THASSARIAN); });
+        me->m_Events.Schedule(3500, [this]() { CallHelper(NPC_KOLTIRA_DEATHVIEWER); });
+
+        // "Koltira Deathweaver and Thassarian arrive and break the hero out of the prison"
+        me->m_Events.Schedule(6000, [this]()
+        {
+            me->InterruptNonMeleeSpells(true);
+            std::list<Player*> players;
+            GetPlayerListInGrid(players, me, 100.0f);
+            for (Player* player : players)
+                player->RemoveAurasDueToSpell(SPELL_SHADOW_PRISON);
+        });
+
+        me->m_Events.Schedule(10000, [this]()
+        {
+            Talk(SAY_SPECIAL_2);
+            HandleCompleteQuest();
+        });
+
+        // "Darkmaster Gandling teleports away from the battlefield" (no teleport visual known, he just leaves)
+        me->m_Events.Schedule(14000, [this]()
+        {
+            if (Creature* thassarian = me->FindNearestCreature(NPC_THASSARIAN, 40.0f))
+                thassarian->AI()->DoAction(ACTION_GANDLING_LEFT);
+            if (Creature* koltira = me->FindNearestCreature(NPC_KOLTIRA_DEATHVIEWER, 40.0f))
+                koltira->AI()->DoAction(ACTION_GANDLING_LEFT);
+            me->CombatStop(true);
+            me->DespawnOrUnsummon();
+        });
     }
 
     void UpdateAI(uint32 diff) override
     {
+        if (eventDone)
+            return;
+
         if (!UpdateVictim())
             return;
 
@@ -138,79 +212,150 @@ struct npc_dark_master_gandling_quest : public ScriptedAI
     }
 
     private:
-        // Spell not found
+        void CallHelper(uint32 entry)
+        {
+            if (Creature* helper = me->FindNearestCreature(entry, 40.0f))
+                helper->AI()->DoAction(ACTION_HELP_AGAINST_GANDLING);
+        }
+
+        // Both factions share the objective (quest_objective: 44323 for 27162 and 26924)
         void HandleCompleteQuest()
         {
-            std::list<Player*> pList;
-            GetPlayerListInGrid(pList, me, 100.0f);
-            pList.remove_if([=](Player* target) { return target && target->GetQuestStatus(QUEST_SCHOLOMANCER) != QUEST_STATUS_INCOMPLETE; });
-
-            for (auto&& itr : pList)
-                itr->KilledMonsterCredit(me->GetEntry());
+            std::list<Player*> players;
+            GetPlayerListInGrid(players, me, 100.0f);
+            for (Player* player : players)
+                if (player->GetQuestStatus(QUEST_SCHOLOMANCER_A) == QUEST_STATUS_INCOMPLETE || player->GetQuestStatus(QUEST_SCHOLOMANCER_H) == QUEST_STATUS_INCOMPLETE)
+                    player->KilledMonsterCredit(me->GetEntry());
         }
 };
 
-// Thassarian 44453
-class npc_thassarian_quest : public CreatureScript
+// Thassarian 44453 and Koltira Deathweaver 44452: quest givers in the camps, helpers in the square next to Gandling
+class npc_scholomancer_helper : public CreatureScript
 {
     public:
-        npc_thassarian_quest() : CreatureScript("npc_thassarian_quest") { }
+        npc_scholomancer_helper(char const* name) : CreatureScript(name) { }
 
-        bool OnQuestAccept(Player* player, Creature* creature, Quest const* quest) override
+        bool OnQuestAccept(Player* /*player*/, Creature* creature, Quest const* quest) override
         {
-            if (quest->GetQuestId() == QUEST_SCHOLOMANCER)
-                creature->AI()->Talk(SAY_INTRO);
+            if (quest->GetQuestId() == QUEST_SCHOLOMANCER_A || quest->GetQuestId() == QUEST_SCHOLOMANCER_H)
+                creature->AI()->Talk(SAY_HELPER_QUEST_ACCEPT);
 
             return true;
         }
 
-        struct npc_thassarian_questAI : public ScriptedAI
+        struct npc_scholomancer_helperAI : public ScriptedAI
         {
-            npc_thassarian_questAI(Creature* creature) : ScriptedAI(creature) { }
+            npc_scholomancer_helperAI(Creature* creature) : ScriptedAI(creature) { }
 
-            void UpdateAI(uint32 /*diff*/) override { }
+            void Reset() override
+            {
+                // They only fight when Gandling's script calls them, not whatever walks past the square
+                me->SetReactState(REACT_PASSIVE);
+
+                // The helpers in the square (spawns next to Gandling) must be friendly to Alliance and Horde players and
+                // unattackable for them; the questgivers in the camps (190+ yards away) keep their own faction.
+                // Faction 1727 (friendly to players of both factions, hostile to monsters) instead of 35: with 35 Gandling
+                // (faction 21) is neutral to them and Unit::IsValidAttackTarget refuses the creature-vs-creature attack,
+                // so the helpers could not fight him. IMMUNE_TO_NPC (template flags) is removed for the same reason
+                // (ThreatReference::FlagsAllowFighting checks it in both directions).
+                if (me->GetHomePosition().GetExactDist2d(1288.65f, -1536.47f) < 40.0f)
+                {
+                    me->SetFaction(FACTION_ANDORHAL_HELPER);
+                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
+                    me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_NON_ATTACKABLE);
+                }
+            }
+
+            void DoAction(int32 action) override
+            {
+                switch (action)
+                {
+                    case ACTION_HELP_AGAINST_GANDLING:
+                        if (Creature* gandling = me->FindNearestCreature(NPC_DARK_MASTER_GANDLING, 40.0f))
+                        {
+                            Talk(SAY_HELPER_BATTLE_CRY);
+                            me->GetThreatManager().AddThreat(gandling, 1.0f, nullptr, true, true);
+                            AttackStart(gandling);
+                        }
+                        break;
+                    case ACTION_GANDLING_LEFT:
+                        // Gandling is gone: end the fight (nobody else may stay on the threat list) and walk back to the spawn
+                        me->CombatStop(true);
+                        me->GetThreatManager().ClearAllThreat();
+                        me->AttackStop();
+                        me->GetMotionMaster()->MoveTargetedHome();
+                        // Unit::Attack removed IMMUNE_TO_PC when the helper engaged Gandling; put it back so players cannot
+                        // attack the helpers in the square afterwards (440)
+                        if (me->GetHomePosition().GetExactDist2d(1288.65f, -1536.47f) < 40.0f)
+                            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_NON_ATTACKABLE);
+                        if (me->GetEntry() == NPC_THASSARIAN)
+                            StartDialogue();
+                        break;
+                }
+            }
+
+            void UpdateAI(uint32 /*diff*/) override
+            {
+                if (!UpdateVictim())
+                    return;
+
+                DoMeleeAttackIfReady();
+            }
+
+            private:
+                // Order and lines: Wowpedia "Scholomancer (Alliance)" / WoWWiki "Scholomancer (Horde)"; the pauses are a guess
+                void StartDialogue()
+                {
+                    uint32 delay = 3000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_1);            delay += 6000;
+                    ScheduleTalk(delay, NPC_KOLTIRA_DEATHVIEWER, SAY_KOLTIRA_1);      delay += 6000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_LAUGH);        delay += 3000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_2);            delay += 5000;
+                    ScheduleTalk(delay, NPC_KOLTIRA_DEATHVIEWER, SAY_KOLTIRA_2);      delay += 7000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_3);            delay += 5000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_4);            delay += 7000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_5);            delay += 7000;
+                    ScheduleTalk(delay, NPC_KOLTIRA_DEATHVIEWER, SAY_KOLTIRA_3);      delay += 5000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_LAUGH_2);      delay += 3000;
+                    ScheduleTalk(delay, NPC_THASSARIAN, SAY_THASSARIAN_6);            delay += 5000;
+
+                    // Thassarian whispers the Alliance players, Koltira the Horde players
+                    me->m_Events.Schedule(delay, [this]()
+                    {
+                        Creature* koltira = me->FindNearestCreature(NPC_KOLTIRA_DEATHVIEWER, 40.0f);
+                        std::list<Player*> players;
+                        GetPlayerListInGrid(players, me, 100.0f);
+                        for (Player* player : players)
+                        {
+                            if (player->GetQuestStatus(QUEST_SCHOLOMANCER_A) == QUEST_STATUS_COMPLETE)
+                                Talk(SAY_HELPER_WHISPER, player);
+                            else if (koltira && player->GetQuestStatus(QUEST_SCHOLOMANCER_H) == QUEST_STATUS_COMPLETE)
+                                koltira->AI()->Talk(SAY_KOLTIRA_WHISPER, player);
+                        }
+                    });
+                }
+
+                void ScheduleTalk(uint32 delay, uint32 entry, uint8 group)
+                {
+                    me->m_Events.Schedule(delay, [this, entry, group]()
+                    {
+                        if (entry == NPC_THASSARIAN)
+                            Talk(group);
+                        else if (Creature* other = me->FindNearestCreature(entry, 40.0f))
+                            other->AI()->Talk(group);
+                    });
+                }
         };
 
         CreatureAI* GetAI(Creature* creature) const override
         {
-            return new npc_thassarian_questAI(creature);
+            return new npc_scholomancer_helperAI(creature);
         }
-};
-
-// Shadow Prison 86780
-class spell_shadow_prison_gandling : public AuraScript
-{
-    PrepareAuraScript(spell_shadow_prison_gandling);
-
-    void OnRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
-    {
-        if (Unit* owner = GetOwner()->ToUnit())
-            owner->SetCanFly(false);
-    }
-
-    void OnApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
-    {
-        if (Unit* owner = GetOwner()->ToUnit())
-        {
-            owner->SetCanFly(true);
-            GetPositionWithDistInOrientation(owner, 4.5f, Position::NormalizeOrientation(owner->GetOrientation() - M_PI), x, y);
-            owner->GetMotionMaster()->MoveJump({ x, y, owner->GetPositionZ() + 3.0f, owner->GetOrientation() }, 20.0f, 20.0f);
-        }
-    }
-
-    private:
-        float x, y;
-
-    void Register() override
-    {
-        OnEffectRemove += AuraEffectRemoveFn(spell_shadow_prison_gandling::OnRemove, EFFECT_0, SPELL_AURA_MOD_STUN, AURA_EFFECT_HANDLE_REAL);
-        OnEffectApply += AuraEffectApplyFn(spell_shadow_prison_gandling::OnApply, EFFECT_0, SPELL_AURA_MOD_STUN, AURA_EFFECT_HANDLE_REAL);
-    }
 };
 
 void AddSC_western_plaguelands()
 {
     new creature_script<npc_dark_master_gandling_quest>("npc_dark_master_gandling_quest");
-    new npc_thassarian_quest();
-    new aura_script<spell_shadow_prison_gandling>("spell_shadow_prison_gandling");
+    new npc_scholomancer_helper("npc_thassarian_quest");
+    new npc_scholomancer_helper("npc_koltira_quest");
 }

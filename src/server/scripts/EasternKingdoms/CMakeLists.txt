@@ -213,6 +213,7 @@ set(scripts_STAT_SRCS
   EasternKingdoms/zone_western_plaguelands.cpp
   EasternKingdoms/zone_westfall.cpp
   EasternKingdoms/zone_silverpine_forest.cpp
+  EasternKingdoms/zone_silverpine_forest_high_command.cpp
   EasternKingdoms/Karazhan/instance_karazhan.cpp
   EasternKingdoms/Karazhan/boss_nightbane.cpp
   EasternKingdoms/Karazhan/karazhan.cpp

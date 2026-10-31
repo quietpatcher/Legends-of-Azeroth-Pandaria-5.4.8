@@ -16,6 +16,20 @@ bool FollowAction::Execute(Event event)
     std::string const target = formation->GetTargetName();
 
     bool moved = false;
+    // (301-formation) inside a dungeon a grouped bot uses the native follow generator also for the slot formations (chaos/near):
+    // MoveTo(slot) = Clear + MovePoint 2-4x/s, and every MovePoint stops the running spline first (stutter)
+    if (target.empty() && bot->GetGroup() && bot->GetMap() && bot->GetMap()->IsDungeon())
+    {
+        Unit* master = AI_VALUE(Unit*, "master target");
+        // (301-lead) in a dungeon finder group the real player is the group leader and lags behind the bot tank that leads the
+        // dungeon; a bot whose own master is a bot of this group follows that one (the tank), not the player (chain lag of 20-45 yd)
+        if (Player* lead = botAI->GetMaster())
+            if (lead != bot && GET_PLAYERBOT_AI(lead) && bot->GetGroup()->IsMember(lead->GetGUID()))
+                master = lead;
+        if (master && master->GetGUID() != bot->GetGUID() && master->IsInWorld() && master->FindMap() == bot->FindMap())
+            return Follow(master);
+    }
+
     if (!target.empty())
     {
         moved = Follow(AI_VALUE(Unit*, target));

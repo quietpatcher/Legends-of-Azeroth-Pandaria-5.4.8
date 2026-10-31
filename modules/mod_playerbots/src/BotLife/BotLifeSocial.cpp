@@ -679,6 +679,13 @@ void BotLifeMgr::WorldUpdate(uint32 diff)
         }
     }
 
+    // to-do 265: role snapshot of the bot characters, every ten minutes
+    if (now >= _nextRoleSnap)
+    {
+        _nextRoleSnap = now + 10 * MINUTE * IN_MILLISECONDS;
+        LoadRoleSnapshot();
+    }
+
     // (level-balance) every ten minutes, the first round ten minutes after the start (the bots are logged in by then)
     if (_levelBalance && _levelBalanceMoves)
     {

@@ -1017,3 +1017,13 @@ were extracted from old commits):
 - ZxBiohazardZx
 - Дмитрий
 - ﻿4m1g0
+
+= Additional thanks (this fork) =
+
+* The Legends of Azeroth team and contributors: the Pandaria 5.4.8 core this fork follows (https://github.com/Legends-of-Azeroth/Legends-of-Azeroth-Pandaria-5.4.8)
+* alexkulya and the contributors of pandaria_5.4.8, the core that Legends of Azeroth builds on
+* DeltaTho and leelf00: upstream pull requests (starting zones, world and script fixes) that this fork builds on
+* The AzerothCore project and the authors of mod-playerbots, the base of modules/mod_playerbots
+* ingussuveiks-dev: core and dungeon fixes taken from their fork (listed in the sync commit messages)
+* 1LineAtaTime: a fork with a broad playerbots module for the same upstream. Comparing the two taught us a lot, and their release notes credit our pull requests
+* Everyone who played on the test and public realms and reported what they found

@@ -8,6 +8,7 @@
  */
 
 #include "BotLife.h"
+#include <cstring>
 
 #include "Config.h"
 
@@ -35,6 +36,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotSpec.h"
 #include "Playerbots.h"
+#include "ServerFacade.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
 #include "PathGenerator.h"
@@ -272,6 +274,8 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId)
 
 // (real-bosses) the maps on which a boss that is only an encounter credit counts, and the spawns that belong to a game event
 static std::map<uint32, std::set<uint32>> s_encounterBossMaps;
+// (boss-order) DungeonEncounter.dbc encounterIndex per (map, boss entry): the strict order in which the party takes the bosses of a dungeon
+static std::map<std::pair<uint32, uint32>, uint32> s_bossOrder;
 static std::set<uint32> s_eventSpawnIds;
 
 void BotLifeMgr::LoadDungeons()
@@ -323,6 +327,7 @@ void BotLifeMgr::LoadDungeons()
     // (real-bosses) a boss only through instance_encounters counts on the maps of those encounters (DungeonEncounter.dbc):
     // High Inquisitor Fairbanks is credit of encounter 449 of the old Scarlet Monastery (map 189) and no boss on map 1004
     s_encounterBossMaps.clear();
+    s_bossOrder.clear();
     if (QueryResult result = WorldDatabase.Query("SELECT entry, creditEntry FROM instance_encounters WHERE creditType = 0"))
         do
         {
@@ -330,6 +335,12 @@ void BotLifeMgr::LoadDungeons()
             _bossEntries.insert(credit);
             DungeonEncounterEntry const* de = sDungeonEncounterStore.LookupEntry(result->Fetch()[0].GetUInt32());
             s_encounterBossMaps[credit].insert(de ? de->mapId : 0u);
+            if (de)
+            {
+                auto ord = s_bossOrder.emplace(std::make_pair(de->mapId, credit), de->encounterIndex);
+                if (!ord.second && de->encounterIndex < ord.first->second)
+                    ord.first->second = de->encounterIndex;
+            }
         } while (result->NextRow());
     for (auto const& ctPair : *sObjectMgr->GetCreatureTemplates())
     {
@@ -781,9 +792,12 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
             for (uint32 i = 0; i < _dungeons.size(); ++i)
                 if (_dungeons[i].raid == raid && _dungeonFocus.count(_dungeons[i].id))
                     wantedDungeons.push_back(i);
-            if (!wantedDungeons.empty())
+            // (344-focusall) try every focus dungeon in random order, not one random pick: with three dungeons under repair
+            // and tanks of the right level for only one of them, two of three attempts silently fell back to a normal party
+            for (size_t i = wantedDungeons.size(); i > 1; --i)
+                std::swap(wantedDungeons[i - 1], wantedDungeons[urand(0, uint32(i - 1))]);
+            for (uint32 const wantedIndex : wantedDungeons)
             {
-                uint32 const wantedIndex = wantedDungeons[urand(0, wantedDungeons.size() - 1)];
                 BotLifeDungeon const& fd = _dungeons[wantedIndex];
                 std::vector<Player*> fitTanks;
                 for (Player* tank : pool.tanks)
@@ -793,8 +807,12 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
                 {
                     leader = fitTanks[urand(0, fitTanks.size() - 1)];
                     focusIndex = int32(wantedIndex);
+                    break;
                 }
             }
+            if (focusIndex < 0 && !wantedDungeons.empty())
+                TC_LOG_INFO("playerbots", "BotLife: dungeon focus: no free tank of the right level and faction in pool {} ({} tanks, {} heals, {} dps)",
+                    &pool == &pools[0] ? "Alliance" : "Horde", uint32(pool.tanks.size()), uint32(pool.heals.size()), uint32(pool.dps.size()));
         }
         // of a handful of tanks, the one whose guild has the most healers and damage dealers of
         // about its level waiting - so that the group really is a guild group and not two guild mates with strangers
@@ -928,10 +946,17 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
         if (!group)
             continue;
         // the difficulty of the dungeon that was picked (CreateParty sets normal)
-        if (!raid && d.difficulty != DUNGEON_DIFFICULTY_NORMAL)
+        // (344-difficulty) CreateParty sets it while the leader is alone in the group, and Group::AddMember copies the group
+        // difficulty onto a member only from level 70 (LEVELREQUIREMENT_HEROIC). A bot that was in a heroic party keeps the
+        // personal difficulty HEROIC (Group::SetDungeonDifficulty sets it on every member), and MapManager::CanPlayerEnter looks
+        // at the PLAYER's difficulty: maps with a HEROIC access_requirement row (level 90: Scarlet Monastery 1004, Scarlet
+        // Halls 1001, Scholomance) refuse such a bot silently - it stays outside for the whole run. Set it again for the whole
+        // party, normal too.
+        if (!raid)
         {
             group->SetDungeonDifficulty(Difficulty(d.difficulty));
-            Count(BLC_HEROIC_START);
+            if (d.difficulty != DUNGEON_DIFFICULTY_NORMAL)
+                Count(BLC_HEROIC_START);
         }
         BotLifeParty& party = _parties[group->GetLowGUID()];
         party.dungeon = int32(index);
@@ -1007,9 +1032,21 @@ Creature* BotLifeMgr::SpawnCreature(Map* map, uint32 spawnId) const
     return any;
 }
 
+// (344-horseman) during Hallow End the Headless Horseman (23682) is spawned in every Scarlet Monastery (map 1004) and walks
+// through the normal runs: no target there, only the group of his own holiday dungeon (285) fights him
+static bool IsHorsemanOutsideHisDungeon(Player* bot, uint32 entry)
+{
+    if (entry != 23682 || bot->GetMapId() != 1004)
+        return false;
+    Group* group = bot->GetGroup();
+    return !group || sLFGMgr->GetDungeon(group->GetGUID()) != 285;
+}
+
 bool BotLifeMgr::DungeonTargetValid(Player* bot, BotLifeInfo const& t, BotLifeInstanceSpawn const& s, uint32 diffBit, Creature*& creature) const
 {
     creature = nullptr;
+    if (IsHorsemanOutsideHisDungeon(bot, s.entry))
+        return false;
     if (t.dungeonSkip.count(s.spawnId))
         return false;
     if (OutsideWing(t.dungeonWingArea, t.dungeonWingList, s.spawnId, s.area))   // (wing-area) another wing of the map
@@ -1122,7 +1159,14 @@ void BotLifeMgr::SkipDungeonTarget(Player* bot, BotLifeInfo& t, char const* reas
     if (t.dungeonGateTarget)
         t.dungeonGateSkip.insert(t.dungeonTarget);   // the gate re-engages what the normal flow skipped
     else
+    {
         t.dungeonSkip.insert(t.dungeonTarget);
+        // (344-nopath) remember which skips are only "no path" (a wipe gives them back); any other reason makes the skip permanent
+        if (std::strcmp(reason, "no path") == 0)
+            t.dungeonNoPathSkip.insert(t.dungeonTarget);
+        else
+            t.dungeonNoPathSkip.erase(t.dungeonTarget);
+    }
 }
 
 BotLifeInstanceSpawn const* BotLifeMgr::PickKillGate(Player* bot, BotLifeInfo const& t, Map* map, std::vector<BotLifeInstanceSpawn> const& spawns, uint32 now, Creature*& creature)
@@ -1211,6 +1255,36 @@ BotLifeInstanceSpawn const* BotLifeMgr::PickKillGate(Player* bot, BotLifeInfo co
 
 // an attacker a bot can fight: alive, attackable, no trigger (Summon Enabler Stalker and the
 // like are listed as attackers but never die by a player's hand)
+// (217) Blackrock Depths: the navmesh of map 230 has walkable floor polys under the lava lake, so a path to a Fireguard Destroyer
+// on a rock island (or a partial path towards Ambassador Flamelash) runs over the lake floor and counts as a normal path; the
+// groups walked into the lava (573 + 187 deaths on dev 25/26-10). A path is sampled every 3 yards: one point in contact with
+// magma or slime makes it unusable (a boss then takes the hop, other targets are skipped as no path).
+static bool PathThroughHarmfulLiquid(Player const* bot, PathGenerator const& path)
+{
+    Movement::PointsArray const& pts = path.GetPath();
+    Map* map = bot->GetMap();
+    float const h = bot->GetCollisionHeight();
+    auto harmful = [&](float x, float y, float z)
+    {
+        return (map->GetLiquidStatus(bot->GetPhaseMask(), x, y, z, MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_SLIME, nullptr, h)
+            & MAP_LIQUID_STATUS_IN_CONTACT) != 0;
+    };
+    for (size_t i = 1; i < pts.size(); ++i)
+    {
+        G3D::Vector3 const& a = pts[i - 1];
+        G3D::Vector3 const& b = pts[i];
+        float const len = (b - a).length();
+        int const steps = std::max(1, int(len / 3.0f));
+        for (int k = 1; k <= steps; ++k)
+        {
+            G3D::Vector3 const q = a + (b - a) * (float(k) / steps);
+            if (harmful(q.x, q.y, q.z))
+                return true;
+        }
+    }
+    return false;
+}
+
 static bool IsFightableAttacker(Unit const* u)
 {
     if (!u || !u->IsAlive() || u->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) || u->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) || u->HasUnitFlag(UNIT_FLAG_IMMUNE_TO_PC))
@@ -1517,6 +1591,20 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             t.dungeonTarget = 0;
             t.hasDest = false;
         }
+        // (466-phase-add) a boss phase in which the boss itself is unselectable and an add must be killed (Liu Flameheart at 30%: Yu'lon,
+        // which only fights back once it has been hit, then cleanses Liu): the engine has no victim and nothing attacks the party, so the
+        // 20 s lingering-combat clear of the party let Liu evade (and despawn Yu'lon) five times in a row. Take the add as unlisted target.
+        if (!bot->GetVictim() && !HasVisibleFightableAttacker(bot) && EncounterInProgress(bot))
+        {
+            uint32 const addDelta = t.dungeonLastTick ? std::min<uint32>(now - t.dungeonLastTick, 2000) : 0;
+            if (Creature* add = PickUnlistedTarget(bot, t, now, addDelta))
+            {
+                if (EngageUnlistedTarget(botAI, t, add, now))
+                    return true;
+                t.dungeonDynSkip.insert(add->GetGUID());
+                t.dungeonDynTarget.Clear();
+            }
+        }
         t.lastCombat = now;
         t.resting = false;
         t.dungeonEngageSince = 0;
@@ -1652,7 +1740,10 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             t.escortNpc.Clear();
         else
         {
-            if (bot->GetExactDist(npc) > 6.0f && (!bot->isMoving() || now - t.lastMoveOrder > 2000))
+            // (301-movement) a follow already running on this NPC is left alone (re-issuing it restarts the spline)
+            Unit* followed = bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE ? sServerFacade->GetChaseTarget(bot) : nullptr;
+            bool const followingNpc = bot->isMoving() && followed && followed->GetGUID() == npc->GetGUID();
+            if (!followingNpc && bot->GetExactDist(npc) > 6.0f && (!bot->isMoving() || now - t.lastMoveOrder > 2000))
             {
                 bot->GetMotionMaster()->MoveFollow(npc, 3.0f, float(M_PI));
                 t.lastMoveOrder = now;
@@ -2028,6 +2119,24 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             candidates.emplace_back(dx * dx + dy * dy + dz * dz, &s, c);
         }
         std::sort(candidates.begin(), candidates.end(), [](auto const& a, auto const& b) { return std::get<0>(a) < std::get<0>(b); });
+        // (boss-order) a boss is only taken when no boss with a lower encounter index is still to be fought (TJS: Liu Flameheart
+        // before Wise Mari / Lorewalker, Deadmines). A boss without an index, or one that is skipped / dead / not attackable,
+        // is no longer in the list, so it never blocks the run.
+        {
+            auto orderOf = [&](BotLifeInstanceSpawn const* s) -> uint32
+            {
+                if (!s->boss)
+                    return 0xFFFFFFFFu;
+                auto o = s_bossOrder.find(std::make_pair(map->GetId(), s->entry));
+                return o != s_bossOrder.end() ? o->second : 0xFFFFFFFFu;
+            };
+            uint32 firstBoss = 0xFFFFFFFFu;
+            for (auto const& cand : candidates)
+                firstBoss = std::min(firstBoss, orderOf(std::get<1>(cand)));
+            if (firstBoss != 0xFFFFFFFFu)
+                candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [&](auto const& cand)
+                    { uint32 const o = orderOf(std::get<1>(cand)); return o != 0xFFFFFFFFu && o > firstBoss; }), candidates.end());
+        }
         // a run that already skipped many empty spawns (End Time: 70-100 'nothing at spawn') takes the creatures
         // that really exist first - a spawn of another timeline is not worth the walk
         if (t.dungeonSkip.size() >= 12)
@@ -2086,7 +2195,14 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             // (incomplete-near) a partial path that ends within 8 yards of the target is good enough (a mesh seam between the
             // entrance hall and the garden of Scarlet Monastery: the mobs there were skipped as 'no path' while groups loot them)
             bool const nearEnd = (path.GetPathType() & PATHFIND_INCOMPLETE) && ex * ex + ey * ey + ez * ez < 8.0f * 8.0f;
-            if (((path.GetPathType() & PATHFIND_NORMAL) && ex * ex + ey * ey + ez * ez < 12.0f * 12.0f) || closer || nearEnd)
+            bool usable = ((path.GetPathType() & PATHFIND_NORMAL) && ex * ex + ey * ey + ez * ez < 12.0f * 12.0f) || closer || nearEnd;
+            if (usable && PathThroughHarmfulLiquid(bot, path))
+            {
+                TC_LOG_INFO("playerbots", "BotLife {}: map {} path to spawn {} ({}) runs through lava or slime",
+                    bot->GetName(), bot->GetMapId(), s->spawnId, c ? c->GetName() : std::string("not loaded"));
+                usable = false;
+            }
+            if (usable)
             {
                 // (door-block) behind a closed door: open what the bots may open, otherwise take the next candidate
                 if (GameObject* door = ClosedDoorOnPath(bot, path))
@@ -2107,6 +2223,14 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 current = s;
                 creature = c;
                 break;
+            }
+            {
+                // (344-nopath) diagnostics: the first three no path skips of a run (the counter is cleared with the run)
+                auto const noPathIt = t.dungeonSkipWhy.find("no path");
+                if (noPathIt == t.dungeonSkipWhy.end() || noPathIt->second < 3)
+                    TC_LOG_INFO("playerbots", "BotLife {}: map {} no path to spawn {} at {:.0f} {:.0f} {:.0f}: path type 0x{:x}, bot at {:.0f} {:.0f} {:.0f}, end {:.0f} {:.0f} {:.0f} ({:.0f} yd from the spawn)",
+                        bot->GetName(), bot->GetMapId(), s->spawnId, x, y, z, uint32(path.GetPathType()),
+                        bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), end.x, end.y, end.z, std::sqrt(ex * ex + ey * ey + ez * ez));
             }
             t.dungeonTarget = s->spawnId;
             SkipDungeonTarget(bot, t, "no path");
@@ -2268,6 +2392,8 @@ namespace
         {
             if (!c->IsAlive() || c->IsInEvadeMode() || (c->GetSpawnId() && listed.count(uint32(c->GetSpawnId())))
                 || t.dungeonDynSkip.count(c->GetGUID()))
+                return false;
+            if (IsHorsemanOutsideHisDungeon(bot, c->GetEntry()))   // (344-horseman)
                 return false;
             if (c->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC))
                 return false;

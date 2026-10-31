@@ -72,6 +72,7 @@ struct BotLifeInfo
     // spell-target-list corruption -> Spell::~Spell _M_clear hang / jemalloc free crash). The world thread queues here;
     // the bot performs them on its OWN map thread from RunPendingActions (combat-stop, reset, then teleport).
     bool teleQueued = false;
+    uint8 teleRetries = 0;   // (344-teleportretry) ticks a queued teleport waited for a running one
     bool resetQueued = false;
     bool combatStopQueued = false;
     uint8 relevelTo = 0;             // (level-balance) set by the world thread: the bot gets this level on its own map thread
@@ -237,6 +238,8 @@ struct BotLifeInfo
     // party (set by BotLifeMgr on the world thread): 0 = none, see BotLifePartyType
     uint8 party = 0;
     uint32 partyWaitSince = 0;
+    uint32 realWaitSince = 0;        // lead bot of a dungeon finder group waits for the real player since (0 = not waiting)
+    bool realWaitGaveUp = false;     // the 5 minute time-out ran out; reset once the player is within reach again
 
     // dungeon / raid crawl (party leader)
     uint32 dungeonTarget = 0;        // creature spawn id
@@ -245,6 +248,7 @@ struct BotLifeInfo
     uint32 dungeonLastTick = 0;
     uint32 dungeonEngageSince = 0;
     std::set<uint32> dungeonSkip;
+    std::set<uint32> dungeonNoPathSkip;   // (344-nopath) the ids in dungeonSkip that were skipped as "no path" only: given back after a wipe
     bool dungeonDone = false;
     uint32 dungeonKills = 0;
     // these sat in function-static tables that every map thread wrote to without a lock
@@ -276,6 +280,14 @@ struct BotLifeInfo
     std::map<uint32, uint32> dungeonDynPicks;   // unlisted targets taken per creature entry (endless summons)
     std::map<std::string, uint32> dungeonSkipWhy;   // skipped targets per reason
 
+    // (344-nopath) a wipe gives the targets back that were only skipped as "no path" (other reasons stay)
+    void ClearNoPathSkips()
+    {
+        for (uint32 id : dungeonNoPathSkip)
+            dungeonSkip.erase(id);
+        dungeonNoPathSkip.clear();
+    }
+
     void ResetDungeonExtras()
     {
         dungeonGateTarget = false;
@@ -292,6 +304,7 @@ struct BotLifeInfo
         dungeonDynPicks.clear();
         // the event NPCs of the last run (the spawn ids are the same in every instance)
         dungeonSkipWhy.clear();
+        dungeonNoPathSkip.clear();
         gossipUsed.clear();
         areaTriggersFired.clear();   // (bot-areatrigger)
         gossipEmpty.clear();

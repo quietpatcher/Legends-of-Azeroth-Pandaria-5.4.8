@@ -2947,6 +2947,7 @@ public:
     bool Satisfy(AccessRequirement const* ar, uint32 target_map, bool report = false);
     bool CheckInstanceLoginValid();
     bool CheckInstanceCount(uint32 instanceId) const;
+    size_t GetInstanceResetTimesCount() const { return _instanceResetTimes.size(); }   // (344-teleportlog) for the BotLife diagnostics
     void AddInstanceEnterTime(uint32 instanceId, time_t enterTime);
 
     /*********************************************************/

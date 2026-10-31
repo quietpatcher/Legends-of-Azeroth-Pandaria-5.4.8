@@ -22,6 +22,7 @@
 #include "QuestDef.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
+#include "ServerFacade.h"
 #include "Timer.h"
 
 #include <algorithm>
@@ -36,6 +37,13 @@
 #include "Map.h"
 #include "Action.h"
 #include "AiObjectContext.h"
+
+// (217) a player in contact with lava or slime: whoever gets up or is summoned next to it burns within seconds
+static bool InLavaOrSlime(Player const* p)
+{
+    return (p->GetMap()->GetLiquidStatus(p->GetPhaseMask(), p->GetPositionX(), p->GetPositionY(), p->GetPositionZ(),
+        MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_SLIME, nullptr, p->GetCollisionHeight()) & MAP_LIQUID_STATUS_IN_CONTACT) != 0;
+}
 
 namespace
 {
@@ -173,7 +181,8 @@ void BotLifeMgr::PartyUpdate(uint32 now)
                     continue;
                 bool far = member->FindMap() != leader->FindMap() || member->GetExactDist(leader) > PARTY_FAR_DIST;
                 if (!far || !member->IsAlive() || member->IsInCombat() || leader->IsInCombat() || member->IsBeingTeleported()
-                    || leader->IsBeingTeleported() || leader->IsInFlight() || !leader->IsAlive())
+                    || leader->IsBeingTeleported() || leader->IsInFlight() || !leader->IsAlive()
+                    || InLavaOrSlime(leader))   // (217) no summon into the lava next to the leader
                 {
                     party.farSince.erase(slot.guid);
                     continue;
@@ -444,7 +453,9 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
     // a party that still kills is on its way to the next boss: it gets ten minutes more
     // (party.lastKillTime is kept by the stall check above)
     uint32 const sinceBoss = now - party.lastBossTime;
-    bool const idle = now - party.lastKillTime > 3u * MINUTE * IN_MILLISECONDS;
+    // (344-idle) after a wipe the party walks back to the boss through ground it already cleared (Scarlet Monastery: 260 yd,
+    // 2-3 minutes, no kill): the idle time is six minutes then, otherwise the run ended 'partial' on the way to the second try
+    bool const idle = now - party.lastKillTime > (party.wipes ? 6u : 3u) * MINUTE * IN_MILLISECONDS;
     if (bosses && !leader->IsInCombat() && bosses == party.lastBosses
         && ((idle && sinceBoss > (d.raid ? 25u : 15u) * MINUTE * IN_MILLISECONDS)
             || sinceBoss > (d.raid ? 35u : 25u) * MINUTE * IN_MILLISECONDS))
@@ -521,7 +532,10 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
     // in combat for minutes while the rest is dead or outside (unreachable attacker, evading boss): start over
     bool someoneMissing = false;
     for (Player* p : players)
-        if (!p->IsAlive() || p->GetMapId() != d.map)
+        // (344-straggler) an ALIVE member on another map is a straggler that never got in (refused entry, see 344-difficulty), not a
+        // casualty: counting it turned every fight of 120 s into a "wipe" of four living members (22 + 15 + 12 of 247 Scarlet
+        // Monastery wipes on 27/28-10 had 4-5 alive at the wipe) and sent the party back to the entrance
+        if (!p->IsAlive() || (p->GetMapId() != d.map && p->HasAuraType(SPELL_AURA_GHOST)))
             someoneMissing = true;
     // only an attackable attacker counts (not Summon Enabler Stalker and other triggers)
     auto HasFightableAttackerP = [](Player* member)
@@ -644,6 +658,9 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
                 leaderAI ? leaderAI->life.dungeonKills : 0, leaderAI ? leaderAI->life.dungeonBosses : 0);
             return true;
         }
+        if (leaderAI)
+            leaderAI->life.ClearNoPathSkips();   // (344-nopath) the no path skips of this run are tried again after the wipe
+        party.lastKillTime = now;   // (344-idle) the revive and the walk back to the boss are not an idle party: the idle clock starts at the wipe
         Count(BLC_DUNGEON_WIPE);
         s_wipeDiag[leader->GetGUID().GetCounter()] = { now + 60000, now };   // diagnostics: 
         for (Player* p : players)
@@ -668,6 +685,13 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
     if (combat)
         return false;
 
+    // (217) Blackrock Depths: the anchor stood in the lava lake (the navmesh has walkable floor polys under the lava), every
+    // member got up 2 yd next to it and burned again 15-20 s later - 674 of 785 lava deaths on dev (25/26-10) were such
+    // re-deaths. Nobody gets up and nobody is pulled in while the anchor is in lava or slime: it walks out or dies, and an
+    // all-dead party takes the normal wipe path back to the entrance.
+    if (InLavaOrSlime(anchor))
+        return false;
+
     // after the fight: the dead get up, stragglers come back
     for (Player* p : players)
     {
@@ -677,8 +701,7 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
         if (!p->IsAlive())
         {
             // died in lava or slime - gets up at the anchor, not in it again (Ragefire Chasm death loop)
-            inHarm = (p->GetMap()->GetLiquidStatus(p->GetPhaseMask(), p->GetPositionX(), p->GetPositionY(), p->GetPositionZ(),
-                MAP_LIQUID_TYPE_MAGMA | MAP_LIQUID_TYPE_SLIME, nullptr, p->GetCollisionHeight()) & MAP_LIQUID_STATUS_IN_CONTACT) != 0;
+            inHarm = InLavaOrSlime(p);
             p->ResurrectPlayer(0.7f);
             p->SpawnCorpseBones();
             Count(BLC_DUNGEON_REZ);
@@ -894,11 +917,14 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     if (Group* group = bot->GetGroup())
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
             if (Player* member = ref->GetSource())
-                if (member->GetMap() == bot->GetMap() && member->IsAlive() && bot->GetExactDist(member) < 40.0f)
+                if (member->GetMap() == bot->GetMap() && member->IsAlive())
                 {
-                    if (member != bot && member->IsInCombat())
+                    // (344-healerrange) the keep-up below exists for a healer that is too far behind; it used to switch on only when a
+                    // fighting member was within 40 yd - at 45 yd (the gather distance of the leader) it never did, and the combat
+                    // engine, which does not follow, left the healer standing (deathdiag: dist 45 los 0 casting 0 engine 0 incombat 0)
+                    if (member != bot && member->IsInCombat() && bot->GetExactDist(member) < PARTY_FAR_DIST)
                         partyFights = true;
-                    if (!hurt || member->GetHealthPct() < hurt->GetHealthPct())
+                    if (bot->GetExactDist(member) < 40.0f && (!hurt || member->GetHealthPct() < hurt->GetHealthPct()))
                         hurt = member;
                 }
     // diagnostics: what a healer of a dungeon party does while its group fights
@@ -968,7 +994,11 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 if (leader != bot && leader->IsAlive() && leader->GetMap() == bot->GetMap()
                     && (bot->GetExactDist(leader) > 30.0f || !bot->IsWithinLOSInMap(leader)))
                 {
-                    if (!bot->isMoving() || now - t.lastMoveOrder > 1500)
+                    // (301-movement) a follow already running on this leader is left alone: MoveFollow every 1.5 s cancelled
+                    // and restarted the spline (stutter)
+                    Unit* followed = bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE ? sServerFacade->GetChaseTarget(bot) : nullptr;
+                    bool const followingLeader = bot->isMoving() && followed && followed->GetGUID() == leader->GetGUID();
+                    if (!followingLeader && (!bot->isMoving() || now - t.lastMoveOrder > 1500))
                     {
                         bot->GetMotionMaster()->MoveFollow(leader, 10.0f, float(M_PI));
                         t.lastMoveOrder = now;
@@ -1034,6 +1064,53 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
 {
     bool wait = false;
     Group* group = bot->GetGroup();
+    // ev_sunken_temple_alliance.txt + ev_strat_service_alliance.txt, voorstel A: the lead bot of a dungeon finder
+    // group with a real player waits for that player - while he has not loaded into the instance yet, and while he is more than
+    // 40 yd away (until he is within 30 yd), so at the entrance and after every fight. Time-out 5 minutes (AFK player); after that
+    // the lead goes on until the player is within reach again. Bots without a real player / bot parties: unchanged.
+    if (group->isLFGGroup() && !t.party && t.lfgLeadInstance && t.lfgLeadInstance == bot->GetInstanceId())
+    {
+        bool realFar = false;
+        float const enter = t.realWaitSince ? 30.0f : 40.0f;   // hysteresis
+        for (GroupReference* ref = group->GetFirstMember(); ref && !realFar; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->GetSession() || member->GetSession()->IsBot() || !member->IsAlive())
+                continue;   // a dead player: the rez-wait handles him
+            Map* memberMap = member->IsInWorld() ? member->FindMap() : nullptr;
+            if (!memberMap || memberMap != bot->GetMap())
+                realFar = true;   // not in the instance (yet): still loading / on the way
+            else if (bot->GetExactDist(member) > enter)
+                realFar = true;
+        }
+        if (!realFar)
+        {
+            if (t.realWaitSince)
+                TC_LOG_INFO("playerbots", "BotLife {}: the real player of the dungeon finder group is within reach, the lead goes on", bot->GetName());
+            t.realWaitSince = 0;
+            t.realWaitGaveUp = false;
+        }
+        else if (!t.realWaitGaveUp)
+        {
+            if (!t.realWaitSince)
+            {
+                t.realWaitSince = now;
+                TC_LOG_INFO("playerbots", "BotLife {}: waits for the real player of the dungeon finder group (not in the instance or > 40 yd)", bot->GetName());
+            }
+            if (now - t.realWaitSince > 300000)
+            {
+                t.realWaitGaveUp = true;
+                t.realWaitSince = 0;
+                TC_LOG_INFO("playerbots", "BotLife {}: waited 5 minutes for the real player, goes on without him", bot->GetName());
+            }
+            else
+            {
+                if (bot->isMoving())
+                    bot->StopMoving();
+                return true;
+            }
+        }
+    }
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
@@ -1045,7 +1122,10 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
         float d = bot->GetExactDist(member);
         if (d > PARTY_FAR_DIST)
             continue;   // the world thread summons real stragglers
-        if (d > PARTY_GATHER_DIST || member->IsInCombat() || (memberAI && (memberAI->life.resting || !memberAI->life.lootTarget.IsEmpty())))
+        // (344-healergather) a healer is waited for from 30 yd (the distance its own keep-up works to), not from 45: at 45 yd it
+        // is out of heal range and mostly out of sight when the pull starts
+        float const gather = (t.party == BOTLIFE_PARTY_DUNGEON && PlayerBotSpec::IsHeal(member, true)) ? 30.0f : PARTY_GATHER_DIST;
+        if (d > gather || member->IsInCombat() || (memberAI && (memberAI->life.resting || !memberAI->life.lootTarget.IsEmpty())))
         {
             wait = true;
             break;

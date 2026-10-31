@@ -27,6 +27,9 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-ar
 #include "GridNotifiersImpl.h"
 #include "GameTime.h"
 #include "Group.h"
+#include "InstanceSaveMgr.h"
+#include "MapManager.h"
+#include "World.h"
 #include "Item.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -38,6 +41,7 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-ar
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "ServerFacade.h"
 #include "QuestDef.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
@@ -59,6 +63,7 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-ar
 #include <set>
 #include <unordered_set>
 #include <sstream>
+#include "ScriptedGossip.h"
 
 namespace
 {
@@ -1987,11 +1992,50 @@ bool BotLifeMgr::RunPendingActions(PlayerbotAI* botAI)
     }
     if (t.teleQueued)
     {
-        t.teleQueued = false;
         if (!bot->IsBeingTeleported())
         {
-            bot->TeleportTo(t.teleMap, t.teleX, t.teleY, t.teleZ, t.teleO);
+            t.teleQueued = false;
+            t.teleRetries = 0;
+            if (!bot->TeleportTo(t.teleMap, t.teleX, t.teleY, t.teleZ, t.teleO))
+            {
+                // (344-teleportlog) a refused teleport used to vanish without a trace (the bot stayed outside the dungeon for the
+                // whole run): say who, where to and why it can matter
+                // (344-teleportlog) reason: the checks of Player::TeleportTo / MapManager::CanPlayerEnter that can refuse a bot
+                uint32 binds = 0;
+                for (uint32 d = 0; d < MAX_DIFFICULTY; ++d)
+                    binds += uint32(bot->GetBoundInstances(Difficulty(d)).size());
+                uint32 groupBind = 0, boundMapPlayers = 0;
+                bool boundMapFound = false;
+                if (Group* g = bot->GetGroup())
+                    if (MapEntry const* me = sMapStore.LookupEntry(t.teleMap))
+                        if (InstanceGroupBind* gb = g->GetBoundInstance(me))
+                            if (gb->save)
+                            {
+                                groupBind = gb->save->GetInstanceId();
+                                if (Map* bm = sMapMgr->FindMap(t.teleMap, groupBind))
+                                {
+                                    boundMapFound = true;
+                                    boundMapPlayers = bm->GetPlayersCountExceptGMs();
+                                }
+                            }
+                uint32 saveId = 0;
+                if (MapEntry const* me = sMapStore.LookupEntry(t.teleMap))
+                    if (InstanceSave* sv = bot->GetInstanceSave(t.teleMap, me->IsRaid()))
+                        saveId = sv->GetInstanceId();
+                TC_LOG_INFO("playerbots", "BotLife: teleport of {} (lvl {}, dungeon difficulty {}, group {}, alive {}) to map {} at {:.0f} {:.0f} {:.0f} refused (from map {}); "
+                    "reason: instanceCountOk {} (account times {}, save {}, per hour {}), combat {}, vehicle {}, beingTeleported {}, binds {}, groupBind {} (map found {}, players {})",
+                    bot->GetName(), uint32(bot->GetLevel()), uint32(bot->GetDungeonDifficulty()), bot->GetGroup() ? 1 : 0, bot->IsAlive() ? 1 : 0,
+                    t.teleMap, t.teleX, t.teleY, t.teleZ, bot->GetMapId(),
+                    bot->CheckInstanceCount(saveId) ? 1 : 0, uint32(bot->GetInstanceResetTimesCount()), saveId, sWorld->getIntConfig(CONFIG_MAX_INSTANCES_PER_HOUR),
+                    bot->IsInCombat() ? 1 : 0, bot->GetVehicle() != nullptr ? 1 : 0, bot->IsBeingTeleported() ? 1 : 0, binds,
+                    groupBind, boundMapFound ? 1 : 0, boundMapPlayers);
+            }
             acted = true;
+        }
+        else if (++t.teleRetries > 40)   // (344-teleportretry) was dropped: a teleport asked for while another one was running never happened
+        {
+            t.teleQueued = false;
+            t.teleRetries = 0;
         }
     }
     return acted;
@@ -2304,6 +2348,9 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             factory.InitTalentsTree(false);
             Count(BLC_TALENTS);
         }
+        // to-do 265: rebalance the roles per level band (rare, capped per hour)
+        if (RoleRespec(botAI))
+            return true;
     }
     // gathering also for group members and bots that follow a player, and inside instances
     // (skinning dungeon mobs, ore/herbs there) - not for whoever leads a dungeon run (the run would stall)
@@ -2393,7 +2440,10 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
                     tank = member;
         if (tank && (bot->GetExactDist(tank) > 30.0f || !bot->IsWithinLOSInMap(tank)))
         {
-            if (!bot->isMoving() || now - t.lastMoveOrder > 1500)
+            // (301-movement) a follow already running on this tank is left alone (re-issuing it restarts the spline)
+            Unit* followed = bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE ? sServerFacade->GetChaseTarget(bot) : nullptr;
+            bool const followingTank = bot->isMoving() && followed && followed->GetGUID() == tank->GetGUID();
+            if (!followingTank && (!bot->isMoving() || now - t.lastMoveOrder > 1500))
             {
                 bot->GetMotionMaster()->MoveFollow(tank, 10.0f, float(M_PI));
                 t.lastMoveOrder = now;
@@ -2515,7 +2565,7 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             {
                 Creature* horseman = bot->FindNearestCreature(23682, 200.0f);
                 if (horseman && !horseman->IsVisible() && !bot->GetVictim())
-                    if (bot->FindNearestGameObject(186267, 250.0f))
+                    if (GameObject* shrine = bot->FindNearestGameObject(186267, 250.0f))
                     {
                         // (lfg-shrine-walk2) on the open ground between the shrine and the spot where the Horseman lands. The shrine
                         // stands inside a small fence: a near point of it put the lead on that fence, the Horseman could not reach
@@ -2531,6 +2581,36 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
                             }
                             return true;
                         }
+                        // (lfg-shrine-call) to-do 450: the lead stood at the shrine for ever and waited for a click of the player. When
+                        // every living real member of the group has come up to the lead and stood there for 20 s, the lead calls the
+                        // Horseman itself, as a click on the shrine does (gossip option 1000). From the wait spot, not from the
+                        // shrine: no walk onto the fence
+                        static thread_local std::unordered_map<ObjectGuid, uint32> shrineReadySince;
+                        uint32& readySince = shrineReadySince[bot->GetGUID()];
+                        bool allHere = true;
+                        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                        {
+                            Player* member = ref->GetSource();
+                            if (!member || member == bot || !member->GetSession() || member->GetSession()->IsBot() || !member->IsAlive())
+                                continue;
+                            if (member->GetMap() != bot->GetMap() || member->GetDistance(bot) > 40.0f)
+                                allHere = false;
+                        }
+                        if (!allHere || bot->IsInCombat() || !shrine->isSpawned())
+                        {
+                            readySince = 0;
+                            return false;   // combat and the rest of the bot AI go on as before
+                        }
+                        if (!readySince)
+                            readySince = now;
+                        if (now - readySince >= 20000)
+                        {
+                            readySince = 0;
+                            bool started = sScriptMgr->OnGossipSelect(bot, shrine, 1, GOSSIP_ACTION_INFO_DEF);
+                            TC_LOG_INFO("playerbots", "BotLife {}: calls the Headless Horseman at the Pumpkin Shrine ({})", bot->GetName(),
+                                started ? "script took it" : "no script answer");
+                        }
+                        return false;
                     }
             }
             return false;
@@ -7694,7 +7774,7 @@ void BotLifeMgr::PrintStats(ChatHandler* handler)
         "party_quest_shared", "party_quest_turnin", "dungeon_start", "dungeon_cleared", "dungeon_timeout",
         "dungeon_wipeout", "dungeon_abort", "dungeon_boss", "dungeon_kill", "dungeon_rez", "dungeon_wipe", "raid_start", "unstuck", "ghost_revive", "orphan_group", "mount", "death", "death_by_creature", "death_by_higher", "death_by_elite", "death_by_guard",
         "death_by_player", "potion", "dungeon_stalled", "avoid_creature", "town_visit", "door_open", "quest_engage", "quest_engage_fail", "bg_queued", "bg_joined", "bg_capture", "bg_left", "bg_flag", "bg_flag_capture", "areatrigger", "self_heal", "repair", "guild_created", "guild_join", "pandaren_faction", "gbank_gold", "gbank_item", "ah_post", "ah_buy", "gear_fix", "gear_upgrade", "death_relocate", "profession_set", "gather_node", "gather_skin", "ah_post_mat", "tank_shield", "bags_given", "stranded_out", "rebalance", "cast_call", "cast_strict_fail", "cast_moving", "cast_prepared", "cast_timed", "gbank_supply", "gbank_equip", "gbank_treasure", "gbank_tab_bought", "banker_picked", "banker_home", "banker_withdraw", "banker_vendor", "banker_gold", "mail_gold", "lfg_bot_queued", "lfg_short", "lfg_master", "phantom_combat_cleared", "craft", "craft_fail", "recipe_learned", "profession_swap", "banker_sort", "lfg_lead", "talents", "event_gossip", "kill_gate", "craft_supply", "guild_repair", "gbank_resort", "refine", "enchant_scroll", "fish_cast", "fish_catch", "heroic_start", "daily_turnin", "dig_survey", "dig_find", "dig_solve", "quest_bad_skip", "quest_roam", "quest_skip", "vendor_gear", "dk_chain_giveup", "dk_portal", "dk_eye", "dk_eye_siphon",
-        "duel_requested", "duel_accepted", "duel_declined", "duel_won", "duel_lost", "level_balance" };   // (bot-duels) (level-balance)
+        "duel_requested", "duel_accepted", "duel_declined", "duel_won", "duel_lost", "level_balance", "role_respec" };   // (bot-duels) (level-balance)
     static char const* const stateNames[] = { "idle", "go_grind", "at_grind", "go_questgiver", "do_quest", "go_turnin", "rest", "town", "dig" };
 
     uint32 states[9] = {};
@@ -7850,15 +7930,34 @@ bool BotLifeMgr::EnsureGear(PlayerbotAI* botAI)
     // level 86 and up: armor that is far behind the level (the set of level 85 on a bot of 89) is
     // replaced, also with natural progression - such a bot cannot do the content of its level
     bool behind = false;
-    if (bot->GetLevel() >= 86 && worn)
+    // level 90 gets no free gear any more: from max level on only loot from dungeons/raids
+    // level 20..85: every 10 levels the armor is checked against 0.7 x the item level of the
+    // decade floor (the check moves along per 10 levels); 86..89 keep the old rule
+    uint32 const level = bot->GetLevel();
+    if (level >= 20 && level < 90 && worn)
     {
         uint32 sum = 0;
         for (uint8 slot : armorSlots)
             if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                 sum += item->GetTemplate()->ItemLevel;
         uint32 const average = sum / worn;
-        uint32 const wanted = bot->GetLevel() >= 90 ? 430 : RandomItemManager::MaxItemLevelForLevel(bot->GetLevel()) - 60;
+        uint32 const wanted = level >= 86 ? RandomItemManager::MaxItemLevelForLevel(level) - 60
+            : uint32(0.7f * RandomItemManager::MaxItemLevelForLevel(std::max<uint32>((level / 10) * 10, 20)));
         behind = average < wanted;
+    }
+    // at most 150 "behind" refills per hour for all bots together (the factory is not cheap; a bot that misses out is
+    // checked again at its next login)
+    if (behind)
+    {
+        uint32 const nowMs = getMSTime();
+        uint32 start = _gearHourStart.load(std::memory_order_relaxed);
+        if (!start || nowMs - start >= 3600000)
+        {
+            _gearHourStart.store(nowMs ? nowMs : 1, std::memory_order_relaxed);
+            _gearInHour.store(0, std::memory_order_relaxed);
+        }
+        if (_gearInHour.fetch_add(1, std::memory_order_relaxed) >= 150)
+            behind = false;
     }
     // 
     if ((worn >= 5 || _naturalProgression) && !noSpec && !behind)
@@ -9079,4 +9178,196 @@ void BotLifeMgr::BalanceLevels(uint32 /*now*/)
     }
     if (moved)
         Count(BLC_LEVEL_BALANCE, moved);
+}
+
+// to-do 265: role of a specialization id (characters.talentTree, first number)
+static uint8 RoleOfSpec(uint32 spec)
+{
+    switch (spec)
+    {
+        case 73: case 66: case 250: case 104: case 268:
+            return 0;   // tank
+        case 65: case 105: case 257: case 256: case 264: case 270:
+            return 1;   // healer
+        default:
+            return 2;   // dps
+    }
+}
+
+static float const roleTarget[3] = { 15.0f, 20.0f, 65.0f };
+
+static int32 RoleFaction(uint8 race)
+{
+    uint32 const team = Player::TeamForRace(race);
+    return team == HORDE ? 1 : team == ALLIANCE ? 0 : -1;   // neutral pandaren: no faction yet
+}
+
+// share (percent) of every role in the faction + level band of the bot; false without data
+static bool RoleShares(BotRoleSnapshot const& snap, Player* bot, float share[3])
+{
+    int32 const faction = RoleFaction(bot->GetRace());
+    if (faction < 0 || bot->GetLevel() < 10)
+        return false;
+    uint32 const* n = snap.n[faction][std::min<uint32>(bot->GetLevel() / 10, 9)];
+    uint32 const total = n[0] + n[1] + n[2];
+    if (!total)
+        return false;
+    for (int i = 0; i < 3; ++i)
+        share[i] = 100.0f * n[i] / total;
+    return true;
+}
+
+void BotLifeMgr::LoadRoleSnapshot()
+{
+    auto snap = std::make_shared<BotRoleSnapshot>();
+    std::string ids;
+    for (uint32 id : sPlayerbotAIConfig->randomBotAccounts)
+        ids += (ids.empty() ? "" : ",") + std::to_string(id);
+    if (ids.empty())
+        return;
+    uint32 total = 0;
+    if (QueryResult result = CharacterDatabase.PQuery("SELECT race, level DIV 10, CAST(SUBSTRING_INDEX(talentTree, ' ', 1) AS UNSIGNED), COUNT(*) "
+        "FROM characters WHERE level >= 10 AND account IN ({}) GROUP BY race, level DIV 10, 3", ids))
+        do
+        {
+            Field* f = result->Fetch();
+            int32 const faction = RoleFaction(f[0].GetUInt8());
+            uint32 const spec = f[2].GetUInt32();
+            if (faction < 0 || !spec)
+                continue;   // neutral pandaren / bots that have no specialization yet
+            snap->n[faction][std::min<uint32>(f[1].GetUInt32(), 9)][RoleOfSpec(spec)] += f[3].GetUInt32();
+            total += f[3].GetUInt32();
+        } while (result->NextRow());
+    if (!total)
+        return;   // no data: keep the random pick
+    std::atomic_store(&_roleSnap, std::shared_ptr<BotRoleSnapshot const>(std::move(snap)));
+    TC_LOG_INFO("playerbots", "BotLife: role snapshot of {} bots", total);
+}
+
+int32 BotLifeMgr::PickSpecTab(Player* bot, int32 forceRole)
+{
+    std::shared_ptr<BotRoleSnapshot const> snap = std::atomic_load(&_roleSnap);
+    float share[3];
+    if (!snap || !RoleShares(*snap, bot, share))
+        return -1;
+    dbc::TalentTabs const tabs = dbc::GetClassSpecializations(bot->GetClass());
+    uint32 const tabCount = bot->GetClass() == CLASS_DRUID ? 4 : 3;
+    uint32 dpsSpecs = 0;
+    for (uint32 i = 0; i < tabCount && i < tabs.size(); ++i)
+        if (tabs[i] && RoleOfSpec(tabs[i]) == 2)
+            ++dpsSpecs;
+    float weight[4] = {};
+    float sum = 0.0f;
+    for (uint32 i = 0; i < tabCount && i < tabs.size(); ++i)
+    {
+        if (!tabs[i])
+            continue;
+        uint8 const role = RoleOfSpec(tabs[i]);
+        float w = std::max(0.05f, roleTarget[role] - share[role]);
+        if (role == 2)
+            w /= dpsSpecs;   // the dps specs of the class share the dps weight
+        if (forceRole >= 0)
+            w = role == forceRole ? 1.0f : 0.0f;
+        weight[i] = w;
+        sum += w;
+    }
+    if (sum <= 0.0f)
+        return -1;
+    float roll = float(rand_norm()) * sum;
+    for (uint32 i = 0; i < tabCount; ++i)
+    {
+        if (weight[i] <= 0.0f)
+            continue;
+        if (roll < weight[i])
+            return int32(i);
+        roll -= weight[i];
+    }
+    for (uint32 i = tabCount; i-- > 0;)
+        if (weight[i] > 0.0f)
+            return int32(i);
+    return -1;
+}
+
+bool BotLifeMgr::RoleRespec(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    std::shared_ptr<BotRoleSnapshot const> snap = std::atomic_load(&_roleSnap);
+    if (!snap || bot->GetLevel() < 15 || bot->GetSpecialization() == Specializations::SPEC_NONE)
+        return false;
+    if (bot->GetGroup() || bot->InBattleground() || bot->GetMap()->Instanceable() || bot->IsInCombat() || !bot->IsAlive()
+        || bot->IsBeingTeleported() || botAI->HasRealPlayerMaster() || IsWalker(bot))
+        return false;
+    float share[3];
+    if (!RoleShares(*snap, bot, share))
+        return false;
+    uint8 const current = RoleOfSpec(uint32(bot->GetSpecialization()));
+    // a role more than 5 points over its target always may leave; a dps bot that is merely over the dps target
+    // (not yet +5) may also go to a missing role the class can play, so warriors/DKs cannot block the heal shortage
+    // (never leave a role that is under its target: no oscillation)
+    if (share[current] <= roleTarget[current] + 5.0f && !(current == 2 && share[2] > roleTarget[2]))
+        return false;
+    // the missing role (share more than 5 points under its target) the class can play, the biggest gap first
+    dbc::TalentTabs const tabs = dbc::GetClassSpecializations(bot->GetClass());
+    uint32 const tabCount = bot->GetClass() == CLASS_DRUID ? 4 : 3;
+    int32 want = -1;
+    float gap = 0.0f;
+    for (uint32 i = 0; i < tabCount && i < tabs.size(); ++i)
+    {
+        if (!tabs[i])
+            continue;
+        uint8 const role = RoleOfSpec(tabs[i]);
+        float const g = roleTarget[role] - share[role];
+        if (role != current && g > 5.0f && g > gap)
+        {
+            gap = g;
+            want = role;
+        }
+    }
+    // 265: a strongly skewed band (gap > 8) converges twice as fast
+    if (want < 0 || urand(0, 99) >= (gap > 8.0f ? 60u : 30u))
+        return false;
+    // at most 80 respecs per hour for all bots together (6 converged too slowly: ~50 h for the prod skew)
+    uint32 const now = getMSTime();
+    uint32 start = _respecHourStart.load(std::memory_order_relaxed);
+    if (!start || now - start >= 3600000)
+    {
+        _respecHourStart.store(now ? now : 1, std::memory_order_relaxed);
+        _respecInHour.store(0, std::memory_order_relaxed);
+    }
+    if (_respecInHour.fetch_add(1, std::memory_order_relaxed) >= 80)
+        return false;
+
+    BotFactory factory(bot, bot->GetLevel());
+    factory.InitTalentsTree(true, want);   // ResetTalents (incl. the specialization), then the forced role
+    botAI->ResetStrategies();
+    EquipBagUpgrades(bot);                 // gear that fits the new spec (role-weighted GearScore)
+    if (!_naturalProgression)
+        factory.InitEquipment(true);
+    Count(BLC_ROLE_RESPEC);
+    if (_debug)
+        TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): role respec {} -> {} (spec now {})", bot->GetName(), uint32(bot->GetLevel()),
+            uint32(current), want, uint32(bot->GetSpecialization()));
+    return true;
+}
+
+void BotLifeMgr::PrintRoles(ChatHandler* handler)
+{
+    std::shared_ptr<BotRoleSnapshot const> snap = std::atomic_load(&_roleSnap);
+    if (!snap)
+    {
+        handler->PSendSysMessage("roles: no snapshot yet (refreshed every 10 minutes), respecs so far: %u",
+            uint32(_counters[BLC_ROLE_RESPEC].load()));
+        return;
+    }
+    for (uint32 faction = 0; faction < 2; ++faction)
+        for (uint32 band = 1; band < 10; ++band)
+        {
+            uint32 const* n = snap->n[faction][band];
+            uint32 const total = n[0] + n[1] + n[2];
+            if (!total)
+                continue;
+            handler->PSendSysMessage("%s %u%s: tank %u (%.0f%%) heal %u (%.0f%%) dps %u (%.0f%%) of %u", faction ? "Horde" : "Alliance",
+                band * 10, band == 9 ? "" : "-", n[0], 100.0f * n[0] / total, n[1], 100.0f * n[1] / total, n[2], 100.0f * n[2] / total, total);
+        }
+    handler->PSendSysMessage("roles: respecs so far %u (max 40 per hour)", uint32(_counters[BLC_ROLE_RESPEC].load()));
 }

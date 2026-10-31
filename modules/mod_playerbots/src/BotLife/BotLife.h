@@ -340,7 +340,14 @@ enum BotLifeCounter : uint8
     BLC_DUEL_WON,
     BLC_DUEL_LOST,
     BLC_LEVEL_BALANCE,         // (level-balance) a bot moved to an empty level band
+    BLC_ROLE_RESPEC,           // to-do 265: respec to a missing role
     BLC_MAX
+};
+
+// to-do 265: bot count per faction (0 alliance, 1 horde), level band (level / 10, max 9) and role (0 tank, 1 healer, 2 dps)
+struct BotRoleSnapshot
+{
+    uint32 n[2][10][3] = {};
 };
 
 class BotLifeMgr
@@ -374,7 +381,11 @@ public:
     void StartAggroDiag(int32 count) { _aggroDiagLeft.store(count, std::memory_order_relaxed); }
     void StartRangeTest(int32 count, uint32 entry = 0, uint32 maxLevel = 0);
     void StartPathProbe(uint32 map, float x, float y, float z);
-    void StartTestLevel(uint32 level, int32 count);   // test lab, raise bots to a level
+    // to-do 265: role-aware specialization (tank 15% / healer 20% / dps 65% per faction + level band)
+    int32 PickSpecTab(Player* bot, int32 forceRole = -1);   // talent tab, -1: no snapshot / no choice (caller picks random)
+    bool RoleRespec(PlayerbotAI* botAI);                    // bot whose role is over-represented switches to a missing role
+    void PrintRoles(ChatHandler* handler);
+    void StartTestLevel(uint32 level, int32 count, uint8 role = 0);   // test lab, raise bots to a level
     // walkers - one test bot per starting area works through its quests, every step a WALK line
     std::string WalkAdd(std::string const& name, std::string const& sorts);
     std::string WalkRemove(std::string const& name);
@@ -721,6 +732,14 @@ private:
     bool _levelBalance = true;           // (level-balance) BotLife.LevelBalance
     uint32 _levelBalanceMoves = 10;      // (level-balance) BotLife.LevelBalanceMoves: bots moved per round (ten minutes)
     uint32 _nextLevelBalance = 0;
+    // to-do 265: role snapshot of all bot characters, refreshed every ten minutes on the world thread
+    void LoadRoleSnapshot();
+    std::shared_ptr<BotRoleSnapshot const> _roleSnap;
+    uint32 _nextRoleSnap = 0;
+    std::atomic<uint32> _respecHourStart{0};
+    std::atomic<uint32> _respecInHour{0};
+    std::atomic<uint32> _gearHourStart{0};   // cap on gear refills per hour
+    std::atomic<uint32> _gearInHour{0};
     uint32 _raidMinutes = 75;
     uint32 _maxQuests = 3;
     uint32 _questTimeout = 25 * 60 * 1000;
@@ -739,6 +758,7 @@ private:
     std::atomic<bool> _pathProbePending{false};   // ".botlife pathprobe"
     std::atomic<int32> _testLevelLeft{0};          // ".botlife testlevel"
     std::atomic<uint32> _testLevel{0};
+    std::atomic<uint8> _testLevelRole{0};          // 0 = any class, 1 = tank classes, 2 = healer classes
     bool TestLevelBot(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now);
     uint32 _pathProbeMap = 0;
     float _pathProbeX = 0.0f, _pathProbeY = 0.0f, _pathProbeZ = 0.0f;

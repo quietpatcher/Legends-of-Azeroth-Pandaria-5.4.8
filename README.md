@@ -16,14 +16,14 @@ Small, generic fixes are sent upstream as pull requests. Everything else is kept
 
 ## At a glance
 
-As of October 2026:
+As of 31 October 2026:
 
 | | |
 |---|---|
-| Our work on top of upstream | 236 files changed, about 26,000 added lines |
-| Pull requests sent upstream | 32, of which 29 are merged and 3 are open |
-| Bot life system | about 17,000 lines in `modules/mod_playerbots/src/BotLife` |
-| Quests played by test walkers | 1,039, of which 962 pass |
+| Our work on top of upstream | 360 files changed, about 40,000 added lines |
+| Pull requests sent upstream | 44, of which 42 are merged and 2 are open |
+| Bot life system | about 21,000 lines in `modules/mod_playerbots/src/BotLife` |
+| Quests played by test walkers | 1,039 in the last full run (mid-October), of which 962 pass |
 | Where it runs | a test realm with 300 bots and a public realm with 1,500 bots |
 
 ## What this fork adds

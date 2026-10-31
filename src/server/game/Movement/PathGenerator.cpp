@@ -28,6 +28,7 @@
 #include "MMapManager.h"
 #include "Log.h"
 #include "World.h"
+#include <atomic>
 
 #include "DetourCommon.h"
 #include "DetourNavMeshQuery.h"
@@ -201,6 +202,48 @@ void PathGenerator::BuildPolyPath(G3D::Vector3 const& startPos, G3D::Vector3 con
     // its up to caller how he will use this info
     if (startPoly == INVALID_POLYREF || endPoly == INVALID_POLYREF)
     {
+        // (344-diag) only a player / bot as source: creature 53488 (Summon Enabler Stalker, cannot walk) used up the 40 lines
+        if (_source->GetMapId() == 1004 && _source->GetTypeId() == TYPEID_PLAYER)
+        {
+            static std::atomic<uint32> s_diagCount{0};
+            if (s_diagCount.fetch_add(1) < 40)
+                TC_LOG_INFO("playerbots", "(344) NOPATH map 1004: startPoly={} endPoly={} start=({:.2f},{:.2f},{:.2f}) end=({:.2f},{:.2f},{:.2f}) haveTileStart={} haveTileEnd={} distStart={:.2f} distEnd={:.2f}",
+                    startPoly, endPoly, startPos.x, startPos.y, startPos.z, endPos.x, endPos.y, endPos.z,
+                    HaveTile(startPos), HaveTile(endPos), distToStartPoly, distToEndPoly);
+
+            // v2 diagnostics (logging only): source type/entry, filter flags, start tile info, wide-filter nearest poly
+            static std::atomic<uint32> s_diagCount2{0};
+            if (s_diagCount2.fetch_add(1) < 40)
+            {
+                int tx = -1, ty = -1;
+                _navMesh->calcTileLoc(startPoint, &tx, &ty);
+                uint32 tilePolyCount = 0;
+                float tbmin[3] = {0.0f, 0.0f, 0.0f};
+                bool tileFound = false;
+                if (tx >= 0 && ty >= 0)
+                {
+                    dtMeshTile const* tile = _navMesh->getTileAt(tx, ty, 0);
+                    if (tile && tile->header)
+                    {
+                        tileFound = true;
+                        tilePolyCount = uint32(tile->header->polyCount);
+                        tbmin[0] = tile->header->bmin[0];
+                        tbmin[1] = tile->header->bmin[1];
+                        tbmin[2] = tile->header->bmin[2];
+                    }
+                }
+                float wideExtents[VERTEX_SIZE] = {3.0f, 5.0f, 3.0f};
+                float wideClosest[VERTEX_SIZE] = {0.0f, 0.0f, 0.0f};
+                dtQueryFilter wideFilter;
+                wideFilter.setIncludeFlags(0xFFFF);
+                wideFilter.setExcludeFlags(0);
+                dtPolyRef widePoly = INVALID_POLYREF;
+                _navMeshQuery->findNearestPoly(startPoint, wideExtents, &wideFilter, &widePoly, wideClosest);
+                TC_LOG_INFO("playerbots", "(344) NOPATH2 map 1004: typeId={} entry={} includeFlags=0x{:X} excludeFlags=0x{:X} startTile=({},{}) found={} polyCount={} bmin(y,z,x)=({:.2f},{:.2f},{:.2f}) widePoly={}",
+                    uint32(_source->GetTypeId()), _source->GetEntry(), uint32(_filter.getIncludeFlags()), uint32(_filter.getExcludeFlags()),
+                    tx, ty, tileFound, tilePolyCount, tbmin[0], tbmin[1], tbmin[2], uint64(widePoly));
+            }
+        }
         TC_LOG_DEBUG("maps.mmaps", "++ BuildPolyPath :: (startPoly == 0 || endPoly == 0)\n");
         BuildShortcut();
         bool path = _source->GetTypeId() == TYPEID_UNIT && _source->ToCreature()->CanFly();
@@ -589,6 +632,30 @@ void PathGenerator::BuildPointPath(const float *startPoint, const float *endPoin
                 pathPoints,         // [out] path corner points
                 (int*)&pointCount,
                 _pointPathLimit);    // maximum number of points
+    }
+
+    // (344-smooth) FindSmoothPath walks in fixed 4 yd steps and can swing back and forth between two corridor corners
+    // (Scarlet Monastery 1004, doorway at 1044.6 636-639: 200 points, 788 yd, status failed) - the complete poly path is fine,
+    // only the point path fails and the result was a 0xa NOPATH shortcut. A bot falls back to the corner points of the
+    // poly path (findStraightPath), which always exist for a complete poly path.
+    if (!_useStraightPath && !_useRaycast && _source->GetTypeId() == TYPEID_PLAYER
+        && (dtStatusFailed(dtResult) || pointCount < 2 || pointCount >= _pointPathLimit))
+    {
+        static std::atomic<uint32> s_smoothFallbacks{0};
+        if (_source->GetMapId() == 1004 && s_smoothFallbacks.fetch_add(1) < 20)
+            TC_LOG_INFO("playerbots", "(344) smooth path failed (points {}, status 0x{:x}, polys {}) from {:.0f} {:.0f} {:.0f} to {:.0f} {:.0f} {:.0f}: straight path fallback",
+                pointCount, uint32(dtResult), _polyLength, _startPosition.x, _startPosition.y, _startPosition.z, _endPosition.x, _endPosition.y, _endPosition.z);
+        pointCount = 0;
+        dtResult = _navMeshQuery->findStraightPath(
+                startPoint,         // start position
+                endPoint,           // end position
+                _pathPolyRefs,     // current path
+                _polyLength,       // lenth of current path
+                pathPoints,         // [out] path corner points
+                NULL,               // [out] flags
+                NULL,               // [out] shortened path
+                (int*)&pointCount,
+                _pointPathLimit);   // maximum number of points/polygons to use
     }
 
     // Special case with start and end positions very close to each other

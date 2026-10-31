@@ -17,7 +17,7 @@ public:
 
     void InitEquipment(bool incremental, bool second_chance = false);
     void InitPet();
-    void InitTalentsTree(bool reset);
+    void InitTalentsTree(bool reset, int32 forceRole = -1);   // to-do 265: forceRole 0 tank / 1 healer / 2 dps
 private:
     void Prepare();
     void CancelAuras();

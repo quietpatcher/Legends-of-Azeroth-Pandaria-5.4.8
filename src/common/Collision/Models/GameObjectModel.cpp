@@ -170,6 +170,10 @@ bool GameObjectModel::intersectRay(const G3D::Ray& ray, float& MaxDist, bool Sto
     if (!(phasemask & ph_mask) || !owner->IsSpawned())
         return false;
 
+    // M2 models (doodads) are not taken into account when the caller asked to ignore them (spell LoS)
+    if (!isWmo && (ignoreFlags & VMAP::ModelIgnoreFlags::M2) != VMAP::ModelIgnoreFlags::Nothing)
+        return false;
+
     float time = ray.intersectionTime(iBound);
     if (time == G3D::inf())
         return false;

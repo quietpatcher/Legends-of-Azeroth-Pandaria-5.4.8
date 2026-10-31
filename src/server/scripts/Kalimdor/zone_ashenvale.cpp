@@ -30,6 +30,7 @@ EndContentData */
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "ScriptedEscortAI.h"
+#include "SpellScript.h"
 #include "Player.h"
 
 /*####
@@ -174,6 +175,8 @@ class npc_torek : public CreatureScript
 
 enum RuulSnowhoof
 {
+    SAY_RUUL_COMPLETE           = 0,
+
     NPC_THISTLEFUR_URSA         = 3921,
     NPC_THISTLEFUR_TOTEMIC      = 3922,
     NPC_THISTLEFUR_PATHFINDER   = 3926,
@@ -226,6 +229,7 @@ class npc_ruul_snowhoof : public CreatureScript
                         me->SummonCreature(NPC_THISTLEFUR_PATHFINDER, RuulSnowhoofSummonsCoord[5], TEMPSUMMON_DEAD_DESPAWN, 60000ms);
                         break;
                     case 21:
+                        Talk(SAY_RUUL_COMPLETE, player);
                         player->GroupEventHappens(QUEST_FREEDOM_TO_RUUL, me);
                         break;
                 }
@@ -479,10 +483,43 @@ class go_naga_brazier : public GameObjectScript
         }
 };
 
+// 65115 - Gift of the Earth (quest 13880 Hot Lava): the ground-targeted cast seals the Lava Fissure it hits; that fissure
+// counts for the quest objective (type gameobject) and is used up until it respawns
+enum HotLava
+{
+    QUEST_HOT_LAVA      = 13880,
+    GO_LAVA_FISSURE     = 195002
+};
+
+class spell_ashenvale_gift_of_the_earth : public SpellScript
+{
+    PrepareSpellScript(spell_ashenvale_gift_of_the_earth);
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        GameObject* fissure = GetHitGObj();
+        if (!player || !fissure || fissure->GetEntry() != GO_LAVA_FISSURE || !fissure->isSpawned())
+            return;
+
+        if (player->GetQuestStatus(QUEST_HOT_LAVA) != QUEST_STATUS_INCOMPLETE)
+            return;
+
+        player->KillCreditGO(GO_LAVA_FISSURE, fissure->GetGUID());
+        fissure->SetLootState(GO_JUST_DEACTIVATED);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_ashenvale_gift_of_the_earth::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
 void AddSC_ashenvale()
 {
     new npc_torek();
     new npc_ruul_snowhoof();
     new npc_muglash();
     new go_naga_brazier();
+    new spell_script<spell_ashenvale_gift_of_the_earth>("spell_ashenvale_gift_of_the_earth");
 }

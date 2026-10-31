@@ -7,6 +7,8 @@
 
 #include "Playerbots.h"
 #include "ChaseMovementGenerator.h"
+#include "FollowMovementGenerator.h"
+#include "MoveSpline.h"
 
 float ServerFacade::GetDistance2d(Unit* unit, WorldObject* wo)
 {
@@ -46,6 +48,10 @@ void ServerFacade::SetFacingTo(Player* bot, WorldObject* wo, bool force)
     //     bot->SetFacingTo(bot->GetAngle(wo));
     // else
     // {
+    // (301-movement) never overwrite the orientation while a spline is running: the client then shows the body moving away
+    // from the facing (bots walk backwards) and the extra movement packet disturbs the running spline (stutter)
+    if (!force && (bot->isMoving() || !bot->movespline->Finalized()))
+        return;
     bot->SetOrientation(angle);
     bot->SendMovementFlagUpdate();
     // }
@@ -56,6 +62,9 @@ Unit* ServerFacade::GetChaseTarget(Unit* target)
     MovementGenerator* movementGen = target->GetMotionMaster()->top();
     if (movementGen && movementGen->GetMovementGeneratorType() == CHASE_MOTION_TYPE)
         return static_cast<ChaseMovementGenerator const*>(movementGen)->GetTarget();
+    // (301-movement) the follow generator was never recognised, so Follow() re-issued MoveFollow on every call (spline restart = stutter)
+    if (movementGen && movementGen->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+        return static_cast<FollowMovementGenerator const*>(movementGen)->GetTarget();
 
     return nullptr;
 }

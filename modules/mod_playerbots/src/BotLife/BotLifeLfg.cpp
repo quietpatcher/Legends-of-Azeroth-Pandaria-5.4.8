@@ -52,20 +52,36 @@ namespace
     // healer any more. Releases the bot's own bind of the heroic dungeons in the request and recomputes its lock list.
     void ReleaseBotLockouts(Player* bot, lfg::LfgDungeonSet const& dungeons)
     {
+        // (438) every bind of the bot to the requested maps goes, normal dungeons too: the new dungeon finder group copies the
+        // binds of its leader (Player::ConvertInstancesToGroup), so a bot that ran the dungeon with a BotLife party took the
+        // real player into that running or cleared instance instead of a fresh one
         bool released = false;
         for (uint32 id : dungeons)
         {
             lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(id);
-            if (!dungeon || dungeon->difficulty <= DUNGEON_DIFFICULTY_NORMAL || bot->GetMapId() == dungeon->map)
+            if (!dungeon || bot->GetMapId() == dungeon->map)
                 continue;
-            if (bot->GetBoundInstance(dungeon->map, dungeon->difficulty))
-            {
-                bot->UnbindInstance(dungeon->map, dungeon->difficulty);
-                released = true;
-            }
+            for (uint8 difficulty = 0; difficulty < MAX_DIFFICULTY; ++difficulty)
+                if (bot->GetBoundInstance(dungeon->map, Difficulty(difficulty)))
+                {
+                    bot->UnbindInstance(dungeon->map, Difficulty(difficulty));
+                    released = true;
+                }
         }
         if (released)
             sLFGMgr->InitializeLockedDungeons(bot);
+    }
+
+    // (438) a bot still standing inside a requested dungeon is in the instance of its earlier run (it cannot be unbound there)
+    bool InRequestedDungeon(Player* bot, lfg::LfgDungeonSet const& dungeons)
+    {
+        for (uint32 id : dungeons)
+        {
+            lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(id);
+            if (dungeon && bot->GetMapId() == dungeon->map)
+                return true;
+        }
+        return false;
     }
 
     uint8 RoleOf(Player* bot)
@@ -133,6 +149,7 @@ void BotLifeMgr::FillLfgRolesSync(Player* player, uint32 queueId, std::set<uint3
                 || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetTeam() != player->GetTeam()
                 // (lfg-leftover-bots) a bot without a group in a five-man dungeon is a leftover of a finished run: it can be taken
                 || (bot->GetMap()->Instanceable() && (bot->GetMap()->IsRaid() || bot->GetMap()->IsBattlegroundOrArena()))
+                || InRequestedDungeon(bot, dungeonIds)
                 || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
                 continue;
             if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)
@@ -436,6 +453,7 @@ void BotLifeMgr::LfgUpdate(uint32 now)
                     || bot->IsBeingTeleported() || bot->IsInCombat() || bot->GetTeam() != player->GetTeam()
                 // (lfg-leftover-bots) a bot without a group in a five-man dungeon is a leftover of a finished run: it can be taken
                 || (bot->GetMap()->Instanceable() && (bot->GetMap()->IsRaid() || bot->GetMap()->IsBattlegroundOrArena()))
+                    || InRequestedDungeon(bot, dungeons)
                     || IsBanker(bot->GetGUID()) || IsLfgBot(bot->GetGUID()) || WaitingQueue(bot->GetGUID()) || IsWalker(bot))
                     continue;
                 if (std::abs(int32(bot->GetLevel()) - int32(player->GetLevel())) > 3)

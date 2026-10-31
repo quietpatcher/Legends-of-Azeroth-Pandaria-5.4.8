@@ -62,9 +62,18 @@ As upstream. The branch is based on upstream commit `e3267ed` and is brought up 
 
 ## Credits
 
-Some core and dungeon fixes are taken from the fork of ingussuveiks-dev
-(https://github.com/ingussuveiks-dev/Legends-of-Azeroth-Pandaria-5.4.8, same upstream, GPL v2), adapted to this tree where
-needed. This branch is published as one commit per sync, so the commit message of each sync lists the changes that were taken.
+This fork stands on the work of the Legends of Azeroth team and of the projects it builds on (see [THANKS](THANKS.md)).
+
+- Some core and dungeon fixes are taken from the fork of ingussuveiks-dev
+  (https://github.com/ingussuveiks-dev/Legends-of-Azeroth-Pandaria-5.4.8, same upstream, GPL v2), adapted to this tree where
+  needed. This branch is published as one commit per sync, so the commit message of each sync lists the changes that were taken.
+- Upstream contributors whose pull requests we build on, in particular DeltaTho (Tirisfal Glades and starting-zone work, assorted
+  world and script fixes) and leelf00.
+- 1LineAtaTime (https://github.com/1LineAtaTime/LoA-Pandaria-Playerbots), a fork with a broad playerbots module for the same
+  upstream. Their release notes credit our pull requests, and comparing the two forks gave us ideas, for example describing boss
+  strategy as data. Nothing of their code is in this tree; ideas are credited here and in the relevant commits.
+- The authors of the AzerothCore `mod-playerbots` module, which is the base of `modules/mod_playerbots`.
+- Everyone who tested on the realms and reported what they found.
 
 ## License
 

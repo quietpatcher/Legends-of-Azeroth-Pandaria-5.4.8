@@ -343,10 +343,10 @@ namespace MMAP
         MMapData* mmap = itr->second;
         if (mmap->navMeshQueries.find(instanceId) == mmap->navMeshQueries.end())
         {
-            // allocate mesh query
+            // allocate mesh query (4096 nodes instead of 1024: long dungeon paths of 250-670 yd ran out of nodes and came back partial, to-do 344)
             dtNavMeshQuery* query = dtAllocNavMeshQuery();
             ASSERT(query);
-            if (dtStatusFailed(query->init(mmap->navMesh, 1024)))
+            if (dtStatusFailed(query->init(mmap->navMesh, 4096)))
             {
                 dtFreeNavMeshQuery(query);
                 TC_LOG_ERROR("maps", "MMAP:GetNavMeshQuery: Failed to initialize dtNavMeshQuery for mapId {} instanceId {}", mapId, instanceId);

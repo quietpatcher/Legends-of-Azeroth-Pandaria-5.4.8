@@ -174,8 +174,9 @@ namespace
 }
 
 // test lab - raise solo bots to a level (their own map thread)
-void BotLifeMgr::StartTestLevel(uint32 level, int32 count)
+void BotLifeMgr::StartTestLevel(uint32 level, int32 count, uint8 role)
 {
+    _testLevelRole.store(role, std::memory_order_relaxed);   // optional tank/heal class filter
     _testLevel.store(level, std::memory_order_relaxed);
     _testLevelLeft.store(count, std::memory_order_release);
 }
@@ -189,6 +190,15 @@ bool BotLifeMgr::TestLevelBot(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
     if (!level || bot->GetLevel() >= level || bot->GetGroup() || t.banker || !bot->IsAlive() || bot->IsInCombat()
         || bot->GetMap()->Instanceable() || bot->IsBeingTeleported() || bot->IsInFlight())
         return false;
+    // role filter - a class that does not fit is skipped and does not count (check before the fetch_sub)
+    if (uint8 const role = _testLevelRole.load(std::memory_order_relaxed))
+    {
+        uint8 const cls = bot->GetClass();
+        bool const fits = role == 1 ? (cls == CLASS_WARRIOR || cls == CLASS_PALADIN || cls == CLASS_DEATH_KNIGHT || cls == CLASS_MONK || cls == CLASS_DRUID)
+                                    : (cls == CLASS_PALADIN || cls == CLASS_PRIEST || cls == CLASS_SHAMAN || cls == CLASS_MONK || cls == CLASS_DRUID);
+        if (!fits)
+            return false;
+    }
     if (_testLevelLeft.fetch_sub(1, std::memory_order_acq_rel) <= 0)
         return false;
     uint32 const from = bot->GetLevel();

@@ -1632,8 +1632,10 @@ bool Creature::CanStartAttack(Unit const* who, bool force) const
     // IMMUNE_TO_NPC only blocks non-player targets, IMMUNE_TO_PC only player-controlled ones (as upstream TrinityCore 3.3.5).
     // The old check made every creature with IMMUNE_TO_NPC ignore players walking up to it.
     bool playerControlled = who->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PVP_ATTACKABLE); // 0x8, upstream UNIT_FLAG_PLAYER_CONTROLLED
-    if ((HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC) && !playerControlled)
-        || (HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC) && playerControlled))
+    // 28-10-2026 (439): only the IMMUNE_TO_NPC half. 334 instance bosses carry IMMUNE_TO_PC in creature_template and rely on
+    // this core removing it when they engage (Unit.cpp, EngageFromCombatState); with the IMMUNE_TO_PC check here they never
+    // engaged, so Chief Ukorz Sandscalp (Zul'Farrak) and Deadmines bosses stayed immune and bot runs ended incomplete since 22-10.
+    if (HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC) && !playerControlled)
         return false;
 
     // Do not attack non-combat pets

@@ -86,7 +86,14 @@ protected:
     bool AvoidAuraWithDynamicObj();
     bool AvoidGameObjectWithDamage();
     bool AvoidUnitWithDamageAura();
+    bool StormstoutStep(bool dryRun);   // (452, 455) Stormstout Brewery: Big Ol' Hammer and Smash, Fizzy Bubbles
+    bool YanZhuStep(bool dryRun);
     uint32 lastMoveTimer = 0;
+    uint32 lastSmashTimer = 0;
+    uint32 lastGrabTimer = 0;
+    uint32 lastClickTimer = 0;
+    uint32 lastRiseTimer = 0;
+    bool liftedByBubble = false;
     uint32 moveInterval;
 };
 
