@@ -240,6 +240,14 @@ struct BotLifeInfo
     uint32 partyWaitSince = 0;
     uint32 realWaitSince = 0;        // lead bot of a dungeon finder group waits for the real player since (0 = not waiting)
     bool realWaitGaveUp = false;     // the 5 minute time-out ran out; reset once the player is within reach again
+    uint8 realWaitRounds = 0;        // run3: how often the wait was taken up again after a time-out (then 90 s per round)
+    float realGaveX = 0.0f, realGaveY = 0.0f, realGaveZ = 0.0f;   // where the lead stood when it gave up waiting
+    uint32 realGaveBosses = 0;       // dungeonBosses at that moment
+    uint32 lfgLeadSince = 0;         // when this bot became lead of a dungeon finder group with a real player (arrival)
+    bool lfgArrivalDone = false;     // the real player was within 30 yd once, or the arrival wait (5 min) ran out
+    ObjectGuid lfgCutGuid;           // run3: cache of "real player cut off from the lead" (gate / no path / > 40 yd of path)
+    uint32 lfgCutAt = 0;
+    bool lfgCut = false;
 
     // dungeon / raid crawl (party leader)
     uint32 dungeonTarget = 0;        // creature spawn id
@@ -273,6 +281,7 @@ struct BotLifeInfo
     std::set<ObjectGuid> dungeonDynSkip;
     uint32 dungeonSealedTarget = 0;          // spawn id of the sealed boss the leader walks up to
     uint32 dungeonSealedActive = 0;
+    float dungeonSealedRefDist = 0.0f;       // (456-gao-reach) distance to the sealed boss at the last progress / jump (res after a wipe)
     uint32 dungeonSealedWait = 0;            // stands next to it until then
     std::set<uint32> dungeonSealedVisited;
     uint32 dungeonSealedBosses = 0;          // bosses down at the last visits
@@ -297,6 +306,7 @@ struct BotLifeInfo
         dungeonDynSkip.clear();
         dungeonSealedTarget = 0;
         dungeonSealedActive = 0;
+        dungeonSealedRefDist = 0.0f;
         dungeonSealedWait = 0;
         dungeonSealedVisited.clear();
         dungeonSealedBosses = 0;

@@ -176,6 +176,16 @@ namespace
         auto it = s_killGates.find(map);
         return it != s_killGates.end() && it->second.gateEntries.count(entry) > 0;
     }
+
+    // (456-gao) the last boss of the map has no spawn of its own: an NPC summons it when a player comes near. Stormstout Brewery (961):
+    // Yan-Zhu (59479) has no creature row; Uncle Gao (59074, -682 1192 167) starts the brewing when a player stands within 30 yd of him
+    // above z 160 (boss_yanzhu_the_uncasked.cpp, npc_uncle_gao MoveInLineOfSight) and summons Yan-Zhu in the last stage. The runs ended at
+    // Hoptallus ("no living boss within 300 yd"), because the party never went near Gao.
+    constexpr uint32 SUMMONER_WAIT = 600000;   // stays next to the summoner while its encounter runs (ms)
+    bool IsBossSummoner(uint32 map, uint32 entry)
+    {
+        return map == 961 && entry == 59074;
+    }
 }
 
 // the last encounter of this dungeon finder entry lies dead in the leader's instance (world thread, while
@@ -494,7 +504,7 @@ void BotLifeMgr::LoadDungeons()
                 {
                     // a boss that starts out sealed, friendly or talking: the leader walks up to it when
                     // nothing else is left (VisitSealedBoss), and fights it once it has opened up (PickUnlistedTarget)
-                    if (s.boss)
+                    if (s.boss || IsBossSummoner(mapId, ct->Entry))   // (456-gao)
                         _sealedBossSpawns[mapId].push_back(s);
                     continue;
                 }
@@ -1322,16 +1332,19 @@ static bool EncounterInProgress(Player const* bot)
 // a bot has no collision, so it would walk through. Segments are tested at chest height against dynamic objects only.
 // (door-held) the first held door the path runs through: a segment that crosses the door plane next to the door, or a chest
 // height ray that hits the door model (the ray alone missed the Foundry Door on the way down from the balcony)
-static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path)
+// run3: anyDoor - every closed door of the door type counts, not only a held one (a real player behind a gate
+// that autocloses); then the instance script is not needed
+static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path, bool anyDoor = false)
 {
     InstanceScript* instance = bot->GetInstanceScript();
-    if (!instance)
+    if (!instance && !anyDoor)
         return nullptr;
     std::list<GameObject*> doors;
     ClosedDoorCheck check{ bot, 250.0f };
     Trinity::GameObjectListSearcher<ClosedDoorCheck> searcher(bot, doors, check);
     bot->VisitNearbyGridObject(250.0f, searcher);
-    doors.remove_if([instance](GameObject* door) { return !DoorHeld(instance, door); });
+    if (!anyDoor)
+        doors.remove_if([instance](GameObject* door) { return !DoorHeld(instance, door); });
     if (doors.empty())
         return nullptr;
     Map* map = bot->GetMap();
@@ -1361,6 +1374,53 @@ static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path)
         prev = &p;
     }
     return nullptr;
+}
+
+// ev_strat_service_alliance_run3.txt, point 1: a real player of a dungeon finder group is cut off from the lead:
+// no walkable path to it (mmap), more than 40 yd of path, or a closed door in between (Stratholme gates: autoclose after 3 s). Plain
+// distance is not enough: after the dungeon finder teleport the player and the group stand in the same room behind a shut gate.
+// Cached for 2 s per player (a path per tick is too much); logs when the state changes.
+static bool LfgPlayerCutOff(Player* bot, Player* member, BotLifeInfo& t, uint32 now)
+{
+    if (t.lfgCutGuid == member->GetGUID() && t.lfgCutAt && now - t.lfgCutAt < 2000)
+        return t.lfgCut;
+    bool cut = false;
+    char const* why = "";
+    PathGenerator path(member);
+    path.CalculatePath(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), false);
+    if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+    {
+        cut = true;
+        why = "no walkable path";
+    }
+    else
+    {
+        float len = 0.0f;
+        G3D::Vector3 const* prev = nullptr;
+        for (G3D::Vector3 const& p : path.GetPath())
+        {
+            if (prev)
+                len += (p - *prev).length();
+            prev = &p;
+        }
+        if (len > 40.0f)
+        {
+            cut = true;
+            why = "more than 40 yd of path";
+        }
+        else if (ClosedDoorOnPath(member, path, true))
+        {
+            cut = true;
+            why = "a closed door in between";
+        }
+    }
+    if (t.lfgCutGuid != member->GetGUID() || t.lfgCut != cut)
+        TC_LOG_INFO("playerbots", "BotLife {}: arrival wait: the real player {} is {} ({})", bot->GetName(), member->GetName(),
+            cut ? "cut off from the lead" : "on the same path as the lead", cut ? why : "path <= 40 yd, no closed door");
+    t.lfgCutGuid = member->GetGUID();
+    t.lfgCutAt = now;
+    t.lfgCut = cut;
+    return cut;
 }
 
 static bool GossipReached(Player* bot, WorldObject* target);
@@ -1528,6 +1588,40 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             else if (done > uint32(t.dungeonStateBase) && done - uint32(t.dungeonStateBase) > t.dungeonBosses)
                 t.dungeonBosses = done - uint32(t.dungeonStateBase);
         }
+    // ev_strat_service_alliance_run2.txt, point 1: arrival hold. The lead of a dungeon finder group with a real player
+    // does not pull the first pack or walk off until that player is in this map and within 30 yd (at most 90 s after arrival, then it
+    // goes on anyway). run3 point 1: "within reach" is within 30 yd AND on the same path (<= 40 yd of mmap path, no
+    // closed door in between, LfgPlayerCutOff); the time-out is now 5 minutes (as PartyLeaderWait). Runs before the combat handling; a bot that is already fighting (or whose party is) just fights on, and the
+    // combat branches below never pick a new target. After this the normal wait (PartyLeaderWait: 40/30 yd, 5 min) takes over.
+    if (!t.lfgArrivalDone && bot->IsAlive() && bot->GetGroup() && bot->GetGroup()->isLFGGroup() && !t.party && t.lfgLeadInstance
+        && t.lfgLeadInstance == bot->GetInstanceId() && t.lfgLeadSince)
+    {
+        bool hasReal = false, realNear = false;
+        for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->GetSession() || member->GetSession()->IsBot() || !member->IsAlive())
+                continue;
+            hasReal = true;
+            Map* memberMap = member->IsInWorld() ? member->FindMap() : nullptr;
+            if (memberMap && memberMap == bot->GetMap() && bot->GetExactDist(member) <= 30.0f && !LfgPlayerCutOff(bot, member, t, now))
+                realNear = true;
+        }
+        if (!hasReal || realNear || now - t.lfgLeadSince > 300000)
+        {
+            if (hasReal)
+                TC_LOG_INFO("playerbots", "BotLife {}: arrival wait over ({}), the lead goes on", bot->GetName(),
+                    realNear ? "the real player is within reach" : "5 min time-out");
+            t.lfgArrivalDone = true;
+        }
+        else if (!bot->IsInCombat() && !PartyMemberAttacked(bot))
+        {
+            if (bot->isMoving())
+                bot->StopMoving();
+            t.dungeonEngageSince = 0;
+            return true;
+        }
+    }
     if (bot->IsInCombat())
     {
         // in combat for 3 minutes without a victim and without a kill: say who attacks, skip them, clear it
@@ -2715,7 +2809,7 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
             return;
         for (BotLifeInstanceSpawn const& s : it->second)
         {
-            if (!s.boss || (!(s.spawnMask & diffBit)) || t.dungeonSealedVisited.count(s.spawnId)
+            if (!(s.boss || IsBossSummoner(map->GetId(), s.entry)) || (!(s.spawnMask & diffBit)) || t.dungeonSealedVisited.count(s.spawnId)
                 || OutsideWing(t.dungeonWingArea, t.dungeonWingList, s.spawnId, s.area))   // (wing-area)
                 continue;
             if (t.dungeonSealedTarget && t.dungeonSealedTarget != s.spawnId)
@@ -2755,6 +2849,15 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
     {
         t.dungeonSealedTarget = best->spawnId;
         t.dungeonSealedActive = 0;
+        t.dungeonSealedRefDist = bestDist;
+    }
+    // (456-gao-reach) the time-out is for a walk that makes no progress: closing in by 10 yd, or being set back by 40 yd
+    // (resurrected at the entrance after a wipe on the way, Stormstout: Gao 151 yd away) starts it over. Before, the time
+    // spent before the wipe counted and the party gave up the instant it came back.
+    if (bestDist < t.dungeonSealedRefDist - 10.0f || bestDist > t.dungeonSealedRefDist + 40.0f)
+    {
+        t.dungeonSealedRefDist = bestDist;
+        t.dungeonSealedActive = 0;
     }
     t.dungeonSealedActive += tickDelta;
     float const tx = bestCreature ? bestCreature->GetPositionX() : best->x, ty = bestCreature ? bestCreature->GetPositionY() : best->y,
@@ -2768,7 +2871,8 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
         describe("reached");
         t.dungeonSealedVisited.insert(best->spawnId);
         t.dungeonSealedTarget = 0;
-        t.dungeonSealedWait = now + DUNGEON_SEALED_WAIT;
+        // (456-gao) next to a boss summoner the party waits for the whole encounter (adds and the boss come to it), not 15 s
+        t.dungeonSealedWait = now + (IsBossSummoner(map->GetId(), best->entry) ? SUMMONER_WAIT : DUNGEON_SEALED_WAIT);
         if (bot->isMoving())
             bot->StopMoving();
         return true;

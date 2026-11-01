@@ -51,6 +51,9 @@ namespace
     constexpr float PARTY_FAR_DIST = 200.0f;         // member is summoned after being this far for a while
     constexpr uint32 PARTY_FAR_SUMMON_MS = 90000;
     constexpr uint32 PARTY_MAX_WAIT_MS = 25000;
+    // (301e-alemental) a dungeon party that is split by more than this is waited for longer than PARTY_MAX_WAIT_MS
+    constexpr float PARTY_SPLIT_DIST = 70.0f;
+    constexpr uint32 PARTY_SPLIT_WAIT_MS = 120000;
     constexpr uint32 PARTY_MAX_NEW_PER_TICK = 6;
 
     std::mt19937& PartyRng()
@@ -1063,6 +1066,7 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
 bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
 {
     bool wait = false;
+    float farthest = 0.0f;   // (301e-alemental) distance of the farthest living bot of the group on this map (<= PARTY_FAR_DIST)
     Group* group = bot->GetGroup();
     // ev_sunken_temple_alliance.txt + ev_strat_service_alliance.txt, voorstel A: the lead bot of a dungeon finder
     // group with a real player waits for that player - while he has not loaded into the instance yet, and while he is more than
@@ -1070,7 +1074,7 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
     // the lead goes on until the player is within reach again. Bots without a real player / bot parties: unchanged.
     if (group->isLFGGroup() && !t.party && t.lfgLeadInstance && t.lfgLeadInstance == bot->GetInstanceId())
     {
-        bool realFar = false;
+        bool realFar = false, farInMap = false;
         float const enter = t.realWaitSince ? 30.0f : 40.0f;   // hysteresis
         for (GroupReference* ref = group->GetFirstMember(); ref && !realFar; ref = ref->next())
         {
@@ -1081,7 +1085,21 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
             if (!memberMap || memberMap != bot->GetMap())
                 realFar = true;   // not in the instance (yet): still loading / on the way
             else if (bot->GetExactDist(member) > enter)
+            {
                 realFar = true;
+                farInMap = true;
+            }
+        }
+        // ev_strat_service_alliance_run3.txt, point 3: after the time-out the wait is not given up for good. A player
+        // who is still in the map and > 40 yd behind is waited for again (new 90 s) each time the lead has come 60 yd further since it
+        // gave up, or the run has booked another boss since (the next boss / door): run3 cleared 7 bosses without him.
+        if (realFar && farInMap && t.realWaitGaveUp
+            && (bot->GetExactDist(t.realGaveX, t.realGaveY, t.realGaveZ) >= 60.0f || t.dungeonBosses != t.realGaveBosses))
+        {
+            t.realWaitGaveUp = false;
+            if (t.realWaitRounds < 250)
+                ++t.realWaitRounds;
+            TC_LOG_INFO("playerbots", "BotLife {}: the real player of the dungeon finder group is still > 40 yd behind (lead moved on / next boss), waits again", bot->GetName());
         }
         if (!realFar)
         {
@@ -1089,6 +1107,7 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
                 TC_LOG_INFO("playerbots", "BotLife {}: the real player of the dungeon finder group is within reach, the lead goes on", bot->GetName());
             t.realWaitSince = 0;
             t.realWaitGaveUp = false;
+            t.realWaitRounds = 0;
         }
         else if (!t.realWaitGaveUp)
         {
@@ -1097,11 +1116,16 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
                 t.realWaitSince = now;
                 TC_LOG_INFO("playerbots", "BotLife {}: waits for the real player of the dungeon finder group (not in the instance or > 40 yd)", bot->GetName());
             }
-            if (now - t.realWaitSince > 300000)
+            if (now - t.realWaitSince > (t.realWaitRounds ? 90000u : 300000u))
             {
                 t.realWaitGaveUp = true;
                 t.realWaitSince = 0;
-                TC_LOG_INFO("playerbots", "BotLife {}: waited 5 minutes for the real player, goes on without him", bot->GetName());
+                t.realGaveX = bot->GetPositionX();
+                t.realGaveY = bot->GetPositionY();
+                t.realGaveZ = bot->GetPositionZ();
+                t.realGaveBosses = t.dungeonBosses;
+                TC_LOG_INFO("playerbots", "BotLife {}: waited {} for the real player, goes on without him (waits again after 60 yd / the next boss)", bot->GetName(),
+                    t.realWaitRounds ? "90 s" : "5 minutes");
             }
             else
             {
@@ -1122,14 +1146,12 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
         float d = bot->GetExactDist(member);
         if (d > PARTY_FAR_DIST)
             continue;   // the world thread summons real stragglers
+        farthest = std::max(farthest, d);
         // (344-healergather) a healer is waited for from 30 yd (the distance its own keep-up works to), not from 45: at 45 yd it
         // is out of heal range and mostly out of sight when the pull starts
         float const gather = (t.party == BOTLIFE_PARTY_DUNGEON && PlayerBotSpec::IsHeal(member, true)) ? 30.0f : PARTY_GATHER_DIST;
         if (d > gather || member->IsInCombat() || (memberAI && (memberAI->life.resting || !memberAI->life.lootTarget.IsEmpty())))
-        {
-            wait = true;
-            break;
-        }
+            wait = true;   // (301e-alemental) no break: the farthest member is needed below
     }
 
     if (!wait)
@@ -1139,9 +1161,13 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
     }
     if (!t.partyWaitSince)
         t.partyWaitSince = now;
-    if (now - t.partyWaitSince > PARTY_MAX_WAIT_MS)
+    // (301e-alemental) the 25 s walk-on after a wait left the lead of a dungeon party 150 yd ahead of members that still fought adds
+    // (Stormstout Brewery: Everea walked alone into the two Fizzy Brew Alementals at -676 1129, party 66-126 yd behind, healer out of sight,
+    // tank dead in 25 s, no kill for 3 min = run ended). A party split by more than 70 yd is waited for up to 120 s.
+    uint32 const maxWait = (t.party == BOTLIFE_PARTY_DUNGEON && farthest > PARTY_SPLIT_DIST) ? PARTY_SPLIT_WAIT_MS : PARTY_MAX_WAIT_MS;
+    if (now - t.partyWaitSince > maxWait)
     {
-        if (now - t.partyWaitSince > PARTY_MAX_WAIT_MS * 2)
+        if (now - t.partyWaitSince > maxWait * 2)
             t.partyWaitSince = 0;   // walk on for a while, then wait again
         return false;
     }

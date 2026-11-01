@@ -2244,6 +2244,127 @@ static void HorsemanPumpkinsFirst(PlayerbotAI* botAI, Player* bot)
         value->Set(GuidVector());
 }
 
+// (452-hammer) Stormstout Brewery, Hoptallus (map 961): a dying Bopper drops a Big Ol' Hammer (npc 59539, spell click). Clicking it gives aura
+// 111662 (three charges of Smash!, spell 111666), which destroys the Hoppers and Hoplings within 6 yd and hurts Boppers. Nobody picked the
+// hammer up, so the adds piled up on the group. The bot of the group without charges that is nearest to a hammer (healers stay out) fetches
+// it; a bot with charges smashes when two or more adds stand within 6 yd (Explosive Hoppers are not killed by Smash!, so they do not count).
+// Source: Wowhead npc=56717 (Hoptallus: "When Boppers die, they drop their Big Ol' Hammers. Players can pick up the Hammer to gain three
+// charges of Smash!"), spell=111666; script boss_hoptallus.cpp (npc_hammer, spell_hammer_smash). Returns true when it took the tick.
+static bool StormstoutHammer(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    constexpr uint32 NPC_BIG_OL_HAMMER = 59539, NPC_EXPLOSIVE_HOPPER = 56718;
+    constexpr uint32 AURA_SMASH_CHARGES = 111662, SPELL_SMASH = 111666, AURA_HOPPER_ANIM = 114284;
+    static thread_local std::unordered_map<ObjectGuid, uint32> lastSmash;
+    if (bot->GetVehicle() || bot->HasUnitState(UNIT_STATE_CASTING | UNIT_STATE_STUNNED))
+        return false;
+    if (bot->HasAura(AURA_SMASH_CHARGES))
+    {
+        uint32& last = lastSmash[bot->GetGUID()];
+        if (last && now - last < 1500)
+            return false;
+        auto isAdd = [bot](Unit* u)
+        {
+            return u != bot && u->IsAlive() && u->GetEntry() != NPC_EXPLOSIVE_HOPPER && u->HasAura(AURA_HOPPER_ANIM) && u->IsHostileTo(bot)
+                && bot->IsWithinDistInMap(u, 6.0f);
+        };
+        std::list<Unit*> adds;
+        Trinity::UnitListSearcher<decltype(isAdd)> searcher(bot, adds, isAdd);
+        Cell::VisitAllObjects(bot, searcher, 6.0f);
+        if (adds.size() < 2)
+            return false;
+        last = now;
+        bot->CastSpell(bot, SPELL_SMASH, true);
+        TC_LOG_INFO("playerbots", "BotLife {}: Smash! with the Big Ol' Hammer on {} adds (Stormstout Brewery)", bot->GetName(), adds.size());
+        return false;   // the fight goes on
+    }
+    Creature* hammer = bot->FindNearestCreature(NPC_BIG_OL_HAMMER, 40.0f, true);
+    Group* group = bot->GetGroup();
+    if (!hammer || !group || !hammer->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK) || PlayerBotSpec::IsHeal(bot, true))
+        return false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (member && member != bot && member->IsAlive() && member->GetMap() == bot->GetMap() && member->GetSession() && member->GetSession()->IsBot()
+            && !member->HasAura(AURA_SMASH_CHARGES) && !PlayerBotSpec::IsHeal(member, true) && member->GetExactDist(hammer) < bot->GetExactDist(hammer))
+            return false;   // another bot is nearer to the hammer
+    }
+    if (bot->GetExactDist(hammer) > 4.0f)
+    {
+        if (!bot->isMoving() || now - t.lastMoveOrder > 1500)
+        {
+            bot->GetMotionMaster()->MovePoint(0, hammer->GetPositionX(), hammer->GetPositionY(), hammer->GetPositionZ(), true);
+            t.lastMoveOrder = now;
+        }
+        return true;
+    }
+    bot->StopMoving();
+    hammer->HandleSpellClick(bot);
+    TC_LOG_INFO("playerbots", "BotLife {}: picks up the Big Ol' Hammer (Stormstout Brewery)", bot->GetName());
+    return true;
+}
+
+// (455-bubble) Stormstout Brewery, Yan-Zhu (map 961): his Carbonation (115003) hits everybody within 4.9 yd of his own height and keeps them from
+// attacking and casting; it makes Fizzy Bubbles (npc 59799, spell click, fly aura 114459 for 20 s) spawn. Bots stayed on the ground. Every bot
+// without the aura clicks the nearest bubble that no other bot without the aura is nearer to, and the one that flies rises to 7 yd above
+// Yan-Zhu, where the spell script (spell_carbonation) leaves it alone. Source: Wowhead npc=59479 / MMO-Champion Stormstout Brewery
+// ("Carbonation causes Fizzy Bubbles to spawn ... clicking on a Fizzy Bubble grants the ability to fly for 20 sec"). Returns true when it took the tick.
+static bool StormstoutFizzyBubble(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    constexpr uint32 NPC_YAN_ZHU = 59479, NPC_FIZZY_BUBBLE = 59799, AURA_FIZZY_FLY = 114459;
+    Creature* yan = bot->FindNearestCreature(NPC_YAN_ZHU, 90.0f, true);
+    if (!yan || !yan->IsInCombat())
+        return false;
+    if (bot->HasAura(AURA_FIZZY_FLY))
+    {
+        float const wantZ = yan->GetPositionZ() + 7.0f;
+        if (bot->GetPositionZ() < wantZ - 0.5f && (!bot->isMoving() || now - t.lastMoveOrder > 1000))
+        {
+            bot->GetMotionMaster()->MovePoint(1, bot->GetPositionX(), bot->GetPositionY(), wantZ, false);
+            t.lastMoveOrder = now;
+        }
+        return true;   // hold up there until the aura ends
+    }
+    std::list<Creature*> bubbles;
+    bot->GetCreatureListWithEntryInGrid(bubbles, NPC_FIZZY_BUBBLE, 40.0f);
+    Group* group = bot->GetGroup();
+    Creature* pick = nullptr;
+    Creature* nearest = nullptr;
+    for (Creature* b : bubbles)
+    {
+        if (!b->IsAlive() || !b->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+            continue;
+        if (!nearest || bot->GetExactDist(b) < bot->GetExactDist(nearest))
+            nearest = b;
+        bool another = false;   // another bot without the aura is nearer to this bubble
+        if (group)
+            for (GroupReference* ref = group->GetFirstMember(); ref && !another; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                another = member && member != bot && member->IsAlive() && member->GetMap() == bot->GetMap() && member->GetSession()
+                    && member->GetSession()->IsBot() && !member->HasAura(AURA_FIZZY_FLY) && member->GetExactDist(b) < bot->GetExactDist(b);
+            }
+        if (!another && (!pick || bot->GetExactDist(b) < bot->GetExactDist(pick)))
+            pick = b;
+    }
+    if (!pick)
+        pick = nearest;   // more bubbles than bots, or all of them nearer to others: take the nearest anyway
+    if (!pick)
+        return false;
+    if (bot->GetExactDist(pick) > 5.0f)
+    {
+        if (!bot->isMoving() || now - t.lastMoveOrder > 1000)
+        {
+            bot->GetMotionMaster()->MovePoint(0, pick->GetPositionX(), pick->GetPositionY(), yan->GetPositionZ(), true);   // the bubble floats 1.5-3 yd up
+            t.lastMoveOrder = now;
+        }
+        return true;
+    }
+    bot->StopMoving();
+    pick->HandleSpellClick(bot);
+    TC_LOG_INFO("playerbots", "BotLife {}: clicks a Fizzy Bubble (Yan-Zhu, Stormstout Brewery)", bot->GetName());
+    return true;
+}
+
 bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
 {
     if (!_enabled || !_loaded || !botAI)
@@ -2461,6 +2582,10 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
                 if (PlayerBotSpec::IsHeal(bot, true))
                     LfgHealDiag(botAI, bot, getMSTime());
             }
+    // (452-hammer) (455-bubble) Stormstout Brewery (map 961): clicks of the encounters, see StormstoutHammer
+    if (group && bot->IsInWorld() && bot->GetMapId() == 961 && bot->IsAlive() && !bot->IsBeingTeleported())
+        if (StormstoutFizzyBubble(bot, t, now) || StormstoutHammer(bot, t, now))
+            return true;
     // (lfg-rez-diag)
     if (group && bot->IsInWorld() && bot->IsAlive() && bot->GetMap()->IsDungeon() && PlayerBotSpec::IsHeal(bot, true))
     {
@@ -2514,6 +2639,11 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
         if (t.lfgLeadInstance != bot->GetInstanceId())
         {
             t.lfgLeadInstance = bot->GetInstanceId();
+            t.lfgLeadSince = now;
+            t.lfgArrivalDone = false;
+            t.realWaitSince = 0;   // run3: a new run starts the real-player wait afresh
+            t.realWaitGaveUp = false;
+            t.realWaitRounds = 0;
             t.dungeonTarget = 0;
             t.dungeonTargetSince = 0;
             t.dungeonEngageSince = 0;
