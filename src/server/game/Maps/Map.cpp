@@ -46,6 +46,8 @@
 #include "Config.h"         // Map.BotCellUpdateEvery
 #include "WorldSession.h"
 #include "SocialMgr.h"      // perf1-inc: friend list guard of the idle bots
+#include "ThreadOwnerCheck.h"   // botcost: 
+#include <chrono>
 #include <mutex>
 #include <atomic>
 
@@ -773,6 +775,14 @@ bool Map::AddToMap(Transport* obj)
         {
             if (itr->GetSource()->GetTransport() != obj && itr->GetSource()->IsInWorld())
             {
+                // a transport with a phase rule only to the players of its phase
+                if (obj->HasPhaseRule())
+                {
+                    if (!obj->CanBeSeenByPhase(itr->GetSource()))
+                        continue;
+                    obj->SetPhaseSeenBy(itr->GetSource(), true);
+                }
+
                 UpdateData data(GetId());
                 obj->BuildCreateUpdateBlockForPlayer(&data, itr->GetSource());
                 WorldPacket packet;
@@ -828,8 +838,17 @@ void Map::VisitNearbyCellsOf(WorldObject* obj, TypeContainerVisitor<Trinity::Obj
     }
 }
 
+// botcost: microseconds since a time point (per-bot cost hooks, see ThreadOwnerCheck.h)
+static inline uint32 TTCostUs(std::chrono::steady_clock::time_point since)
+{
+    int64 const us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - since).count();
+    return us < 0 ? 0 : us > 0x7FFFFFFF ? 0x7FFFFFFF : uint32(us);
+}
+
 void Map::Update(const uint32 t_diff)
 {
+    TTBotCostSinkFn const costSink = TTBotCostSink();   // botcost: nullptr = off
+    uint32 const costTickStart = costSink ? getMSTime() : 0;
     uint32 updateTimeMark;
     if (!Instanceable()) // Map update time for instanced maps is handled in InstanceMap::Update
         updateTimeMark = getMSTime();
@@ -844,7 +863,14 @@ void Map::Update(const uint32 t_diff)
             //player->Update(t_diff);
             WorldSession* session = player->GetSession();
             MapSessionFilter updater(session);
-            session->Update(t_diff, updater);
+            if (costSink && session->IsBot())   // botcost: 
+            {
+                auto const started = std::chrono::steady_clock::now();
+                session->Update(t_diff, updater);
+                costSink(player, TTCostUs(started), 0);
+            }
+            else
+                session->Update(t_diff, updater);
         }
     }
     /// update active cells around players and active objects
@@ -924,21 +950,35 @@ void Map::Update(const uint32 t_diff)
             playerDiff += idle->acc;
             idle->acc = 0;
         }
-        player->Update(playerDiff);
+        bool const costBot = costSink && player->GetSession() && player->GetSession()->IsBot();   // botcost: 
+        uint32 costPlayerUs = 0;
+        if (costBot)
+        {
+            auto const started = std::chrono::steady_clock::now();
+            player->Update(playerDiff);
+            costPlayerUs = TTCostUs(started);
+        }
+        else
+            player->Update(playerDiff);
         if (idle && player->IsInWorld())
             idle->idle = getMSTimeDiff(idle->calmSince, idleNow) >= 10000 && BotIsUnwatched(player, realPlayers, idleNow, *idle);
 
         if (botCellEvery > 1 && !Instanceable() && player->GetSession() && player->GetSession()->IsBot())
         {
             anyBot = true;
+            if (costBot)
+                costSink(player, costPlayerUs, 0);   // botcost: 
             continue;
         }
 
+        auto const costCellsStart = costBot ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
         VisitNearbyCellsOf(player, grid_object_update, world_object_update);
 
         // If player is using far sight or mind vision, visit that object too
         if (WorldObject* viewPoint = player->GetViewpoint())
             VisitNearbyCellsOf(viewPoint, grid_object_update, world_object_update);
+        if (costBot)
+            costSink(player, costPlayerUs, TTCostUs(costCellsStart));   // botcost: 
     }
 
     // non-player active objects, increasing iterator in the loop in case of object removal
@@ -970,6 +1010,7 @@ void Map::Update(const uint32 t_diff)
             Player* player = m_mapRefIter->GetSource();
             if (!player || !player->IsInWorld() || !player->GetSession() || !player->GetSession()->IsBot() || !player->IsPositionValid())
                 continue;
+            auto const costCellsStart = costSink ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();   // botcost: 
             CellArea area = Cell::CalculateCellArea(player->GetPositionX(), player->GetPositionY(), player->GetGridActivationRange());
             for (uint32 x = area.low_bound.x_coord; x <= area.high_bound.x_coord; ++x)
                 for (uint32 y = area.low_bound.y_coord; y <= area.high_bound.y_coord; ++y)
@@ -992,6 +1033,8 @@ void Map::Update(const uint32 t_diff)
                     Visit(cell, cellGrid);
                     Visit(cell, cellWorld);
                 }
+            if (costSink)
+                costSink(player, 0, TTCostUs(costCellsStart));   // botcost: 
         }
     }
 
@@ -1096,6 +1139,10 @@ void Map::Update(const uint32 t_diff)
         if (m_updateTime > sWorld->getIntConfig(CONFIG_MIN_LOG_UPDATE))
             sWorld->RecordTimeDiff(m_updateTime, "Map::Update map: %u", GetId());
     }
+
+    if (costSink)   // botcost: 
+        if (TTBotCostMapEndFn mapEnd = TTBotCostMapEnd())
+            mapEnd(this, getMSTimeDiff(costTickStart, getMSTime()));
 }
 
 uint32 Map::GetBotIdleCount() const   // perf1-D: bots whose update was skipped on the last tick
@@ -1176,6 +1223,8 @@ void Map::RemoveFromMap(Transport* obj, bool remove)
             if (itr->GetSource()->GetTransport() != obj && itr->GetSource()->IsInWorld())
                 itr->GetSource()->SendDirectMessage(&packet);
     }
+
+    obj->ClearPhaseSeen();
 
     if (_transportsUpdateIter != _transports.end())
     {
@@ -3336,8 +3385,19 @@ void Map::SendInitTransports(Player* player)
     // Hack to send out transports
     UpdateData transData(player->GetMapId());
     for (TransportsContainer::const_iterator i = _transports.begin(); i != _transports.end(); ++i)
+    {
+        // a transport with a phase rule only when the player is in its phase (its riders get it from SendInitSelf)
+        if ((*i)->HasPhaseRule())
+        {
+            bool const seen = *i == player->GetTransport() || (*i)->CanBeSeenByPhase(player);
+            (*i)->SetPhaseSeenBy(player, seen);
+            if (!seen)
+                continue;
+        }
+
         if (*i != player->GetTransport())
             (*i)->BuildCreateUpdateBlockForPlayer(&transData, player);
+    }
 
     WorldPacket packet;
     transData.BuildPacket(&packet);
@@ -3349,8 +3409,13 @@ void Map::SendRemoveTransports(Player* player)
     // Hack to send out transports
     UpdateData transData(player->GetMapId());
     for (TransportsContainer::const_iterator i = _transports.begin(); i != _transports.end(); ++i)
+    {
+        if ((*i)->HasPhaseRule())
+            (*i)->SetPhaseSeenBy(player, false);
+
         if (*i != player->GetTransport())
             (*i)->BuildOutOfRangeUpdateBlock(&transData);
+    }
 
     WorldPacket packet;
     transData.BuildPacket(&packet);
@@ -4437,7 +4502,7 @@ void Map::LoadCorpseData()
         }
 
         Corpse* corpse = new Corpse(type);
-        if (!corpse->LoadCorpseFromDB(GenerateLowGuid<HighGuid::Corpse>(), fields))
+        if (!corpse->LoadCorpseFromDB(guid, fields))
         {
             delete corpse;
             continue;

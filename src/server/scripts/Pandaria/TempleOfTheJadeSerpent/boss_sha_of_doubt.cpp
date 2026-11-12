@@ -36,11 +36,12 @@ class boss_sha_of_doubt : public CreatureScript
 
         enum eEvents
         {
-            EVENT_WITHER_WILL          = 1,
-            EVENT_TOUCH_OF_NOTHINGNESS = 2,
-            EVENT_BOUNDS_OF_REALITY    = 3,
-            EVENT_CLOSE_DOOR           = 4,
-            EVENT_OPEN_DOOR            = 5
+            EVENT_WITHER_WILL           = 1,
+            EVENT_TOUCH_OF_NOTHINGNESS  = 2,
+            EVENT_BOUNDS_OF_REALITY     = 3,
+            EVENT_CLOSE_DOOR            = 4,
+            EVENT_OPEN_DOOR             = 5,
+            EVENT_BOUNDS_OF_REALITY_END = 6
         };
 
         enum eActions
@@ -115,11 +116,12 @@ class boss_sha_of_doubt : public CreatureScript
                 if (actionId == ACTION_FIGMENT_DIE)
                 {
                     ++figmentsDie;
-                    if (figmentsDie == figmentsCount)
+                    if (figmentsDie >= figmentsCount)
                     {
                         figmentsDie = 0;
                         figmentsCount = 0;
                         me->RemoveAura(SPELL_BOUNDS_OF_REALITY);
+                        events.CancelEvent(EVENT_BOUNDS_OF_REALITY_END);
                     }
                 }
             }
@@ -233,21 +235,45 @@ class boss_sha_of_doubt : public CreatureScript
                         case EVENT_BOUNDS_OF_REALITY:
                         {
                             Talk(TALK_FIGMENT);
-                            me->CastSpell(me, SPELL_BOUNDS_OF_REALITY, false);
+                            // Triggered casts so busy players cannot block the figment spawn; only living players in range count
+                            me->CastSpell(me, SPELL_BOUNDS_OF_REALITY, true);
+
+                            figmentsCount = 0;
+                            figmentsDie   = 0;
 
                             Map::PlayerList const& playerList = me->GetMap()->GetPlayers();
                             if (!playerList.isEmpty())
                             {
-                               figmentsCount = playerList.getSize();
-                               for (Map::PlayerList::const_iterator i = playerList.begin(); i != playerList.end(); ++i)
-                               {
-                                   if (Player* plr = i->GetSource())
-                                       plr->CastSpell(plr, SPELL_FIGMENT_OF_DOUBT_2, false);
-                               }
+                                for (Map::PlayerList::const_iterator i = playerList.begin(); i != playerList.end(); ++i)
+                                {
+                                    if (Player* plr = i->GetSource())
+                                    {
+                                        if (plr->IsAlive() && me->GetDistance(plr) < 60.0f)
+                                        {
+                                            ++figmentsCount;
+                                            plr->CastSpell(plr, SPELL_FIGMENT_OF_DOUBT_2, true);
+                                        }
+                                    }
+                                }
                             }
+
+                            // Failsafe: Bounds of Reality ends after 30 s even if figments never die
+                            if (figmentsCount == 0)
+                                me->RemoveAura(SPELL_BOUNDS_OF_REALITY);
+                            else
+                                events.ScheduleEvent(EVENT_BOUNDS_OF_REALITY_END, 30 * IN_MILLISECONDS);
+
                             events.ScheduleEvent(EVENT_BOUNDS_OF_REALITY, 60 * IN_MILLISECONDS);
                             break;
                         }
+                        case EVENT_BOUNDS_OF_REALITY_END:
+                            if (me->HasAura(SPELL_BOUNDS_OF_REALITY))
+                            {
+                                figmentsDie = 0;
+                                figmentsCount = 0;
+                                me->RemoveAura(SPELL_BOUNDS_OF_REALITY);
+                            }
+                            break;
                     }
                 }
 
@@ -316,7 +342,16 @@ class npc_figment_of_doubt : public CreatureScript
                 me->CastSpell(me, SPELL_GROW, false);
 
                 if (me->ToTempSummon())
+                {
                     me->CastSpell((Unit*)NULL, SPELL_DRAW_DOUBT, false);
+                    // Engage the summoner at once so the group sees a valid target
+                    if (Unit* summoner = me->ToTempSummon()->GetSummoner())
+                    {
+                        me->SetInCombatWithZone();
+                        me->GetThreatManager().AddThreat(summoner, 100.0f);
+                        AttackStart(summoner);
+                    }
+                }
             }
 
             void JustEngagedWith(Unit* /*who*/) override
@@ -355,7 +390,7 @@ class npc_figment_of_doubt : public CreatureScript
 
             void JustDied(Unit* killer) override
             {
-                me->CastSpell(me, SPELL_DROWNED_STATE, false);
+                me->CastSpell(me, SPELL_DROWNED_STATE, true);
                 me->RemoveAura(SPELL_GATHERING_DOUBT);
                 me->DespawnOrUnsummon(5 * IN_MILLISECONDS);
 
@@ -384,11 +419,14 @@ class npc_figment_of_doubt : public CreatureScript
                     switch (eventId)
                     {
                         case EVENT_GATHERING_DOUBT:
-                            if (me->GetAuraCount(SPELL_GATHERING_DOUBT_2) == 30)
+                            if (me->GetAuraCount(SPELL_GATHERING_DOUBT_2) >= 30)
                             {
+                                // Triggered so the suicide is not blocked by the Release Doubt cast; Kill() as fallback
                                 me->RemoveAura(SPELL_GATHERING_DOUBT);
-                                me->CastSpell(me, SPELL_RELEASE_DOUBT, false); 
-                                me->CastSpell(me, SPELL_QUIET_SUICIDE, false);
+                                me->CastSpell(me, SPELL_RELEASE_DOUBT, true);
+                                me->CastSpell(me, SPELL_QUIET_SUICIDE, true);
+                                if (me->IsAlive())
+                                    me->Kill(me);
                             }
                             else
                                 events.ScheduleEvent(EVENT_GATHERING_DOUBT, 1 * IN_MILLISECONDS);

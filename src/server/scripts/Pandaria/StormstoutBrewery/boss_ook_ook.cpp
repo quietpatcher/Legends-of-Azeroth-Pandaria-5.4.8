@@ -314,6 +314,7 @@ class npc_barrel : public CreatureScript
                 Move();
                 initiate = false;
                 events.ScheduleEvent(EVENT_EXPLOSION_BREAK, 2000);
+                me->DespawnOrUnsummon(60000);
             }
 
             void OnSpellClick(Unit* clicker, bool& result) override
@@ -336,6 +337,12 @@ class npc_barrel : public CreatureScript
 
             void UpdateAI(uint32 diff) override
             {
+                if (!me->GetMap()->HavePlayers())
+                {
+                    me->DespawnOrUnsummon();
+                    return;
+                }
+
                 if (CheckIfAgainstUnit(me, me->GetGUID()) && initiate)
                     DoExplode();
 
@@ -441,7 +448,8 @@ class npc_hozen_hollerer : public CreatureScript
                     switch (eventId)
                     {
                         case EVENT_BARREL_TOSS:
-                            DoCastBarrel();
+                            if (me->GetMap()->HavePlayers())
+                                DoCastBarrel();
                             events.ScheduleEvent(EVENT_BARREL_TOSS, GetBarrelTimer());
                             break;
                     }

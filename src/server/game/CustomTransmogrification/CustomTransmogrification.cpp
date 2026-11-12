@@ -67,12 +67,9 @@ void Transmogrification::LoadPlayerSets(ObjectGuid pGUID)
 {
     TC_LOG_DEBUG("Transmogrification.log", "Transmogrification::LoadPlayerSets");
 
-    for (presetData::iterator it = presetById[pGUID].begin(); it != presetById[pGUID].end(); ++it)
-        it->second.clear();
-
-    presetById[pGUID].clear();
-
-    presetByName[pGUID].clear();
+    // build the sets locally, publish under the lock (no DB access while holding it)
+    presetData newById;
+    presetIdMap newByName;
 
     QueryResult result = CharacterDatabase.PQuery("SELECT `PresetID`, `SetName`, `SetData` FROM `custom_transmogrification_sets` WHERE Owner = {}", pGUID.GetCounter());
     if (result)
@@ -95,24 +92,29 @@ void Transmogrification::LoadPlayerSets(ObjectGuid pGUID)
                     continue;
                 }
                 if (sObjectMgr->GetItemTemplate(entry))
-                    presetById[pGUID][PresetID][slot] = entry; // Transmogrification::Preset(presetName, fakeEntry);
-                                                               //else
-                                                               //TC_LOG_DEBUG(LOG_FILTER_SQL, "Item entry (FakeEntry: {}, playerGUID: {}, slot: {}, presetId: {}) does not exist, ignoring.", entry, GUID_LOPART(pGUID), uint32(slot), uint32(PresetID));
+                    newById[PresetID][slot] = entry; // Transmogrification::Preset(presetName, fakeEntry);
             }
 
-            if (!presetById[pGUID][PresetID].empty())
-            {
-                presetByName[pGUID][PresetID] = SetName;
-                // load all presets anyways
-                //if (presetByName[pGUID].size() >= GetMaxSets())
-                //    break;
-            }
+            if (!newById[PresetID].empty())
+                newByName[PresetID] = SetName;
             else // should be deleted on startup, so  this never runs (shouldnt..)
             {
-                presetById[pGUID].erase(PresetID);
+                newById.erase(PresetID);
                 CharacterDatabase.PExecute("DELETE FROM `custom_transmogrification_sets` WHERE Owner = {} AND PresetID = {}", pGUID.GetCounter(), PresetID);
             }
         } while (result->NextRow());
+    }
+
+    std::lock_guard<std::recursive_mutex> guard(mapLock);
+    if (newById.empty())
+    {
+        presetById.erase(pGUID);
+        presetByName.erase(pGUID);
+    }
+    else
+    {
+        presetById[pGUID] = std::move(newById);
+        presetByName[pGUID] = std::move(newByName);
     }
 }
 
@@ -135,11 +137,9 @@ int32 Transmogrification::GetSetCopperCost() const
 
 void Transmogrification::UnloadPlayerSets(ObjectGuid pGUID)
 {
-    for (presetData::iterator it = presetById[pGUID].begin(); it != presetById[pGUID].end(); ++it)
-        it->second.clear();
-    presetById[pGUID].clear();
-
-    presetByName[pGUID].clear();
+    std::lock_guard<std::recursive_mutex> guard(mapLock);
+    presetById.erase(pGUID);
+    presetByName.erase(pGUID);
 }
 #endif
 
@@ -289,6 +289,7 @@ uint32 Transmogrification::GetFakeEntry(ObjectGuid itemGUID) const
 {
     TC_LOG_DEBUG("Transmogrification.log", "Transmogrification::GetFakeEntry");
 
+    std::lock_guard<std::recursive_mutex> guard(mapLock);
     transmogData::const_iterator itr = dataMap.find(itemGUID);
     if (itr == dataMap.end()) return 0;
     transmogMap::const_iterator itr2 = entryMap.find(itr->second);
@@ -322,8 +323,11 @@ void Transmogrification::DeleteFakeEntry(Player* player, uint8 /*slot*/, Item* i
 void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified)
 {
     ObjectGuid itemGUID = itemTransmogrified->GetGUID();
-    entryMap[player->GetGUID()][itemGUID] = ObjectGuid(uint64(newEntry));
-    dataMap[itemGUID] = player->GetGUID();
+    {
+        std::lock_guard<std::recursive_mutex> guard(mapLock);
+        entryMap[player->GetGUID()][itemGUID] = ObjectGuid(uint64(newEntry));
+        dataMap[itemGUID] = player->GetGUID();
+    }
     CharacterDatabase.PExecute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, player->GetGUID().GetCounter());
     CharacterDatabase.PExecute("UPDATE item_instance SET transmogrifyId = {} WHERE guid = {}", newEntry, itemGUID.GetCounter());
     UpdateItem(player, itemTransmogrified, newEntry);
@@ -688,11 +692,16 @@ void Transmogrification::LoadConfig(bool reload)
 
 void Transmogrification::DeleteFakeFromDB(ObjectGuid itemGUID, CharacterDatabaseTransaction trans)
 {
-    if (dataMap.find(itemGUID) != dataMap.end())
     {
-        if (entryMap.find(dataMap[itemGUID]) != entryMap.end())
-            entryMap[dataMap[itemGUID]].erase(itemGUID);
-        dataMap.erase(itemGUID);
+        std::lock_guard<std::recursive_mutex> guard(mapLock);
+        transmogData::iterator dit = dataMap.find(itemGUID);
+        if (dit != dataMap.end())
+        {
+            transmogMap::iterator eit = entryMap.find(dit->second);
+            if (eit != entryMap.end())
+                eit->second.erase(itemGUID);
+            dataMap.erase(dit);
+        }
     }
     if (trans)
         trans->PAppend("DELETE FROM custom_transmogrification WHERE GUID = {}", itemGUID.GetCounter());

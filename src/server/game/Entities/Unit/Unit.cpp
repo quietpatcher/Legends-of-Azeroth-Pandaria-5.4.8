@@ -4501,13 +4501,14 @@ void Unit::RemoveAurasByTypeOnImmunity(AuraType auraType)
 {
     for (auto itr = m_modAuras[auraType].begin(); itr != m_modAuras[auraType].end();)
     {
-        Aura* aura = (*itr)->GetBase();
+        AuraEffect* auraEffect = *itr;
+        Aura* aura = auraEffect->GetBase();
         AuraApplication* aurApp = aura->GetApplicationOfTarget(GetGUID());
         ++itr;
         // Apparently, we shouldn't remove root auras by type
         if (aura->GetSpellInfo()->Id == 142913) // Displaced Energy
         {
-            aura->RemoveEffect((*itr)->GetEffIndex());
+            aura->RemoveEffect(auraEffect->GetEffIndex());
             continue;
         }
         if (!aura->GetSpellInfo()->HasAttribute(SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY))
@@ -8842,6 +8843,10 @@ bool Unit::Attack(Unit* victim, bool meleeAttack)
 
         ToCreature()->SendAIReaction(AI_REACTION_HOSTILE);
         ToCreature()->CallAssistance();
+
+        // Remove emote state - will be restored on creature reset (LoadCreaturesAddon on evade and respawn), as TrinityCore
+        if (!IsControlledByPlayer())
+            SetEmoteState(EMOTE_ONESHOT_NONE);
     }
 
     // delay offhand weapon attack to next attack time
@@ -12578,6 +12583,9 @@ void Unit::setDeathState(DeathState s)
         SetHealth(0);
         if (GetPowerType() != POWER_MANA)
             SetPower(GetPowerType(), 0);
+        // a corpse doesn't keep working or sitting (TrinityCore, TCPP and AzerothCore clear it on death too); not for players
+        if (GetTypeId() == TYPEID_UNIT)
+            SetEmoteState(EMOTE_ONESHOT_NONE);
 
         // players in instance don't have ZoneScript, but they have InstanceScript
         if (ZoneScript* zoneScript = GetZoneScript() ? GetZoneScript() : GetInstanceScript())
@@ -16382,6 +16390,11 @@ void Unit::SetControlled(bool apply, UnitState state)
                 SetStunned(false);
                 break;
             case UNIT_STATE_ROOT:
+                // a creature rooted by creature_template_movement / creature_movement_override stays rooted when a root aura
+                // ends, it leaves a vehicle or a script unroots it (AC Unit.cpp:14006, TCPP's sessile guard)
+                if (GetTypeId() == TYPEID_UNIT && ToCreature()->IsRootedByMovementTemplate())
+                    return;
+
                 if (HasAuraType(SPELL_AURA_MOD_ROOT) || GetVehicle())
                     return;
 

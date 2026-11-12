@@ -308,21 +308,9 @@ public:
             {
                 FactionState const* factionState = target ? target->GetReputationMgr().GetState(factionEntry) : NULL;
 
-                bool match = false;
-                for (int32 i = 0; i < TOTAL_LOCALES; ++i)
-                {
-                    if (*factionEntry->name)
-                    {
-                        name = factionEntry->name[i];
-                        if (!Utf8FitTo(name, wNamePart))
-                            continue;
-
-                        match = true;
-                        break;
-                    }
-                }
-
-                if (!match)
+                // MoP DBC: name is one string (no per-locale array); indexing it gave single characters
+                name = factionEntry->name ? factionEntry->name : "";
+                if (name.empty() || !Utf8FitTo(name, wNamePart))
                     continue;
 
                 if (maxResults && count++ == maxResults)

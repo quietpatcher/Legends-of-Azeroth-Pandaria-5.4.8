@@ -1,4 +1,4 @@
--- To-do 458 (Desiccated Spearman and Andorhal Defender do not fight each other; proposal Gemini item458_20261030_2243 reviewed against the DB):
+-- To-do 458 (Desiccated Spearman and Andorhal Defender do not fight each other; an internal proposal reviewed against the DB):
 -- 44316 had no AI at all, 44328 and 44315 only had combat casts and no out-of-combat reaction to hostile NPCs; added OOC SMART_ACTION_ATTACK_START on the closest enemy within 15y to 44316, 44315 and 44328.
 -- Source: functional fix reviewed against our world DB (smart_scripts of 44315, 44328); no sniff of the original AI, so not a verified retail copy.
 -- Rollback: UPDATE creature_template SET AIName='' WHERE entry=44316; DELETE FROM smart_scripts WHERE source_type=0 AND ((entryorguid=44316 AND id=0) OR (entryorguid=44315 AND id=2) OR (entryorguid=44328 AND id=1));

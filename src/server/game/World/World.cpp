@@ -1145,6 +1145,8 @@ void World::LoadConfigSettings(bool reload)
     // battle pay
     sBattlePayMgr->SetEnableState(sConfigMgr->GetBoolDefault("BattlePay.StoreEnabled", false));
     sBattlePayMgr->SetStoreCurrency(sConfigMgr->GetIntDefault("BattlePay.Currency", BATTLE_PAY_CURRENCY_BETA));
+    sBattlePayMgr->SetAchievementPoints(sConfigMgr->GetBoolDefault("BattlePay.AchievementPoints.Enabled", false),
+                                        sConfigMgr->GetFloatDefault("BattlePay.AchievementPoints.Rate", 1.0f));
 
     //visibility on continents
     m_MaxVisibleDistanceOnContinents = sConfigMgr->GetFloatDefault("Visibility.Distance.Continents", DEFAULT_VISIBILITY_DISTANCE);

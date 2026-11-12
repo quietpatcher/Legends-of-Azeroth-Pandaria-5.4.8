@@ -224,6 +224,154 @@ public:
 };
 
 /*######
+## Quest 14121: Robbing Hoods
+##
+## Trade Prince Gallywix has sent Hired Looters into the streets. The player runs them over with the Hot Rod: a looter
+## that is hit by the knockback of the car (66301) throws his Stolen Loot to the driver (67041 creates the item in the
+## bags of the player) and does not get up again. On foot a looter is an ordinary enemy that throws torches and drops
+## the loot.
+######*/
+
+namespace RobbingHoods
+{
+    enum
+    {
+        QUEST_ROBBING_HOODS         = 14121,
+        NPC_HIRED_LOOTER            = 35234,
+        ITEM_STOLEN_LOOT            = 47530,
+        LOOT_NEEDED                 = 12,
+        SPELL_CREATE_STOLEN_LOOT    = 67041,
+        SPELL_TORCH_TOSS            = 6257,
+        DATA_LOOT_DELIVERED         = 1,
+        DEATH_DELAY                 = 2000
+    };
+
+    bool NeedsLoot(Player* player)
+    {
+        return player->GetQuestStatus(QUEST_ROBBING_HOODS) == QUEST_STATUS_INCOMPLETE
+            && !player->HasItemCount(ITEM_STOLEN_LOOT, LOOT_NEEDED, true);
+    }
+}
+
+struct npc_kezan_hired_looter : public ScriptedAI
+{
+    npc_kezan_hired_looter(Creature* creature) : ScriptedAI(creature), _torchTimer(0), _deathTimer(0), _runOver(false), _lootSent(false), _lootDelivered(false) { }
+
+    void Reset() override
+    {
+        _torchTimer = urand(5000, 11000);
+        // an evade between the hit and the fall does not put him back on his feet
+        if (_runOver)
+            return;
+        _deathTimer = 0;
+        _runOver = false;
+        _lootSent = false;
+        _lootDelivered = false;
+        _driverGUID.Clear();
+    }
+
+    void SpellHit(Unit* caster, SpellInfo const* spell) override
+    {
+        if (spell->Id != RollingWithMyHomies::SPELL_HOT_ROD_KNOCKBACK || _runOver || !me->IsAlive())
+            return;
+
+        // the knockback comes from the driver, or from the car itself
+        Player* player = caster->ToPlayer();
+        if (!player)
+            if (Vehicle* kit = caster->GetVehicleKit())
+                if (Unit* driver = kit->GetPassenger(RollingWithMyHomies::SEAT_DRIVER))
+                    player = driver->ToPlayer();
+        if (!player)
+            return;
+
+        _runOver = true;
+        _driverGUID = player->GetGUID();
+        _deathTimer = RobbingHoods::DEATH_DELAY;
+        me->SetReactState(REACT_PASSIVE);
+        me->AttackStop();
+
+        if (RobbingHoods::NeedsLoot(player))
+        {
+            _lootSent = true;
+            me->CastSpell(player, RobbingHoods::SPELL_CREATE_STOLEN_LOOT, true);
+        }
+    }
+
+    // spell_kezan_create_stolen_loot: the loot arrived at the driver
+    void SetData(uint32 type, uint32 /*value*/) override
+    {
+        if (type == RobbingHoods::DATA_LOOT_DELIVERED)
+            _lootDelivered = true;
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_runOver)
+        {
+            if (_deathTimer > diff)
+            {
+                _deathTimer -= diff;
+                return;
+            }
+
+            // the throw did not reach the driver (out of sight, not a valid target on his seat): hand it over directly
+            if (_lootSent && !_lootDelivered)
+                if (Player* player = ObjectAccessor::GetPlayer(*me, _driverGUID))
+                    if (RobbingHoods::NeedsLoot(player))
+                    {
+                        TC_LOG_INFO("scripts", "Robbing Hoods: Create Stolen Loot (67041) of looter {} did not reach {}, the loot is handed over directly",
+                            me->GetGUID().GetCounter(), player->GetName());
+                        player->AddItem(RobbingHoods::ITEM_STOLEN_LOOT, 1);
+                    }
+
+            // run over: no kill for anybody, nothing left to loot
+            _runOver = false;
+            me->Kill(me);
+            return;
+        }
+
+        if (!UpdateVictim())
+            return;
+
+        if (_torchTimer <= diff)
+        {
+            DoCastVictim(RobbingHoods::SPELL_TORCH_TOSS);
+            _torchTimer = urand(7800, 21300);
+        }
+        else
+            _torchTimer -= diff;
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    uint32 _torchTimer;
+    uint32 _deathTimer;
+    bool _runOver;
+    bool _lootSent;
+    bool _lootDelivered;
+    ObjectGuid _driverGUID;
+};
+
+// 67041 Robbing Hoods: Create Stolen Loot
+class spell_kezan_create_stolen_loot : public SpellScript
+{
+    PrepareSpellScript(spell_kezan_create_stolen_loot);
+
+    void HandleCreateItem(SpellEffIndex /*effIndex*/)
+    {
+        Creature* looter = GetCaster() ? GetCaster()->ToCreature() : nullptr;
+        if (looter && looter->GetEntry() == RobbingHoods::NPC_HIRED_LOOTER && looter->IsAIEnabled && GetHitPlayer())
+            looter->AI()->SetData(RobbingHoods::DATA_LOOT_DELIVERED, 1);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_kezan_create_stolen_loot::HandleCreateItem, EFFECT_0, SPELL_EFFECT_CREATE_ITEM);
+    }
+};
+
+/*######
 ## Quests 24503 / 28414: Fourth and Goal
 ##
 ## The player gets into the Bilgewater Buccaneer again (spell click on the parked shredder, 70075 summons 37213) and
@@ -556,6 +704,7 @@ namespace GreatBankHeist
         SPELL_TOOLSET               = 67476,
         SPELL_POWER_CORRECT         = 67493,
         SPELL_POWER_INCORRECT       = 67494,
+        SPELL_TIMER                 = 67502,    // CasterAuraSpell of the five tool spells (SpellAuraRestrictions)
 
         SAY_INTRO_1                 = 0,
         SAY_INTRO_2                 = 1,
@@ -668,6 +817,8 @@ struct npc_kezan_bank_vault : public VehicleAI
                 case GreatBankHeist::EVENT_NEXT_TOOL:
                     _wanted = int32(urand(0, GreatBankHeist::ToolCount - 1));
                     me->AddAura(GreatBankHeist::Tools[_wanted].aura, me);
+                    me->AddAura(GreatBankHeist::SPELL_TIMER, me);
+                    player->AddAura(GreatBankHeist::SPELL_TIMER, player);
                     Talk(GreatBankHeist::SAY_TOOL_FIRST + _wanted, player);
                     _events.ScheduleEvent(GreatBankHeist::EVENT_TOO_LATE, GreatBankHeist::ANSWER_TIME_MS);
                     break;
@@ -690,6 +841,9 @@ private:
 
     void ClearTool()
     {
+        me->RemoveAurasDueToSpell(GreatBankHeist::SPELL_TIMER);
+        if (Player* p = GetPlayer())
+            p->RemoveAurasDueToSpell(GreatBankHeist::SPELL_TIMER);
         if (_wanted >= 0)
             me->RemoveAurasDueToSpell(GreatBankHeist::Tools[_wanted].aura);
         _wanted = -1;
@@ -751,12 +905,31 @@ class spell_kezan_vault_interact : public SpellScript
         if (player->GetQuestStatus(GreatBankHeist::QUEST_THE_GREAT_BANK_HEIST) != QUEST_STATUS_INCOMPLETE)
             return;
 
+        // a toolset ride aura left over from a logout inside the vault blocks the new ride
+        player->RemoveAurasDueToSpell(GreatBankHeist::SPELL_TOOLSET);
+        player->RemoveAurasDueToSpell(GreatBankHeist::SPELL_TIMER);
         player->CastSpell(player, GreatBankHeist::SPELL_SUMMON_VAULT, true);
     }
 
     void Register() override
     {
         OnEffectHitTarget += SpellEffectFn(spell_kezan_vault_interact::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// A logout inside the vault saves the ride aura (Vault Cracking Toolset 67476) and the Timer; with them the next click
+// on the vault (67555) is refused by the client, so they go at login when the player is not on a vehicle.
+class player_kezan_vault_logout : public PlayerScript
+{
+public:
+    player_kezan_vault_logout() : PlayerScript("player_kezan_vault_logout") { }
+
+    void OnLogin(Player* player) override
+    {
+        if (player->GetVehicleBase())
+            return;
+        player->RemoveAurasDueToSpell(GreatBankHeist::SPELL_TOOLSET);
+        player->RemoveAurasDueToSpell(GreatBankHeist::SPELL_TIMER);
     }
 };
 
@@ -767,7 +940,10 @@ class spell_kezan_vault_tool : public SpellScript
 
     void HandleAfterCast()
     {
-        Creature* vault = GetCaster() ? GetCaster()->ToCreature() : nullptr;
+        // the cast arrives with the player as caster (seen on the test server 04-11), so the vault is his vehicle base
+        Unit* caster = GetCaster();
+        Unit* base = caster ? (caster->GetEntry() == GreatBankHeist::NPC_VAULT ? caster : caster->GetVehicleBase()) : nullptr;
+        Creature* vault = base ? base->ToCreature() : nullptr;
         if (!vault || vault->GetEntry() != GreatBankHeist::NPC_VAULT || !vault->IsAIEnabled)
             return;
 
@@ -783,24 +959,109 @@ class spell_kezan_vault_tool : public SpellScript
 };
 
 /*######
+## Quest 14124: Liberate the Kaja'mite
+##
+## Foreman Dampwick hands out Kablooey Bombs (item 48768, spell 67682, only inside the Kaja'mine). A bomb is tossed up
+## to five yards; every Kaja'mite Deposit (195488) within five yards of the landing is blown to smithereens and leaves
+## three Kaja'mite Chunks (195492) to pick up, and a Rebellious Troll that stands there is stunned for a moment. The
+## deposit grows back after its respawn time.
+######*/
+
+namespace LiberateTheKajamite
+{
+    enum
+    {
+        GO_KAJAMITE_DEPOSIT     = 195488,
+        GO_KAJAMITE_CHUNK       = 195492,
+        NPC_REBELLIOUS_TROLL    = 35294,
+        SPELL_STUN              = 23454,    // Stun, one second
+        CHUNKS_PER_DEPOSIT      = 3,
+        CHUNK_TIME              = 120       // seconds a chunk stays when nobody picks it up
+    };
+}
+
+// 67682 Kablooey Bombs
+class spell_kezan_kablooey_bombs : public SpellScript
+{
+    PrepareSpellScript(spell_kezan_kablooey_bombs);
+
+    void HandleDeposit(SpellEffIndex effIndex)
+    {
+        GameObject* deposit = GetHitGObj();
+        Unit* caster = GetCaster();
+        if (!deposit || !caster || deposit->GetEntry() != LiberateTheKajamite::GO_KAJAMITE_DEPOSIT)
+            return;
+
+        // the deposit is not used like a button, it is gone
+        PreventHitDefaultEffect(effIndex);
+        if (!deposit->isSpawned())
+            return;
+
+        float const start = frand(0.0f, 2.0f * float(M_PI));
+        for (uint32 i = 0; i < LiberateTheKajamite::CHUNKS_PER_DEPOSIT; ++i)
+        {
+            Position pos = deposit->GetPosition();
+            deposit->MovePosition(pos, frand(2.0f, 3.5f), start + float(i) * 2.0f * float(M_PI) / float(LiberateTheKajamite::CHUNKS_PER_DEPOSIT));
+            caster->SummonGameObject(LiberateTheKajamite::GO_KAJAMITE_CHUNK, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
+                frand(0.0f, 2.0f * float(M_PI)), { }, LiberateTheKajamite::CHUNK_TIME);
+        }
+
+        deposit->SetLootState(GO_JUST_DEACTIVATED);
+    }
+
+    void HandleTroll(SpellEffIndex /*effIndex*/)
+    {
+        Unit* caster = GetCaster();
+        Creature* troll = GetHitCreature();
+        if (caster && troll && troll->GetEntry() == LiberateTheKajamite::NPC_REBELLIOUS_TROLL && troll->IsAlive())
+            caster->CastSpell(troll, LiberateTheKajamite::SPELL_STUN, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_kezan_kablooey_bombs::HandleDeposit, EFFECT_0, SPELL_EFFECT_ACTIVATE_OBJECT);
+        OnEffectHitTarget += SpellEffectFn(spell_kezan_kablooey_bombs::HandleTroll, EFFECT_1, SPELL_EFFECT_DUMMY);
+    }
+};
+
+/*######
 ## Quest 14125: 447
 ##
-## The fourth part of the insurance fraud: the player lets the Gasbot loose. A click on the Gasbot in the yard summons
-## one for the player (70252); that one rolls into the headquarters, to the gas, and is gone - and the player has the
-## credit. (The click used to put the player on the Gasbot as a rider, and nothing gave the credit.)
+## The insurance fraud. Inside the headquarters the player overloads the Defective Generator, opens the Leaky Stove and
+## drops a cigar on the Flammable Bed; each of the three objects makes him cast its master spell (70223, 70239, 70251),
+## which leaves the sparks, the gas or the smoke at the object for him (70198, 70241, 70249 summon the visual). Back
+## outside he uses the Gasbot Control Panel (game object 201736, spell 70253): a Gasbot rolls into the headquarters,
+## trailing gas, and blows up at the stove - that is the credit "KTC Headquarters Set Ablaze with Gasbot!".
 ######*/
+
+namespace Quest447
+{
+    enum
+    {
+        QUEST_447                       = 14125,
+        NPC_GASBOT                      = 37598,
+        GO_LEAKY_STOVE                  = 201733,
+
+        SPELL_GENERATOR_MASTER          = 70223,
+        SPELL_STOVE_LEAK_MASTER         = 70239,
+        SPELL_SMOLDERING_BED_PRECAST    = 70251,
+        SPELL_SUMMON_GENERATOR          = 70198,
+        SPELL_SUMMON_STOVE_LEAK         = 70241,
+        SPELL_SUMMON_SMOLDERING_BED     = 70249,
+        SPELL_GASBOT_GAS_STREAM         = 70256,
+        SPELL_GASBOT_EXPLOSION          = 70259,
+
+        POINT_GAS                       = 1,
+        ROLL_TIME_MAX                   = 15000
+    };
+
+    // next to the control panel in the yard
+    Position const GasbotStart = { -8424.35f, 1328.04f, 102.04f, 1.54f };
+}
 
 struct npc_kezan_gasbot : public ScriptedAI
 {
-    npc_kezan_gasbot(Creature* creature) : ScriptedAI(creature) { }
-
-    enum
-    {
-        QUEST_447               = 14125,
-        NPC_GASBOT              = 37598,
-        GO_LEAKY_STOVE          = 201733,
-        POINT_GAS               = 1
-    };
+    npc_kezan_gasbot(Creature* creature) : ScriptedAI(creature), _timer(0), _rolling(false) { }
 
     void IsSummonedBy(Unit* summoner) override
     {
@@ -808,24 +1069,117 @@ struct npc_kezan_gasbot : public ScriptedAI
         if (!player)
             return;
 
+        _playerGUID = player->GetGUID();
+        _rolling = true;
+        _timer = Quest447::ROLL_TIME_MAX;
         me->SetReactState(REACT_PASSIVE);
-        if (player->GetQuestStatus(QUEST_447) == QUEST_STATUS_INCOMPLETE)
-            player->KilledMonsterCredit(NPC_GASBOT);
+        me->CastSpell(me, Quest447::SPELL_GASBOT_GAS_STREAM, true);
 
         // into the headquarters, towards the leaking stove
         me->SetWalk(false);
-        if (GameObject* stove = me->FindNearestGameObject(GO_LEAKY_STOVE, 150.0f))
-            me->GetMotionMaster()->MovePoint(POINT_GAS, stove->GetPositionX(), stove->GetPositionY(), stove->GetPositionZ());
-        me->DespawnOrUnsummon(12000);
+        if (GameObject* stove = me->FindNearestGameObject(Quest447::GO_LEAKY_STOVE, 150.0f))
+            me->GetMotionMaster()->MovePoint(Quest447::POINT_GAS, stove->GetPositionX(), stove->GetPositionY(), stove->GetPositionZ());
     }
 
     void MovementInform(uint32 type, uint32 id) override
     {
-        if (type == POINT_MOTION_TYPE && id == POINT_GAS)
-            me->DespawnOrUnsummon(1500);
+        if (type == POINT_MOTION_TYPE && id == Quest447::POINT_GAS)
+            Explode();
     }
 
-    void UpdateAI(uint32 /*diff*/) override { }
+    void UpdateAI(uint32 diff) override
+    {
+        if (!_rolling)
+            return;
+
+        // never leave the player without the credit when the Gasbot gets stuck on the way
+        if (_timer <= diff)
+            Explode();
+        else
+            _timer -= diff;
+    }
+
+private:
+    void Explode()
+    {
+        if (!_rolling)
+            return;
+        _rolling = false;
+
+        me->CastSpell(me, Quest447::SPELL_GASBOT_EXPLOSION, true);
+        if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+            if (player->GetQuestStatus(Quest447::QUEST_447) == QUEST_STATUS_INCOMPLETE)
+                player->KilledMonsterCredit(Quest447::NPC_GASBOT);
+        me->DespawnOrUnsummon(1500);
+    }
+
+    ObjectGuid _playerGUID;
+    uint32 _timer;
+    bool _rolling;
+};
+
+// 70253 447: AICast Gasbot Master (the Gasbot Control Panel; the player casts it on himself)
+class spell_kezan_gasbot_control_panel : public SpellScript
+{
+    PrepareSpellScript(spell_kezan_gasbot_control_panel);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        if (!player || player->GetQuestStatus(Quest447::QUEST_447) != QUEST_STATUS_INCOMPLETE)
+            return;
+
+        // his own Gasbot, like the summon of 70252 (summon properties 942: only the summoner sees it)
+        player->SummonCreature(Quest447::NPC_GASBOT, Quest447::GasbotStart, TEMPSUMMON_TIMED_DESPAWN, 180s, 0, player->GetGUID());
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_kezan_gasbot_control_panel::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// 70223, 70239: the master spells of the generator and the stove
+class spell_kezan_447_sabotage : public AuraScript
+{
+    PrepareAuraScript(spell_kezan_447_sabotage);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* target = GetTarget();
+        uint32 summon = 0;
+        switch (GetId())
+        {
+            case Quest447::SPELL_GENERATOR_MASTER:      summon = Quest447::SPELL_SUMMON_GENERATOR;      break;
+            case Quest447::SPELL_STOVE_LEAK_MASTER:     summon = Quest447::SPELL_SUMMON_STOVE_LEAK;     break;
+            default:
+                return;
+        }
+        target->CastSpell(target, summon, true);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_kezan_447_sabotage::HandleApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 70251 447: Smoldering Bed Precast Master. The cigar is a missile to a nearby entry with a range of zero yards, so the
+// master aura it should bring (70247) is not relied on; the bed starts to smolder when the cigar has been thrown.
+class spell_kezan_447_bed_precast : public SpellScript
+{
+    PrepareSpellScript(spell_kezan_447_bed_precast);
+
+    void HandleAfterCast()
+    {
+        if (Unit* caster = GetCaster())
+            caster->CastSpell(caster, Quest447::SPELL_SUMMON_SMOLDERING_BED, true);
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_kezan_447_bed_precast::HandleAfterCast);
+    }
 };
 
 /*######
@@ -859,18 +1213,283 @@ public:
     }
 };
 
+/*######
+## Quest 14126: Life Savings, the ride to the yacht
+##
+## "Hand over the keys, boss. I'm driving." The gossip of Sassy Hardwrench makes the goblin cast 70318 (Hand Over the
+## Keys): a Hot Rod (37676) with Sassy at the wheel takes him from the headquarters to the dock, runs over whoever is
+## in the way, jumps onto the deck of the yacht and skids to a stop. For whoever gets to the dock on his own there
+## is the Rope Ladder (70389 -> 70390) and the Last Chance Yacht Boarding Mortar (92629 -> 92633).
+######*/
+
+namespace LifeSavings
+{
+    enum
+    {
+        QUEST_LIFE_SAVINGS              = 14126,
+        NPC_HOT_ROD                     = 37676,
+
+        SPELL_SASSYS_DRIVING            = 66724,
+        SPELL_HOT_ROD_SKID              = 70325,
+        SPELL_HOT_ROD_KNOCKBACK_TRIGGER = 70329,
+        SPELL_ROPE_LADDER_COVER         = 70389,
+        SPELL_ROPE_LADDER               = 70390,
+        SPELL_MORTAR                    = 92633,
+
+        SEAT_SASSY                      = 0,
+
+        SAY_GO_AROUND                   = 0,
+        SAY_OUT_OF_THE_WAY              = 1,
+        SAY_DOUBLE_CROSSED              = 2,
+
+        POINT_DRIVE                     = 1,
+        POINT_DECK                      = 2,
+
+        STATE_WAIT                      = 0,
+        STATE_DRIVE                     = 1,
+        STATE_JUMP                      = 2,
+        STATE_ARRIVED                   = 3,
+        STATE_DONE                      = 4,
+
+        DRIVE_TIME_MAX                  = 150000,
+        JUMP_TIME_MAX                   = 5000,
+        SKID_TIME                       = 4000
+    };
+
+    // where the Hot Rod with Sassy appears in the yard of the headquarters and where it stands on the deck afterwards
+    Position const HotRodStart  = { -8408.95f, 1320.89f, 103.07f, 0.57f };
+    Position const Deck         = { -7849.34f, 1841.15f, 7.61f, 0.15f };
+
+    // the Kaja'Cola Balloon that came down on the highway, with the pile-up of Hot Rods under it
+    Position const BalloonWreck = { -8104.1f, 1488.5f, 10.2f, 0.0f };
+
+    // down the highway to the pile-up, around it to the coast road, along the coast to the dock
+    Position const Route[] =
+    {
+        { -8108.1f, 1480.6f, 10.1f, 0.0f },
+        { -8050.2f, 1488.3f, 9.9f,  0.0f },
+        { -8004.8f, 1538.9f, 1.8f,  0.0f },
+        { -8012.5f, 1634.8f, 2.5f,  0.0f },
+        { -8000.6f, 1710.9f, 2.6f,  0.0f },
+        { -7956.5f, 1832.7f, 9.3f,  0.0f },
+        { -7881.0f, 1827.9f, 4.2f,  0.0f }
+    };
+    uint32 const RouteSize = sizeof(Route) / sizeof(Route[0]);
+}
+
+struct npc_kezan_life_savings_hot_rod : public ScriptedAI
+{
+    npc_kezan_life_savings_hot_rod(Creature* creature) : ScriptedAI(creature),
+        _state(LifeSavings::STATE_WAIT), _anchor(0), _checkTimer(0), _timer(0), _said(0) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (!passenger->IsPlayer())
+            return;
+
+        if (apply)
+        {
+            if (_state != LifeSavings::STATE_WAIT)
+                return;
+
+            _playerGUID = passenger->GetGUID();
+            _state = LifeSavings::STATE_DRIVE;
+            _timer = LifeSavings::DRIVE_TIME_MAX;
+            _checkTimer = 1000;
+            me->SetWalk(false);
+            me->CastSpell(me, LifeSavings::SPELL_HOT_ROD_KNOCKBACK_TRIGGER, true);
+        }
+        else if (_state != LifeSavings::STATE_DONE)
+        {
+            // the passenger got out on the way
+            _state = LifeSavings::STATE_DONE;
+            me->DespawnOrUnsummon(1000);
+        }
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type == EFFECT_MOTION_TYPE && id == LifeSavings::POINT_DECK && _state == LifeSavings::STATE_JUMP)
+            Arrive();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        switch (_state)
+        {
+            case LifeSavings::STATE_DRIVE:
+                if (_timer <= diff)
+                {
+                    // stuck on the way: never leave the goblin behind on the island
+                    me->GetMotionMaster()->Clear();
+                    me->NearTeleportTo(LifeSavings::Deck.GetPositionX(), LifeSavings::Deck.GetPositionY(), LifeSavings::Deck.GetPositionZ(), LifeSavings::Deck.GetOrientation());
+                    Arrive();
+                    return;
+                }
+                _timer -= diff;
+
+                if (_checkTimer > diff)
+                {
+                    _checkTimer -= diff;
+                    return;
+                }
+                _checkTimer = 500;
+                Drive();
+                break;
+            case LifeSavings::STATE_JUMP:
+                if (_timer <= diff)
+                    Arrive();
+                else
+                    _timer -= diff;
+                break;
+            case LifeSavings::STATE_ARRIVED:
+                if (_timer <= diff)
+                    Finish();
+                else
+                    _timer -= diff;
+                break;
+            default:
+                break;
+        }
+    }
+
+private:
+    void Drive()
+    {
+        float const toBalloon = me->GetExactDist2d(&LifeSavings::BalloonWreck);
+        if (!(_said & 1) && toBalloon < 90.0f)
+        {
+            _said |= 1;
+            SassyTalk(LifeSavings::SAY_GO_AROUND);
+        }
+        else if (!(_said & 2) && toBalloon < 45.0f)
+        {
+            _said |= 2;
+            SassyTalk(LifeSavings::SAY_OUT_OF_THE_WAY);
+        }
+
+        if (me->GetExactDist2d(&LifeSavings::Route[_anchor]) < 10.0f)
+        {
+            if (++_anchor >= LifeSavings::RouteSize)
+            {
+                // from the dock onto the deck
+                _state = LifeSavings::STATE_JUMP;
+                _timer = LifeSavings::JUMP_TIME_MAX;
+                me->GetMotionMaster()->MoveJump(LifeSavings::Deck, 25.0f, 12.0f, LifeSavings::POINT_DECK);
+                return;
+            }
+
+            me->GetMotionMaster()->MovePoint(LifeSavings::POINT_DRIVE, LifeSavings::Route[_anchor]);
+        }
+        else if (!me->isMoving())
+            me->GetMotionMaster()->MovePoint(LifeSavings::POINT_DRIVE, LifeSavings::Route[_anchor]);
+    }
+
+    void Arrive()
+    {
+        _state = LifeSavings::STATE_ARRIVED;
+        _timer = LifeSavings::SKID_TIME;
+        me->RemoveAurasDueToSpell(LifeSavings::SPELL_HOT_ROD_KNOCKBACK_TRIGGER);
+        me->StopMoving();
+        me->CastSpell(me, LifeSavings::SPELL_HOT_ROD_SKID, true);
+        SassyTalk(LifeSavings::SAY_DOUBLE_CROSSED);
+    }
+
+    void Finish()
+    {
+        _state = LifeSavings::STATE_DONE;
+        if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+            if (player->GetVehicleBase() == me)
+                player->ExitVehicle();
+        me->DespawnOrUnsummon(3000);
+    }
+
+    void SassyTalk(uint8 group)
+    {
+        Vehicle* kit = me->GetVehicleKit();
+        Unit* sassy = kit ? kit->GetPassenger(LifeSavings::SEAT_SASSY) : nullptr;
+        if (sassy && sassy->IsCreature())
+            sassy->ToCreature()->AI()->Talk(group, ObjectAccessor::GetPlayer(*me, _playerGUID));
+    }
+
+    ObjectGuid _playerGUID;
+    uint8 _state;
+    uint32 _anchor;
+    uint32 _checkTimer;
+    uint32 _timer;
+    uint8 _said;
+};
+
+// 70318 Life Savings: Hand Over the Keys (the gossip of Sassy Hardwrench; the player casts it on himself)
+class spell_kezan_hand_over_the_keys : public SpellScript
+{
+    PrepareSpellScript(spell_kezan_hand_over_the_keys);
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        if (!player || player->GetVehicle())
+            return;
+
+        QuestStatus const status = player->GetQuestStatus(LifeSavings::QUEST_LIFE_SAVINGS);
+        if (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE)
+            return;
+
+        // as the summon of 70321 (Summon the Hot Rod) does: the Hot Rod with Sassy in it, the player on the seat next to her
+        if (Creature* hotRod = player->SummonCreature(LifeSavings::NPC_HOT_ROD, LifeSavings::HotRodStart, TEMPSUMMON_TIMED_DESPAWN, 240s))
+            player->CastSpell(hotRod, LifeSavings::SPELL_SASSYS_DRIVING, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_kezan_hand_over_the_keys::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// 70389 Life Savings: Rope Ladder - Cover, 92629 Life Savings: Last Chance Yacht Boarding Mortar - Cover
+class spell_kezan_yacht_boarding : public SpellScript
+{
+    PrepareSpellScript(spell_kezan_yacht_boarding);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        if (Unit* target = GetHitUnit())
+            target->CastSpell(target, GetSpellInfo()->Id == LifeSavings::SPELL_ROPE_LADDER_COVER ? LifeSavings::SPELL_ROPE_LADDER : LifeSavings::SPELL_MORTAR, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_kezan_yacht_boarding::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
 void AddSC_kezan()
 {
     new creature_script<npc_sister_goldskimmer>("npc_sister_goldskimmer");
     new creature_script<npc_kezan_hot_rod>("npc_kezan_hot_rod");
     new creature_script<npc_kezan_homie_rider>("npc_kezan_homie_rider");
     new quest_rolling_with_my_homies();
+    new creature_script<npc_kezan_hired_looter>("npc_kezan_hired_looter");
+    new spell_script<spell_kezan_create_stolen_loot>("spell_kezan_create_stolen_loot");
     new creature_script<npc_kezan_deathwing>("npc_kezan_deathwing");
     new spell_script<spell_kezan_kick_footbomb>("spell_kezan_kick_footbomb");
     new creature_script<npc_kezan_deadbeat>("npc_kezan_deadbeat");
     new creature_script<npc_kezan_bank_vault>("npc_kezan_bank_vault");
     new spell_script<spell_kezan_vault_interact>("spell_kezan_vault_interact");
     new spell_script<spell_kezan_vault_tool>("spell_kezan_vault_tool");
+    new player_kezan_vault_logout();
+    new spell_script<spell_kezan_kablooey_bombs>("spell_kezan_kablooey_bombs");
     new creature_script<npc_kezan_gasbot>("npc_kezan_gasbot");
+    new spell_script<spell_kezan_gasbot_control_panel>("spell_kezan_gasbot_control_panel");
+    new aura_script<spell_kezan_447_sabotage>("spell_kezan_447_sabotage");
+    new spell_script<spell_kezan_447_bed_precast>("spell_kezan_447_bed_precast");
     new quest_kezan_life_savings();
+    new creature_script<npc_kezan_life_savings_hot_rod>("npc_kezan_life_savings_hot_rod");
+    new spell_script<spell_kezan_hand_over_the_keys>("spell_kezan_hand_over_the_keys");
+    new spell_script<spell_kezan_yacht_boarding>("spell_kezan_yacht_boarding");
 }

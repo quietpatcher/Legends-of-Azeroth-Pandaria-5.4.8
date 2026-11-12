@@ -25,6 +25,7 @@
 #include "ScriptedGossip.h"
 #include "GameEventMgr.h"
 #include <unordered_map>
+#include <mutex>
 
 #define PRESETS // comment this line to disable preset feature totally
 #define MAX_OPTIONS 25 // do not alter
@@ -71,6 +72,11 @@ public:
     typedef std::unordered_map<ObjectGuid, transmogData> transmogMap;
     transmogMap entryMap; // entryMap[pGUID][iGUID] = entry
     transmogData dataMap; // dataMap[iGUID] = pGUID
+
+    // Guards entryMap, dataMap, presetById and presetByName: login/logout of (bot) players, gossip and
+    // item updates reach these unordered_maps from different threads (core 12-11-2026 01:59, SIGSEGV in presetById[]).
+    // Recursive because gossip handlers call back into Transmogrify/SetFakeEntry/GetFakeEntry.
+    mutable std::recursive_mutex mapLock;
 
 #ifdef PRESETS
     bool EnableSetInfo;

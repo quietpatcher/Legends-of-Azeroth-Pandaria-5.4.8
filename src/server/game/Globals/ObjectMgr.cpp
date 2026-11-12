@@ -2102,7 +2102,7 @@ void ObjectMgr::LoadCreatures()
             data.phaseMask = 1;
         }
 
-        if (data.phaseGroup && sDBCManager.GetPhasesForGroup(data.phaseGroup)->empty())
+        if (data.phaseGroup && (!sDBCManager.GetPhasesForGroup(data.phaseGroup) || sDBCManager.GetPhasesForGroup(data.phaseGroup)->empty()))
         {
             TC_LOG_ERROR("sql.sql", "Table `creature` has creature (GUID: {} Entry: {}) with non-existing `phasegroup` ({}) set, `phasegroup` set to 0", spawnId, data.id, data.phaseGroup);
             data.phaseGroup = 0;
@@ -2461,7 +2461,7 @@ void ObjectMgr::LoadGameobjects()
             data.phaseMask = 1;
         }
 
-        if (data.phaseGroup && sDBCManager.GetPhasesForGroup(data.phaseGroup)->empty())
+        if (data.phaseGroup && (!sDBCManager.GetPhasesForGroup(data.phaseGroup) || sDBCManager.GetPhasesForGroup(data.phaseGroup)->empty()))
         {
             TC_LOG_ERROR("sql.sql", "Table `gameobject` has gameobject (GUID: {} Entry: {}) with non-existing `phasegroup` ({}) set, `phasegroup` set to 0", guid, data.id, data.phaseGroup);
             data.phaseGroup = 0;
@@ -4680,7 +4680,8 @@ void ObjectMgr::LoadQuests()
                         TC_LOG_ERROR("sql.sql", "Quest {} objective {} has non existing battlepet species id {}", qinfo->GetQuestId(), obj.ID, obj.ObjectID);
                     break;
                 case QUEST_OBJECTIVE_AREATRIGGER:
-                    if (!sAreaTriggerStore.LookupEntry(uint32(obj.ObjectID)) && obj.ObjectID != -1)
+                    // ObjectID is 0 for objectives that are linked by their objective ID.
+                    if (!sAreaTriggerStore.LookupEntry(uint32(obj.ObjectID)) && obj.ObjectID != 0 && obj.ObjectID != -1)
                         TC_LOG_ERROR("sql.sql", "Quest {} objective {} has non existing AreaTrigger.db2 id {}", qinfo->GetQuestId(), obj.ID, obj.ObjectID);
                     break;
                 case QUEST_OBJECTIVE_MONEY:
@@ -6879,9 +6880,11 @@ void ObjectMgr::SetHighestGuids()
     if (result)
         _muteId = (*result)[0].GetUInt32() + 1;
 
-//    result = CharacterDatabase.Query("SELECT MAX(corpseGuid) FROM corpse");
-//    if (result)
-//        _hiCorpseGuid = (*result)[0].GetUInt32()+1;
+    // corpseGuid is the primary key of the character database table, so it must
+    // be allocated globally rather than from a map-local sequence.
+    result = CharacterDatabase.Query("SELECT MAX(corpseGuid) FROM corpse");
+    if (result)
+        GetGuidSequenceGenerator<HighGuid::Corpse>().Set((*result)[0].GetUInt32() + 1);
 
     result = CharacterDatabase.Query("SELECT MAX(setguid) FROM character_equipmentsets");
     if (result)

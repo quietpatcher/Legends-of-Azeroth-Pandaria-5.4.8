@@ -662,7 +662,11 @@ void BotFactory::InitEquipment(bool incremental, bool second_chance)
         {
             continue;
         }
-        if (incremental && oldItem && oldItem->GetTemplate()->ItemLevel >= bestScore / 8)
+        // to-do 265: a worn piece with the wrong primary stat for the (new) spec no longer blocks a fitting one
+        // of the same or lower item level (role respec: plate with strength on a holy paladin, agility leather on a restoration
+        // druid); a piece without a primary stat or with the right one is never downgraded
+        if (incremental && oldItem && oldItem->GetTemplate()->ItemLevel >= bestScore / 8
+            && !RandomItemManager::HasWrongPrimaryStat(bot, oldItem->GetTemplate()))
             continue;
         uint16 dest;
         if (!CanEquipUnseenItem(slot, dest, bestItemForSlot))

@@ -1441,10 +1441,16 @@ void ConditionMgr::LoadConditions(bool isReload)
     {
         oldMSTime = getMSTime();
 
-        for (auto&& ai : m_vehicleAIs)
+        std::vector<VehicleAIBase*> vehicleAIs;
+        {
+            std::lock_guard<std::mutex> lock(m_vehicleAIsLock);
+            vehicleAIs.assign(m_vehicleAIs.begin(), m_vehicleAIs.end());
+        }
+
+        for (VehicleAIBase* ai : vehicleAIs)
             ai->LoadConditions();
 
-        TC_LOG_INFO("server.loading", ">> Reloaded conditions for {} vehicles in {} ms", m_vehicleAIs.size(), GetMSTimeDiffToNow(oldMSTime));
+        TC_LOG_INFO("server.loading", ">> Reloaded conditions for {} vehicles in {} ms", vehicleAIs.size(), GetMSTimeDiffToNow(oldMSTime));
     }
 }
 

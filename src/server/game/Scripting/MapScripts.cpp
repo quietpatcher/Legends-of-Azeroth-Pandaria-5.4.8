@@ -71,7 +71,8 @@ void Map::ScriptsStart(ScriptMapMap const& scripts, uint32 id, Object* source, O
 
 void Map::ScriptCommandStart(ScriptInfo const& script, uint32 delay, Object* source, Object* target)
 {
-    // NOTE: script record _must_ exist until command executed
+    // Even delay == 0 is queued during reentrant script processing. Keep a
+    // snapshot until execution instead of borrowing the caller's stack record.
 
     // prepare static data
     ObjectGuid sourceGUID = source ? source->GetGUID() : ObjectGuid::Empty;
@@ -83,7 +84,8 @@ void Map::ScriptCommandStart(ScriptInfo const& script, uint32 delay, Object* sou
     sa.targetGUID = targetGUID;
     sa.ownerGUID  = ownerGUID;
 
-    sa.script = &script;
+    sa.ownedScript = std::make_shared<ScriptInfo const>(script);
+    sa.script = sa.ownedScript.get();
     m_scriptSchedule.insert(ScriptScheduleMap::value_type(time_t(sWorld->GetGameTime() + delay), sa));
 
     sScriptMgr->IncreaseScheduledScriptsCount();

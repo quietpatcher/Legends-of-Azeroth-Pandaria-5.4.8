@@ -342,6 +342,13 @@ void AddSC_loch_modan();
 void AddSC_redridge_mountains();
 void AddSC_silverpine_forest();
 void AddSC_silverpine_forest_high_command();
+void AddSC_silverpine_forest_1l();
+void AddSC_hillsbrad_purgation();
+void AddSC_hillsbrad_sludge_stormpike();
+void AddSC_hillsbrad_brazie();
+void AddSC_hillsbrad_azurelode();
+void AddSC_hillsbrad_durnholde();
+void AddSC_hillsbrad_headland();
 void AddSC_stormwind_city();
 void AddSC_stranglethorn_vale();
 void AddSC_swamp_of_sorrows();
@@ -813,6 +820,7 @@ void AddSC_the_stonecore();
 void AddSC_boss_corborus();
 
 void AddSC_kezan();
+void AddSC_lost_isles();
 void AddSC_deepholm();
 
 // Events
@@ -1376,6 +1384,13 @@ void AddEasternKingdomsScripts()
     AddSC_redridge_mountains();
     AddSC_silverpine_forest();
     AddSC_silverpine_forest_high_command();
+    AddSC_silverpine_forest_1l();
+    AddSC_hillsbrad_purgation();
+    AddSC_hillsbrad_sludge_stormpike();
+    AddSC_hillsbrad_brazie();
+    AddSC_hillsbrad_azurelode();
+    AddSC_hillsbrad_durnholde();
+    AddSC_hillsbrad_headland();
     AddSC_stormwind_city();
     AddSC_stranglethorn_vale();
     AddSC_swamp_of_sorrows();
@@ -1862,6 +1877,7 @@ void AddMaelstromScripts()
 
     AddSC_deepholm();
     AddSC_kezan();
+    AddSC_lost_isles();
 #endif
 }
 
@@ -2139,6 +2155,7 @@ void AddBattlegroundScripts()
 #endif
 void AddSC_npc_teleport();
 void AddSC_wow_token();
+void AddSC_battle_pay_items();
 void AddSC_custom_reward();
 void AddSC_boost_profession();
 void AddSC_custom_items();
@@ -2152,6 +2169,7 @@ void AddCustomScripts()
     /* This is where custom scripts should be added. */
 //AddSC_npc_teleport();
 //AddSC_wow_token();
+    AddSC_battle_pay_items();   // item scripts of the shop products (honor/points, gold, services, profession boosts); wow_token stays off
 //AddSC_custom_reward();
 //AddSC_boost_profession();
 //AddSC_custom_items();

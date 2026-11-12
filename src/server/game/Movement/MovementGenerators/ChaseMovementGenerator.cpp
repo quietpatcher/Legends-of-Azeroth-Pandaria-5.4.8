@@ -25,6 +25,8 @@
 #include "PathGenerator.h"
 #include "Unit.h"
 #include "Util.h"
+#include "Player.h"
+#include "WorldSession.h"
 
 static bool HasLostTarget(Unit* owner, Unit* target)
 {
@@ -153,6 +155,17 @@ bool ChaseMovementGenerator::Update(Unit* owner, uint32 diff)
         DoMovementInform(owner, target);
     }
 
+    // (botcost) a bot that keeps moving (flees, kites, runs a loop next to a pack) moved at least a hair every tick, and every
+    // tick every chaser threw its running spline away and launched a new one (navmesh query + SMSG_MONSTER_MOVE): with 10
+    // worgs on one bot that is 10 path calculations per tick. While the chaser is on its way and the bot stayed within
+    // CHASE_REPATH_DISTANCE of the position the path was made for, the spline is kept until it nearly ends. Only for chases
+    // of bots: players keep the exact-position repath.
+    if (_lastTargetPosition && mutualChase == _mutualChase && target->GetTypeId() == TYPEID_PLAYER && target->ToPlayer()->GetSession()
+        && target->ToPlayer()->GetSession()->IsBot() && owner->HasUnitState(UNIT_STATE_CHASE_MOVE) && !owner->movespline->Finalized()
+        && _lastTargetPosition->GetExactDistSq(target->GetPosition()) < CHASE_REPATH_DISTANCE * CHASE_REPATH_DISTANCE
+        && int32(_splineEndMs - getMSTime()) > int32(CHASE_REPATH_MIN_TIME_LEFT))
+        return true;
+
     // if the target moved, we have to consider whether to adjust
     if (!_lastTargetPosition || target->GetPosition() != _lastTargetPosition.value() || mutualChase != _mutualChase)
     {
@@ -231,7 +244,8 @@ bool ChaseMovementGenerator::Update(Unit* owner, uint32 diff)
             init.MovebyPath(_path->GetPath());
             init.SetWalk(walk);
             init.SetFacing(target);
-            init.Launch();
+            int32 const duration = init.Launch();
+            _splineEndMs = getMSTime() + uint32(duration > 0 ? duration : 0);   // (botcost)
         }
     }
 

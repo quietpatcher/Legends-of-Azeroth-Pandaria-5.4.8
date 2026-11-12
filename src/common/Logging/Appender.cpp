@@ -38,6 +38,7 @@ std::string const& Appender::getName() const
 
 LogLevel Appender::getLogLevel() const
 {
+    std::lock_guard lock(_writeLock);
     return level;
 }
 
@@ -48,11 +49,17 @@ AppenderFlags Appender::getFlags() const
 
 void Appender::setLogLevel(LogLevel _level)
 {
+    std::lock_guard lock(_writeLock);
     level = _level;
 }
 
 void Appender::write(LogMessage* message)
 {
+    // Loggers are shared by the world, map and network threads. Keep prefix
+    // construction and the complete appender write under the same lock: file
+    // rotation closes and replaces FILE*, so locking only fclose/fopen would
+    // still allow another thread to write through the old stream.
+    std::lock_guard lock(_writeLock);
     if (!level || level > message->level)
         return;
 

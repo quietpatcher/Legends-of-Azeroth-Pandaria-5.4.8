@@ -241,9 +241,19 @@ uint32 PhaseData::GetCurrentPhasemask() const
     return GetPhaseMaskForSpawn();
 }
 
+uint32 const PHASE_REPLACE_NORMAL_ZONE_ASHENVALE = 331;
+
 inline uint32 PhaseData::GetPhaseMaskForSpawn() const
 {
-    uint32 const phase = (_PhasemaskThroughDefinitions | _PhasemaskThroughAuras);
+    // Ashenvale (zone 331): the Imp Disguise (63704, quest 13798) quest phase replaces the normal Splintertree set, so
+    // drop the normal phase bit that phase_definitions add while a phase aura is active (client test 2-11: otherwise
+    // living 12903 and dead 33944 guards are both visible, #470/#292/#293). Other zones keep definitions | auras
+    // (e.g. Stormwind/Orgrimmar auras 60815/74789 must not hide the normal city NPCs); no retail evidence there.
+    uint32 definitions = _PhasemaskThroughDefinitions;
+    if (_PhasemaskThroughAuras && player->GetZoneId() == PHASE_REPLACE_NORMAL_ZONE_ASHENVALE)
+        definitions &= ~uint32(PHASEMASK_NORMAL);
+
+    uint32 const phase = (definitions | _PhasemaskThroughAuras);
     return (phase ? phase : PHASEMASK_NORMAL);
 }
 

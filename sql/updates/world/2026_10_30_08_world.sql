@@ -1,4 +1,4 @@
--- To-do 459 (Andorhal Defender 44332 and Opengut Behemoth 44562 do not attack each other; proposal Gemini item459_20261030_2303 reviewed):
+-- To-do 459 (Andorhal Defender 44332 and Opengut Behemoth 44562 do not attack each other; an internal proposal reviewed):
 -- Both lacked the out-of-combat SMART_ACTION_ATTACK_START on the closest enemy within 15y that 44328/44315/44316 got in 2026_10_30_07. unit_flags of 44562 deliberately NOT changed (our value is probably from a sniff, ref_cpp differs, no proof it matters).
 -- Source: functional fix reviewed against our world DB (smart_scripts); no sniff of the original AI, so not a verified retail copy.
 -- Rollback: DELETE FROM smart_scripts WHERE source_type=0 AND ((entryorguid=44332 AND id=1) OR (entryorguid=44562 AND id=2));

@@ -387,6 +387,15 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
         return;
     }
 
+    // to-do 265: gear check per level band and role respec, once a minute, also for minimal bots (most bots
+    // run minimal while no player is near, so UpdateBot below hardly ever reached them)
+    if (sBotLife->MaintenanceTick(this))
+    {
+        if (pmo)
+            pmo->finish();
+        return;
+    }
+
     // bot life (travel, quests, loot, rest, social) for random bots without a real master
     if (!minimal && sBotLife->UpdateBot(this, elapsed))
     {

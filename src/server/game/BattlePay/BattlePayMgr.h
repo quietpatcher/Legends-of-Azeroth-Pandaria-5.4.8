@@ -25,6 +25,9 @@
 #define MAX_BATTLE_PAY_PRODUCT_TITLE_SIZE 55
 #define MAX_BATTLE_PAY_PRODUCT_DESCRIPTION_SIZE 500
 #define MAX_BATTLE_PAY_GROUP_NAME_SIZE 16
+#include <mutex>
+#include <unordered_set>
+
 #define BATTLE_PAY_CURRENCY_PRECISION 10000
 
 enum BattlePayCurrency
@@ -289,12 +292,22 @@ class BattlePayMgr
         void SendPointsBalance(WorldSession* session);
         void UpdatePointsBalance(WorldSession* session, uint64 points);
         bool HasPointsBalance(WorldSession* session, uint64 points);
-        void Update(uint32 diff);
+        // #969: steps one session's queued purchase. Call once per world tick per session,
+        // from the world thread only (WorldSession::Update with the WorldSessionFilter).
+        void Update(WorldSession* session, uint32 diff);
         void RegisterPurchase(PurchaseInfo* purchase, uint32 item, uint64 price);
         bool IsStoreEnabled() { return m_enabled; }
         void SetEnableState(bool enabled) { m_enabled = enabled; }
         uint32 GetStoreCurrency() { return m_currency; }
         void SetStoreCurrency(uint32 currency) { m_currency = currency; }
+
+        // Achievement points as shop currency: the shop balance (auth.account.dp) grows with every achievement point the
+        // account earns. The achievement score itself never drops when the balance is spent. Off unless
+        // BattlePay.AchievementPoints.Enabled = 1.
+        void SetAchievementPoints(bool enabled, float rate);
+        bool IsAchievementPointsEnabled() const { return m_apEnabled; }
+        void SyncAchievementPoints(WorldSession* session);               // once per account and uptime, at character login
+        void AddAchievementPoints(WorldSession* session, uint32 points); // an achievement was completed
 
         BattlePayProductItemsVector const* GetItemsByProductId(uint32 productId) const
         {
@@ -324,9 +337,13 @@ class BattlePayMgr
         void SendBattlePayProductList(WorldSession* session);
         void SendBattlePayDistributionUpdate(WorldSession* session, uint32 productId, uint8 status);
         void SendBattlePayPurchaseUpdate(PurchaseInfo* purchase);
-        void AddQuenedPurchaseResponse(PurchaseInfo* purchase, uint32 timer, bool sendPacket) { m_purchase = purchase; m_timer = timer; m_sendPacket = sendPacket; };
+        // #969: the purchase state is kept per account. It was one global slot (m_purchase/m_timer)
+        // stepped from every WorldSession::Update, also from the map threads: the step timers ran
+        // once per session per tick (instantly with hundreds of bot sessions), steps raced and
+        // could run twice (double boost, double charge), and two buyers overwrote each other.
+        void AddQuenedPurchaseResponse(PurchaseInfo const& purchase, uint32 timer);
 
-        PurchaseInfo* GetPurchaseInfo() { return m_purchase; }
+        PurchaseInfo* GetPurchaseInfo(WorldSession* session);
 
     private:
         BattlePayProductList m_productStore;
@@ -342,11 +359,20 @@ class BattlePayMgr
         bool HasGroupName(std::string name);
         bool HasEntryId(uint32 entryId);
 
-        PurchaseInfo* m_purchase;
+        struct PendingPurchase
+        {
+            PurchaseInfo Info;      // last purchase step of the account (the confirm handler reads its ServerToken)
+            uint32 Timer = 0;
+            bool Queued = false;    // Info is still to be sent when Timer runs out
+        };
+        std::unordered_map<uint32 /*accountId*/, PendingPurchase> m_purchases;
+
         uint32 m_currency;
-        uint32 m_timer;
         bool m_enabled;
-        bool m_sendPacket;
+        bool m_apEnabled = false;
+        float m_apRate = 1.0f;
+        std::mutex m_apLock;
+        std::unordered_set<uint32> m_apSynced;
 
         void LoadProductsFromDb();
         void LoadProductLocalesFromDb();

@@ -469,6 +469,21 @@ class npc_corrupt_living_water : public CreatureScript
 
                 if (me->GetEntry() == NPC_CORRUPT_WATER_WISE)
                     Talk(TALK_RISE);
+
+                Reset();
+            }
+
+            void Reset() override
+            {
+                // Engage the group at once; without this the add idled at the fountain with no threat
+                canDead = false;
+                me->SetInCombatWithZone();
+
+                if (Player* itr = me->FindNearestPlayer(100.0f))
+                {
+                    me->GetThreatManager().AddThreat(itr, 10.0f);
+                    AttackStart(itr);
+                }
             }
 
             void JustDied(Unit* /*killer*/) override
@@ -486,7 +501,10 @@ class npc_corrupt_living_water : public CreatureScript
                 summon->SetInCombatWithZone();
 
                 if (Player* itr = me->FindNearestPlayer(100.0f))
+                {
+                    summon->GetThreatManager().AddThreat(itr, 10.0f);
                     summon->Attack(itr, true);
+                }
             }
 
             void DamageTaken(Unit* attacker, uint32& damage) override

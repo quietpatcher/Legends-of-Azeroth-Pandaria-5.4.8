@@ -38,9 +38,11 @@ class Map;
 class Player;
 class PlayerbotAI;
 class Quest;
+class Transport;
 class Unit;
 class WorldObject;
 struct QuestObjective;
+struct TaxiNodesEntry;
 
 struct BotLifeSpawn
 {
@@ -341,6 +343,11 @@ enum BotLifeCounter : uint8
     BLC_DUEL_LOST,
     BLC_LEVEL_BALANCE,         // (level-balance) a bot moved to an empty level band
     BLC_ROLE_RESPEC,           // to-do 265: respec to a missing role
+    BLC_TAXI_FLIGHT,           // (to-do 219) a bot boarded at a flight master
+    BLC_TAXI_LANDED,           // a flight ended at its destination node
+    BLC_TAXI_ABORT,            // a planned flight was given up (no flight master, stuck, refused by the core)
+    BLC_TAXI_NODE,             // a flight point learned (talked to its flight master, passed it, or arrived in its zone)
+    BLC_GEAR_BAND_CHECK,       // to-do 265: gear fixed by the ten-level check (MaintenanceTick)
     BLC_MAX
 };
 
@@ -381,16 +388,26 @@ public:
     void StartAggroDiag(int32 count) { _aggroDiagLeft.store(count, std::memory_order_relaxed); }
     void StartRangeTest(int32 count, uint32 entry = 0, uint32 maxLevel = 0);
     void StartPathProbe(uint32 map, float x, float y, float z);
-    // to-do 265: role-aware specialization (tank 15% / healer 20% / dps 65% per faction + level band)
+    // to-do 265: role-aware specialization per faction + level band; the targets come from
+    // BotLife.RoleTargetTank / BotLife.RoleTargetHealer (2-11: default 20 / 20, the rest dps = 1 tank : 1 healer : 3 dps)
     int32 PickSpecTab(Player* bot, int32 forceRole = -1);   // talent tab, -1: no snapshot / no choice (caller picks random)
     bool RoleRespec(PlayerbotAI* botAI);                    // bot whose role is over-represented switches to a missing role
     void PrintRoles(ChatHandler* handler);
+    // to-do 265: once a minute per random bot, also for minimal bots (UpdateBot only runs for active ones):
+    // gear check when the bot enters a new level band (every ten levels) and the role respec. Bot own map thread.
+    bool MaintenanceTick(PlayerbotAI* botAI);
     void StartTestLevel(uint32 level, int32 count, uint8 role = 0);   // test lab, raise bots to a level
     // walkers - one test bot per starting area works through its quests, every step a WALK line
     std::string WalkAdd(std::string const& name, std::string const& sorts);
     std::string WalkRemove(std::string const& name);
     std::string WalkClear(std::string const& name);   // 6-10 walkclear
     std::string WalkStatus();
+    // flight paths (to-do 219, BotLife.cpp)
+    std::string TaxiStatus();                                                   // ".botlife taxi status"
+    std::string TaxiNodes(std::string const& name);                             // ".botlife taxi nodes <bot>"
+    std::string TaxiTest(std::string const& name, float x, float y, float z);
+    std::string FerryTest(std::string const& name, uint32 destMap);   // ".botlife ferry go <bot> <map>"
+    std::string FerryStatus();   // ".botlife taxi go <bot> <x> <y> <z>"
     // dungeon finder test with five bots (holiday dungeons)
     std::string LfgTestQueue(uint32 dungeonId);
     std::string LfgTestFill(Player* lead, uint32 dungeonId);
@@ -458,6 +475,14 @@ public:
     void QueueCombatStop(Player* member);
     bool RunPendingActions(PlayerbotAI* botAI);
 
+    // (botcost) per-bot cost log + watchdog (BotLifeDiag.cpp). Sink and map-end are called from Map::Update on the map thread.
+    void LoadCostConfig();
+    void CostMapEnd(Map* map, uint32 tickMs);
+    void CostWatchdogAct(Map* map, Player* bot, PlayerbotAI* ai, uint32 costUs, uint32 now);
+    void ScheduleCostLogout(uint32 guidLow);
+    bool TakeCostLogout(Player* bot);   // RandomPlayerbotMgr::ProcessBot: the watchdog asked for this bot to leave
+    bool GiveProfessionTool(Player* bot, uint32 item);
+
     // GrindTargetValue helper: is this unit useful for the bot's current quest
     bool IsQuestTarget(Player* bot, Unit* unit);
     bool IsAvoidedTarget(Player* bot, Unit* unit);
@@ -486,6 +511,21 @@ private:
     bool Arrived(Player* bot, BotLifeInfo const& t) const;
     bool Travel(Player* bot, BotLifeInfo& t, uint32 now);
     void BuildPath(Player* bot, BotLifeInfo& t);
+    // flight paths (to-do 219): a far destination on the same continent is reached by a flight master
+    bool TaxiPlan(Player* bot, BotLifeInfo& t, uint32 now, float walkDist);
+    bool TaxiWalkTick(Player* bot, BotLifeInfo& t, uint32 now);
+    bool TaxiFlightTick(Player* bot, BotLifeInfo& t, uint32 now);
+    // ferry (BotLife.Ferry)
+    bool FerryPlan(Player* bot, BotLifeInfo& t, uint32 destMap, float x, float y, float z, uint32 now, bool forced = false);
+    bool FerryTick(Player* bot, BotLifeInfo& t, uint32 now);
+    void FerryFinish(Player* bot, BotLifeInfo& t, uint32 now, char const* why, bool failed);
+    Transport* FerryFind(Player* bot, uint32 guid);
+    void TaxiLanded(Player* bot, BotLifeInfo& t, uint32 now);
+    void TaxiAbort(Player* bot, BotLifeInfo& t, uint32 now, char const* why);
+    bool TaxiRoute(Player* bot, uint32 from, uint32 to, std::vector<uint32>& nodes, uint32& cost) const;
+    Creature* FindFlightMaster(Player* bot, TaxiNodesEntry const* node) const;
+    void TaxiLearnNearby(Player* bot, float range);
+    void TaxiLearnNearest(Player* bot, uint32 mapId, float x, float y, float z);
     bool HasGrindTarget(PlayerbotAI* botAI);
     bool RealPlayerNear(Player* bot, float dist) const;
     void CheckAreaTriggers(Player* bot, BotLifeInfo& t, uint32 now);
@@ -500,6 +540,7 @@ private:
 
     bool FindGrindSpot(Player* bot, BotLifeGrindSpot& out, bool anyZone);
     bool ZoneFitsLevel(Player* bot) const;
+    bool MapFitsLevel(uint32 map, uint32 level) const;   // to-do 265: 
     bool RelocateForLevel(Player* bot);
     bool HomeStart(Player* bot, uint32& map, float& x, float& y) const;   // start area of the race
 
@@ -711,7 +752,38 @@ private:
     void RecordQuest(uint32 questId, bool success);
     std::vector<ObjectGuid> _townBusiness;
     bool _relocate = true;
+    // (botcost) config + state, see LoadCostConfig
+    bool _costLog = true;
+    uint32 _costTickMs = 100;
+    uint32 _costIntervalMs = 30000;
+    uint32 _costTop = 3;
+    bool _costWatchdog = true;
+    uint32 _costBotUs = 20000;
+    uint32 _costActionMs = 60000;
+    bool _dieLoop = true;
+    float _dieLoopRadius = 300.0f;
+    uint32 _toolBackoffMs = 20 * 60000;
+    std::mutex _costLock;                              // report times per map (only taken when a tick is over budget)
+    std::unordered_map<Map const*, uint32> _costReported;
+    std::mutex _costLogoutLock;
+    std::unordered_set<uint32> _costLogout;
+    std::atomic<uint32> _costLogoutCount{0};
     uint32 _homeStartLevel = 10;     // batch 11h: below this level a bot stays near the start area of its race
+    // flight paths (to-do 219)
+    bool _taxi = true;
+    float _taxiMinDist = 800.0f;           // a destination this far away (yards, same map) is a flight candidate
+    float _taxiMasterRange = 300.0f;       // the flight master must be within this of the bot
+    bool _ferry = false;                   // BotLife.Ferry
+    uint32 _ferryChance = 25;              // percent of the cross-map relocations that try a ferry first
+    float _ferryDockRange = 300.0f;        // yards from a dock a bot must stand to take the ferry
+    uint32 _ferryDockWait = 12;            // minutes to wait for the transport
+    uint32 _ferryRide = 20;                // minutes at most on the transport
+    uint32 _ferryRetryAfterFail = 10;      // minutes without a new trip after a failure
+    uint32 _taxiPerMinute = 6;             // boardings per minute, server-wide
+    uint32 _taxiCooldown = 600;            // seconds between two flights of one bot
+    std::atomic<uint32> _taxiMinute{0};    // rate limiter: the minute bucket and its count
+    std::atomic<uint32> _taxiMinuteCount{0};
+    std::unordered_map<uint32, std::vector<uint32>> _taxiNodesByMap;   // map id -> taxi nodes of the taxi network on it
     bool _townVisits = true;
     uint32 _townMinutesMin = 40;           // between visits
     uint32 _townMinutesMax = 90;
@@ -736,10 +808,20 @@ private:
     void LoadRoleSnapshot();
     std::shared_ptr<BotRoleSnapshot const> _roleSnap;
     uint32 _nextRoleSnap = 0;
-    std::atomic<uint32> _respecHourStart{0};
-    std::atomic<uint32> _respecInHour{0};
-    std::atomic<uint32> _gearHourStart{0};   // cap on gear refills per hour
-    std::atomic<uint32> _gearInHour{0};
+    // to-do 265: the hourly caps are handed out in one-minute slices (perHour / 60, at least 1 a minute), so a
+    // skewed realm converges steadily instead of in a burst right after the start or the hour change
+    void RoleTargets(float target[3]) const;   // tank / healer / dps share in percent
+    static bool TakeSlot(std::atomic<uint32>& sliceStart, std::atomic<uint32>& inSlice, uint32 perHour);
+    std::atomic<uint32> _respecSliceStart{0};
+    std::atomic<uint32> _respecInSlice{0};
+    std::atomic<uint32> _gearSliceStart{0};   // cap on gear refills
+    std::atomic<uint32> _gearInSlice{0};
+    uint32 _roleTargetTank = 20;              // BotLife.RoleTargetTank (percent per faction + level band)
+    uint32 _roleTargetHeal = 20;              // BotLife.RoleTargetHealer
+    uint32 _roleTolerance = 5;                // BotLife.RoleTolerance: points off target before a respec is considered
+    uint32 _roleRespecsPerHour = 80;          // BotLife.RoleRespecsPerHour (all bots together)
+    uint32 _gearRefillsPerHour = 150;         // BotLife.GearRefillsPerHour (all bots together)
+    uint32 _maxLevelFactoryItemLevel = 440;   // AiPlayerbot.MaxLevelFactoryItemLevel: the factory never exceeds this at max level
     uint32 _raidMinutes = 75;
     uint32 _maxQuests = 3;
     uint32 _questTimeout = 25 * 60 * 1000;

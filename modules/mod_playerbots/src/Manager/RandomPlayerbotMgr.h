@@ -89,6 +89,7 @@ public:
     bool IsRandomBot(ObjectGuid::LowType bot);
     bool IsPoolBot(ObjectGuid::LowType bot);   // a character of a random bot account, online or not
     void TTKeepBot(ObjectGuid::LowType bot, bool keep);   // in the rotation now, and it stays (walkers)
+    bool TTLoginBot(ObjectGuid::LowType bot);   // 439b: one offline pool bot into the rotation now, it leaves again by the normal rotation
 
     void TagForRandomize(Player* bot, uint32 level);
     void RandomizeFirst(Player* bot);

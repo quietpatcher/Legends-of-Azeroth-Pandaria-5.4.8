@@ -610,7 +610,11 @@ class Eluna
             ItemGossipBindings->Clear();
             playerGossipBindings->Clear();
 
-            lua_close(L); // Closing
+            if (L) // L stays NULL when no Lua state was ever created; lua_close(NULL) segfaults at process exit
+            {
+                lua_close(L); // Closing
+                L = NULL;
+            }
         }
 
         struct ElunaBind

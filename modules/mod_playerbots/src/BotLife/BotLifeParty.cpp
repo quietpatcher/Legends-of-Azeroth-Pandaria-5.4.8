@@ -14,6 +14,7 @@
 #include "LootMgr.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "PathGenerator.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -51,9 +52,6 @@ namespace
     constexpr float PARTY_FAR_DIST = 200.0f;         // member is summoned after being this far for a while
     constexpr uint32 PARTY_FAR_SUMMON_MS = 90000;
     constexpr uint32 PARTY_MAX_WAIT_MS = 25000;
-    // (301e-alemental) a dungeon party that is split by more than this is waited for longer than PARTY_MAX_WAIT_MS
-    constexpr float PARTY_SPLIT_DIST = 70.0f;
-    constexpr uint32 PARTY_SPLIT_WAIT_MS = 120000;
     constexpr uint32 PARTY_MAX_NEW_PER_TICK = 6;
 
     std::mt19937& PartyRng()
@@ -476,7 +474,9 @@ bool BotLifeMgr::MaintainInstanceParty(Group* group, BotLifeParty& party, Player
     // party stuck. End it early, free the party, and take the dungeon out of rotation until the encounter is fixed.
     // 
     // (end-time-30-min) End Time too: its echoes stand far apart, Jaina comes after sixteen staff fragments
-    if (!bosses && now - party.formedAt > (HasKillGate(d.map) || d.map == 938 ? 30u : 18u) * MINUTE * IN_MILLISECONDS)
+    // (zf-first-boss-30-min, 439) Zul'Farrak too: the nearest-first route clears 90-130 trash before the first boss (first boss after
+    // 8-18 min on dev and prod). Three prod runs of 30-31 Oct (96 / 82 / 39 kills, 1-2 min from Antu'sul / Theka) were cut at 18 min.
+    if (!bosses && now - party.formedAt > (HasKillGate(d.map) || d.map == 938 || d.map == 209 ? 30u : 18u) * MINUTE * IN_MILLISECONDS)
     {
         Count(BLC_DUNGEON_STALLED);
         RecordDungeonRun(d, party, leader, "stalled", now);
@@ -1066,7 +1066,6 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
 bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
 {
     bool wait = false;
-    float farthest = 0.0f;   // (301e-alemental) distance of the farthest living bot of the group on this map (<= PARTY_FAR_DIST)
     Group* group = bot->GetGroup();
     // ev_sunken_temple_alliance.txt + ev_strat_service_alliance.txt, voorstel A: the lead bot of a dungeon finder
     // group with a real player waits for that player - while he has not loaded into the instance yet, and while he is more than
@@ -1075,7 +1074,8 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
     if (group->isLFGGroup() && !t.party && t.lfgLeadInstance && t.lfgLeadInstance == bot->GetInstanceId())
     {
         bool realFar = false, farInMap = false;
-        float const enter = t.realWaitSince ? 30.0f : 40.0f;   // hysteresis
+        Player* farPlayer = nullptr;
+        float const enter = t.realWaitSince ? 25.0f : 40.0f;   // hysteresis; release at 25 yd: a client can only start /follow within 28 yd (CheckInteractDistance 4)
         for (GroupReference* ref = group->GetFirstMember(); ref && !realFar; ref = ref->next())
         {
             Player* member = ref->GetSource();
@@ -1088,6 +1088,43 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
             {
                 realFar = true;
                 farInMap = true;
+                farPlayer = member;
+            }
+        }
+        // state/dungeons_client.md  11::16: a real player who is alive, in this instance and > 40 yd
+        // away is not left behind (he cannot /follow a lead he does not see). The lead walks back to him (the group follows the
+        // lead as usual) until it is within ~15 yd, then waits as below (until 25 yd, max 5 minutes per wait). Only with a
+        // walkable mmap path and when nobody of the group is in combat.
+        if (!farPlayer || !farInMap)
+            t.realWalkBack = false;
+        else
+        {
+            float const dist = bot->GetExactDist(farPlayer);
+            bool inCombat = bot->IsInCombat();
+            for (GroupReference* r2 = group->GetFirstMember(); r2 && !inCombat; r2 = r2->next())
+                if (Player* m2 = r2->GetSource())
+                    inCombat = m2->IsInCombat();
+            if (dist <= 15.0f || inCombat)
+                t.realWalkBack = false;
+            else if (t.realWalkBack || dist > 40.0f)
+            {
+                if (!t.realWalkAt || now - t.realWalkAt >= 1500)
+                {
+                    PathGenerator path(bot);
+                    path.CalculatePath(farPlayer->GetPositionX(), farPlayer->GetPositionY(), farPlayer->GetPositionZ(), false);
+                    if (path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+                        t.realWalkBack = false;
+                    else
+                    {
+                        if (!t.realWalkBack)
+                            TC_LOG_INFO("playerbots", "BotLife {}: walks back to the real player {} ({} yd)", bot->GetName(), farPlayer->GetName(), uint32(dist));
+                        t.realWalkBack = true;
+                        t.realWalkAt = now;
+                        bot->GetMotionMaster()->MovePoint(0, farPlayer->GetPositionX(), farPlayer->GetPositionY(), farPlayer->GetPositionZ(), true);
+                    }
+                }
+                if (t.realWalkBack)
+                    return true;
             }
         }
         // ev_strat_service_alliance_run3.txt, point 3: after the time-out the wait is not given up for good. A player
@@ -1116,7 +1153,7 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
                 t.realWaitSince = now;
                 TC_LOG_INFO("playerbots", "BotLife {}: waits for the real player of the dungeon finder group (not in the instance or > 40 yd)", bot->GetName());
             }
-            if (now - t.realWaitSince > (t.realWaitRounds ? 90000u : 300000u))
+            if (now - t.realWaitSince > 300000u)
             {
                 t.realWaitGaveUp = true;
                 t.realWaitSince = 0;
@@ -1125,7 +1162,7 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
                 t.realGaveZ = bot->GetPositionZ();
                 t.realGaveBosses = t.dungeonBosses;
                 TC_LOG_INFO("playerbots", "BotLife {}: waited {} for the real player, goes on without him (waits again after 60 yd / the next boss)", bot->GetName(),
-                    t.realWaitRounds ? "90 s" : "5 minutes");
+                    "5 minutes");
             }
             else
             {
@@ -1146,12 +1183,14 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
         float d = bot->GetExactDist(member);
         if (d > PARTY_FAR_DIST)
             continue;   // the world thread summons real stragglers
-        farthest = std::max(farthest, d);
         // (344-healergather) a healer is waited for from 30 yd (the distance its own keep-up works to), not from 45: at 45 yd it
         // is out of heal range and mostly out of sight when the pull starts
         float const gather = (t.party == BOTLIFE_PARTY_DUNGEON && PlayerBotSpec::IsHeal(member, true)) ? 30.0f : PARTY_GATHER_DIST;
         if (d > gather || member->IsInCombat() || (memberAI && (memberAI->life.resting || !memberAI->life.lootTarget.IsEmpty())))
-            wait = true;   // (301e-alemental) no break: the farthest member is needed below
+        {
+            wait = true;
+            break;
+        }
     }
 
     if (!wait)
@@ -1161,13 +1200,9 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
     }
     if (!t.partyWaitSince)
         t.partyWaitSince = now;
-    // (301e-alemental) the 25 s walk-on after a wait left the lead of a dungeon party 150 yd ahead of members that still fought adds
-    // (Stormstout Brewery: Everea walked alone into the two Fizzy Brew Alementals at -676 1129, party 66-126 yd behind, healer out of sight,
-    // tank dead in 25 s, no kill for 3 min = run ended). A party split by more than 70 yd is waited for up to 120 s.
-    uint32 const maxWait = (t.party == BOTLIFE_PARTY_DUNGEON && farthest > PARTY_SPLIT_DIST) ? PARTY_SPLIT_WAIT_MS : PARTY_MAX_WAIT_MS;
-    if (now - t.partyWaitSince > maxWait)
+    if (now - t.partyWaitSince > PARTY_MAX_WAIT_MS)
     {
-        if (now - t.partyWaitSince > maxWait * 2)
+        if (now - t.partyWaitSince > PARTY_MAX_WAIT_MS * 2)
             t.partyWaitSince = 0;   // walk on for a while, then wait again
         return false;
     }

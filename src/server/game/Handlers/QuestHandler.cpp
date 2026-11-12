@@ -625,6 +625,9 @@ void WorldSession::HandleQuestLogRemoveQuest(WorldPacket& recvData)
             _player->RemoveActiveQuest(questId);
             _player->RemoveTimedAchievement(CRITERIA_START_TYPE_QUEST, questId);
 
+            if (quest && quest->GetSrcSpell())
+                _player->RemoveAurasDueToSpell(quest->GetSrcSpell());
+
             TC_LOG_INFO("network", "Player {} abandoned quest {}", _player->GetGUID().GetCounter(), questId);
 
             if (quest)
@@ -834,7 +837,7 @@ void WorldSession::HandlePushQuestToParty(WorldPacket& recvPacket)
         if (quest->IsAutoAccept() && receiver->CanAddQuest(quest, true) && receiver->CanTakeQuest(quest, true))
             receiver->AddQuestAndCheckCompletion(quest, sender);
 
-        if ((quest->IsTurnIn() && quest->IsRepeatable() && !quest->IsDailyOrWeekly()) || quest->HasFlag(QUEST_FLAGS_AUTO_COMPLETE))
+        if ((quest->IsTurnIn() && quest->IsRepeatable() && !quest->IsDailyOrWeekly()) || (quest->HasFlag(QUEST_FLAGS_AUTO_COMPLETE) && quest->GetObjectives().empty()))
             receiver->PlayerTalkClass->SendQuestGiverRequestItems(quest, sender->GetGUID(), receiver->CanCompleteRepeatableQuest(quest), true);
         else
         {

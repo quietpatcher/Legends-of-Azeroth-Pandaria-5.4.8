@@ -3767,7 +3767,26 @@ BattlePay.StoreEnabled = 1
 #                     16 - (Test)
 #
 
-BattlePay.Currency = 5
+BattlePay.Currency = 16
+
+#
+#    BattlePay.AchievementPoints.Enabled
+#        Description: Achievement points are the shop currency. The shop balance (auth.account.dp) grows with every
+#                     achievement point an account earns; points earned before are credited once at the first login.
+#                     The achievement score itself never drops when the balance is spent. No real money is involved.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+#
+
+BattlePay.AchievementPoints.Enabled = 0
+
+#
+#    BattlePay.AchievementPoints.Rate
+#        Description: Shop balance gained per achievement point (1 = one shop unit per point, product prices are in shop units)
+#        Default:     1
+#
+
+BattlePay.AchievementPoints.Rate = 1
 
 #
 ###################################################################################################

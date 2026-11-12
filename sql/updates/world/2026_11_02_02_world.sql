@@ -1,0 +1,6 @@
+-- Quest 13947 'Blastranaar!' (to-do 468), part 3/3: the bomb targets 34494 (59 spawns) and 34492 (8 spawns) only exist for the rider: phaseMask 2 + phaseId 170 (the values of aura 65469 'Ride Wind Rider': SPELL_AURA_PHASE miscA 2 / miscB 170).
+-- derived, no sniff: that retail puts the 34494/34492 spawns in phase 170 (follows from 65469, no sniff of the spawns). In this core a player's visibility needs mask AND phase id: the rider has mask 2 and phases {169,170}, everybody else mask 1 and {169}, so only the rider sees them. The ordinary Astranaar NPCs (6087, 34132, mask 1) disappear for the rider (mask 2) while riding; the wyvern itself is set to mask 2 by its SmartAI.
+-- Source: DBC 5.4.8 Spell 65469 eff2 (aura 261 PHASE miscA 2 miscB 170); PhaseMgr / Object::InSamePhase in ~/loa (mask AND phase set); our creature rows 34494/34492 came from ref_alex with phaseMask 1 (state/blastranaar_468_bronnen.md).
+-- Rollback: UPDATE `creature` SET `phaseMask` = 1, `phaseId` = 0 WHERE `id` IN (34494,34492) AND `map` = 1 AND `phaseMask` = 2 AND `phaseId` = 170;
+
+UPDATE `creature` SET `phaseMask` = 2, `phaseId` = 170 WHERE `id` IN (34494,34492) AND `map` = 1 AND `phaseMask` = 1 AND `phaseId` = 0;

@@ -1,0 +1,14 @@
+-- To-do 422 (quest 27201 Val'kyr Incursion, Andorhal, Horde phase): the 15 Lesser Val'kyr (45239) spawns hover 24-28 yd above
+-- the ground (guid 311845 even 42 yd). A ground player sees them but melee cannot reach them, so "not enough Val'kyr spawn".
+-- Measured on the test server 11-11-2026 (teleport to each spawn, fall, .gps: ground z, see state/test_r1111c_20261111.md).
+-- Retail: the Val'kyr float just above the street and are killed in melee (Wowhead quest 27201 comments). New z = ground + 3.
+-- Source: Wowhead quest=27201 / npc=45239; ground heights from the test server.
+-- Rollback: UPDATE `creature` SET `position_z`=CASE `guid` WHEN 311824 THEN 79.8938 WHEN 311825 THEN 81.938 WHEN 311826 THEN 84.6435
+--   WHEN 311827 THEN 81.2855 WHEN 311828 THEN 96.0942 WHEN 311829 THEN 82.4244 WHEN 311830 THEN 94.9851 WHEN 311831 THEN 72.1769
+--   WHEN 311832 THEN 75.6968 WHEN 311833 THEN 78.5299 WHEN 311841 THEN 88.9679 WHEN 311842 THEN 94.9783 WHEN 311843 THEN 95.6816
+--   WHEN 311844 THEN 86.312 WHEN 311845 THEN 110.935 END WHERE `guid` BETWEEN 311824 AND 311845 AND `id`=45239;
+UPDATE `creature` SET `position_z`=CASE `guid`
+  WHEN 311824 THEN 57.02 WHEN 311825 THEN 56.78 WHEN 311826 THEN 61.38 WHEN 311827 THEN 58.51 WHEN 311828 THEN 73.00
+  WHEN 311829 THEN 59.28 WHEN 311830 THEN 72.05 WHEN 311831 THEN 49.37 WHEN 311832 THEN 52.58 WHEN 311833 THEN 55.21
+  WHEN 311841 THEN 67.61 WHEN 311842 THEN 71.73 WHEN 311843 THEN 72.25 WHEN 311844 THEN 61.21 WHEN 311845 THEN 71.85 END
+WHERE `guid` IN (311824,311825,311826,311827,311828,311829,311830,311831,311832,311833,311841,311842,311843,311844,311845) AND `id`=45239;

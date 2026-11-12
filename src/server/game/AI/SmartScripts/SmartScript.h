@@ -223,6 +223,7 @@ class SmartScript
 
         //TIMED_ACTIONLIST (script type 9 aka script9)
         void SetScript9(SmartScriptHolder& e, uint32 entry);
+        void SetScript9(uint32 entry, uint32 timerType);
         Unit* GetLastInvoker(Unit* invoker = nullptr);
         ObjectGuid mLastInvoker;
         typedef std::unordered_map<uint32, uint32> CounterMap;
@@ -244,6 +245,10 @@ class SmartScript
         SmartAIEventList mEvents;
         SmartAIEventList mInstallEvents;
         SmartAIEventList mTimedActionList;
+        bool mUpdatingTimedActionList = false;   // OnUpdate is iterating mTimedActionList
+        bool mPendingTimedActionList = false;    // SetScript9 was called during that iteration
+        uint32 mPendingTimedActionListEntry = 0;
+        uint32 mPendingTimedActionListTimerType = 0;
         Creature* me;
         ObjectGuid meOrigGUID;
         GameObject* go;
@@ -251,6 +256,7 @@ class SmartScript
         AreaTriggerEntry const* trigger;
         SmartScriptType mScriptType;
         uint32 mEventPhase;
+        uint8 mSpellHitDepth = 0; // re-entrancy guard of SMART_EVENT_SPELLHIT (see ProcessEvent)
 
         uint32 mPathId;
         std::list<SmartScriptHolder> mStoredEvents;   // (stored-events-list) a list: an action may add a timed event while OnUpdate walks it

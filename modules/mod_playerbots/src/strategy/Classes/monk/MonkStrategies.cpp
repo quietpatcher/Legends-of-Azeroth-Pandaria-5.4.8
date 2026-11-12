@@ -49,7 +49,7 @@ void BrewmasterMonkStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("shuffle", NextAction::array(0, new NextAction("blackout kick", ACTION_HIGH + 5), nullptr)));
     triggers.push_back(new TriggerNode("heavy stagger", NextAction::array(0, new NextAction("purifying brew", ACTION_HIGH + 8), nullptr)));
     triggers.push_back(new TriggerNode("elusive brew", NextAction::array(0, new NextAction("elusive brew", ACTION_HIGH + 6), nullptr)));
-    triggers.push_back(new TriggerNode("medium health", NextAction::array(0, new NextAction("guard", ACTION_HIGH + 6), nullptr)));
+    triggers.push_back(new TriggerNode("medium health", NextAction::array(0, new NextAction("guard spell", ACTION_HIGH + 6), nullptr)));
 }
 
 // -- windwalker (melee dps, also monks without specialization and solo mistweavers)

@@ -21,4 +21,15 @@ void TTFlushPendingGuildCriteria();   // Guild.cpp
 void TTRecordMapUpdateTime(unsigned int mapId, unsigned int ms);
 unsigned int TTMapUpdateTime(unsigned int mapId, bool peak);
 
+// botcost: per-bot cost hooks. Map::Update times the update of each bot (session packets + Player::Update, which
+// holds the bot AI) and the cells around it (the creatures that fight it), and hands the microseconds to the sink on the map
+// thread; at the end of the map tick the map-end hook gets the tick length. Both are nullptr (a single atomic load per tick)
+// until the playerbots module installs them (BotLife.CostLog.Enable / BotLife.CostWatchdog.Enable).
+class Player;
+typedef void (*TTBotCostSinkFn)(Player* bot, unsigned int playerUs, unsigned int cellsUs);
+typedef void (*TTBotCostMapEndFn)(Map* map, unsigned int tickMs);
+void TTSetBotCostHooks(TTBotCostSinkFn sink, TTBotCostMapEndFn mapEnd);
+TTBotCostSinkFn TTBotCostSink();
+TTBotCostMapEndFn TTBotCostMapEnd();
+
 #endif

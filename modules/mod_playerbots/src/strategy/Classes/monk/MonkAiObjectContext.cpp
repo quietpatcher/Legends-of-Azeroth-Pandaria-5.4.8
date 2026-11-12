@@ -134,7 +134,7 @@ public:
 
         creators["keg smash"] = &MonkAiObjectContextInternal::keg_smash;
         creators["breath of fire"] = &MonkAiObjectContextInternal::breath_of_fire;
-        creators["guard"] = &MonkAiObjectContextInternal::guard;
+        creators["guard spell"] = &MonkAiObjectContextInternal::guard;
         creators["purifying brew"] = &MonkAiObjectContextInternal::purifying_brew;
         creators["elusive brew"] = &MonkAiObjectContextInternal::elusive_brew;
 

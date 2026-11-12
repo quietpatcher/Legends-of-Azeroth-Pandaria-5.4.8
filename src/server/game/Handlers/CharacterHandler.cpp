@@ -208,6 +208,10 @@ bool LoginQueryHolder::Initialize()
     stmt->setUInt32(0, lowGuid);
     res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_QUEST_STATUS_REW, stmt);
 
+    stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_ACCOUNT_QUESTSTATUSREW);
+    stmt->setUInt32(0, m_accountId);
+    res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_ACCOUNT_QUEST_REWARDED, stmt);
+
     stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_ACCOUNT_INSTANCELOCKTIMES);
     stmt->setUInt32(0, m_accountId);
     res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_INSTANCE_LOCK_TIMES, stmt);
@@ -880,6 +884,10 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
         m_playerLoading = false;
         return;
     }
+
+    sBattlePayMgr->SyncAchievementPoints(this);     // shop balance: achievement points earned so far (once per account)
+
+    sScriptMgr->OnPlayerLoadFromDB(pCurrChar);
 
     pCurrChar->GetMotionMaster()->Initialize();
 

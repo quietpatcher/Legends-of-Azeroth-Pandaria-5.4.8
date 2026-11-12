@@ -970,8 +970,18 @@ class spell_warl_conflagrate_aura : public SpellScript
 
     void HandleAura(SpellEffIndex eff)
     {
-        if (!GetHitUnit()->HasAura(SPELL_WARLOCK_IMMOLATE) && !GetCaster()->HasAura(SPELL_WARLOCK_GLYPH_OF_CONFLAGRATE))
-            PreventEffectForTarget(GetHitUnit(), eff);
+        Unit* target = GetHitUnit();
+        if (target->HasAura(SPELL_WARLOCK_IMMOLATE) || GetCaster()->HasAura(SPELL_WARLOCK_GLYPH_OF_CONFLAGRATE))
+            return;
+
+        // #963: a reflected Conflagrate launches on the caster (Spell::DoAllEffectOnLaunchTarget, SPELL_MISS_REFLECT), but its
+        // TargetInfo still carries the reflecting unit's GUID, so PreventEffectForTarget(caster) found no entry and the aura
+        // landed on the warlock. Strip the effect from the entry that is actually being processed (the explicit target).
+        if (target == GetCaster())
+            if (Unit* explTarget = GetExplTargetUnit())
+                target = explTarget;
+
+        PreventEffectForTarget(target, eff);
     }
 
     void Register() override

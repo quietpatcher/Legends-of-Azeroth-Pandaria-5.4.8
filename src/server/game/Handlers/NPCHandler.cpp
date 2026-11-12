@@ -610,7 +610,11 @@ void WorldSession::SendBindPoint(Creature* npc)
     uint32 bindspell = 3286;
 
     // send spell for homebinding (3286)
-    npc->CastSpell(_player, bindspell, true);
+    // The innkeeper casts it on the player, as on retail (SMSG_PLAYERBOUND carries the innkeeper). Spell::CheckCast returned
+    // SPELL_FAILED_BAD_TARGETS for this creature-to-player cast, so the bind silently did nothing after the player accepted the
+    // confirm box. The player was already validated by GetNPCIfCanInteractWith (innkeeper flag, distance, alive), so the target
+    // check is skipped here.
+    npc->CastSpell(_player, bindspell, TriggerCastFlags(TRIGGERED_FULL_MASK | TRIGGERED_IGNORE_TARGET_CHECK));
     
     _player->PlayerTalkClass->SendCloseGossip();
 }

@@ -389,8 +389,14 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
     UpdateTimeOutTime(diff);
     std::unordered_map<uint16, OpcodeInfo> pktHandle;
     // Services timers
-    GetBoost()->Update(diff);
-    sBattlePayMgr->Update(diff);
+    // #969: only from World::UpdateSessions (world thread, once per tick). Map::Update also calls
+    // this with a MapSessionFilter from the map threads, which ran these timers twice per tick
+    // and the shop purchase steps concurrently with the world thread.
+    if (updater.ProcessUnsafe())
+    {
+        GetBoost()->Update(diff);
+        sBattlePayMgr->Update(this, diff);
+    }
 
     ///- Before we process anything:
     /// If necessary, kick the player from the character select screen

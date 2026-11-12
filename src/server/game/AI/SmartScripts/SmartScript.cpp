@@ -157,6 +157,16 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             if (!talker)
                 break;
 
+            // #1025, AC SmartScript.cpp:253: a victim / invoker target can resolve to a guardian (a shaman's fire elemental) that
+            // has no creature_text; skip the row instead of making it speak. AC logs this as an sql error; here it is a debug
+            // line, since the same data rows trigger it whenever such a guardian pulls the creature.
+            if (!sCreatureTextMgr->TextExist(talker->GetEntry(), uint8(e.action.talk.textGroupID)))
+            {
+                TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_TALK: entry %d source %u event %u target %u: talker %u has no text group %u, ignored.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetTargetType(), talker->GetEntry(), uint32(e.action.talk.textGroupID));
+                break;
+            }
+
             mTalkerEntry = talker->GetEntry();
             mLastTextID = e.action.talk.textGroupID;
             mTextTimer = e.action.talk.duration;
@@ -338,6 +348,9 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                     if (Quest const* q = sObjectMgr->GetQuestTemplate(e.action.quest.quest))
                     {
                         (*itr)->ToPlayer()->AddQuestAndCheckCompletion(q, nullptr);   // acceptcredit: no objectives = complete
+                        // A quest that starts by itself is shown to the player, not only added to the log
+                        if (q->IsAutoAccept())
+                            (*itr)->ToPlayer()->PlayerTalkClass->SendQuestGiverQuestDetails(q, (*itr)->GetGUID(), true, true);
                         TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_ADD_QUEST: Player guidLow {} add quest {}",
                             (*itr)->GetGUID().GetCounter(), e.action.quest.quest);
                     }
@@ -771,21 +784,35 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
         }
         case SMART_ACTION_CALL_GROUPEVENTHAPPENS:
         {
-            if (!unit)
-                break;
-
-            if (IsPlayer(unit) && GetBaseObject())
+            // Credit the action targets (a stored list, the invoker, players in range ...), their charmer/owner player and
+            // players seated on a target vehicle. Crediting only the event unit failed for timed / out-of-combat events, whose
+            // unit is the last invoker (Apprentice Mirveda 8488 credited one of her summons). An empty target list falls
+            // back to the unit.
+            ObjectList* targets = GetTargets(e, unit);
+            ObjectList fallback;
+            if ((!targets || targets->empty()) && unit)
+                fallback.push_back(unit);
+            ObjectList const& list = (targets && !targets->empty()) ? *targets : fallback;
+            for (ObjectList::const_iterator itr = list.begin(); itr != list.end(); ++itr)
             {
-                unit->ToPlayer()->GroupEventHappens(e.action.quest.quest, GetBaseObject());
-                TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_CALL_GROUPEVENTHAPPENS: Player {}, group credit for quest {}",
-                    unit->GetGUID().GetCounter(), e.action.quest.quest);
-            }
+                if (!IsUnit(*itr) || !GetBaseObject())
+                    continue;
 
-            // Special handling for vehicles
-            if (Vehicle* vehicle = unit->GetVehicleKit())
-                for (SeatMap::iterator it = vehicle->Seats.begin(); it != vehicle->Seats.end(); ++it)
-                    if (Player* player = ObjectAccessor::GetPlayer(*unit, it->second.Passenger.Guid))
-                        player->GroupEventHappens(e.action.quest.quest, GetBaseObject());
+                Unit* unitTarget = (*itr)->ToUnit();
+                if (Player* player = unitTarget->GetCharmerOrOwnerPlayerOrPlayerItself())
+                {
+                    player->GroupEventHappens(e.action.quest.quest, GetBaseObject());
+                    TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_CALL_GROUPEVENTHAPPENS: Player {}, group credit for quest {}",
+                        player->GetGUID().GetCounter(), e.action.quest.quest);
+                }
+
+                // Special handling for vehicles
+                if (Vehicle* vehicle = unitTarget->GetVehicleKit())
+                    for (SeatMap::iterator it = vehicle->Seats.begin(); it != vehicle->Seats.end(); ++it)
+                        if (Player* player = ObjectAccessor::GetPlayer(*unitTarget, it->second.Passenger.Guid))
+                            player->GroupEventHappens(e.action.quest.quest, GetBaseObject());
+            }
+            delete targets;
             break;
         }
         case SMART_ACTION_REMOVEAURASFROMSPELL:
@@ -1178,9 +1205,13 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                     y += e.target.y;
                     z += e.target.z;
                     o += e.target.o;
-                    if (Creature* summon = GetBaseObject()->SummonCreature(e.action.summonCreature.creature, x, y, z, o, (TempSummonType)e.action.summonCreature.type, Milliseconds(e.action.summonCreature.duration)))
+                    if (Creature* summon = GetBaseObject()->SummonCreature(e.action.summonCreature.creature, x, y, z, o, (TempSummonType)e.action.summonCreature.type, Milliseconds(e.action.summonCreature.duration), GetBaseObject()->GetPrivateObjectOwner()))
+                    {
                         if (e.action.summonCreature.attackInvoker)
                             summon->AI()->AttackStart((*itr)->ToUnit());
+                        else if (me && e.action.summonCreature.attackScriptOwner)
+                            summon->AI()->AttackStart(me);
+                    }
                 }
 
                 delete targets;
@@ -1189,9 +1220,14 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             if (e.GetTargetType() != SMART_TARGET_POSITION)
                 break;
 
-            if (Creature* summon = GetBaseObject()->SummonCreature(e.action.summonCreature.creature, e.target.x, e.target.y, e.target.z, e.target.o, (TempSummonType)e.action.summonCreature.type, Milliseconds(e.action.summonCreature.duration)))
+            // attackInvoker, else attackScriptOwner (action_param5)
+            if (Creature* summon = GetBaseObject()->SummonCreature(e.action.summonCreature.creature, e.target.x, e.target.y, e.target.z, e.target.o, (TempSummonType)e.action.summonCreature.type, Milliseconds(e.action.summonCreature.duration), GetBaseObject()->GetPrivateObjectOwner()))
+            {
                 if (unit && e.action.summonCreature.attackInvoker)
                     summon->AI()->AttackStart(unit);
+                else if (me && e.action.summonCreature.attackScriptOwner)
+                    summon->AI()->AttackStart(me);
+            }
             break;
         }
         case SMART_ACTION_SUMMON_GO:
@@ -3248,7 +3284,18 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             if ((!e.event.spellHit.spell || spell->Id == e.event.spellHit.spell) &&
                 (!e.event.spellHit.school || (spell->SchoolMask & e.event.spellHit.school)))
                 {
+                    // a SPELLHIT script whose action casts a spell that matches its own SPELLHIT filter on
+                    // the creature itself (creature 18693 Speaker Mar'grom: Fire hit -> cast Fire Ward on self, Fire school)
+                    // re-entered itself until the thread stack was gone (prod crash 12-11 01:59, 40k frames deep).
+                    if (mSpellHitDepth >= 2)
+                    {
+                        TC_LOG_ERROR("scripts.ai", "SmartScript: SMART_EVENT_SPELLHIT recursion stopped (entry {}, event {}, spell {})",
+                            e.entryOrGuid, e.event_id, spell->Id);
+                        break;
+                    }
+                    ++mSpellHitDepth;
                     ProcessAction(e, unit, 0, 0, bvar, spell);
+                    --mSpellHitDepth;
                     RecalcTimer(e, e.event.spellHit.cooldownMin, e.event.spellHit.cooldownMax);
                 }
             break;
@@ -3738,6 +3785,9 @@ void SmartScript::OnUpdate(uint32 const diff)
     bool needCleanup = true;
     if (!mTimedActionList.empty())
     {
+        // SetScript9 (action 80/87/88 reaching this script again, e.g. from a nested LoS event) replaces
+        // mTimedActionList; doing that under this iterator leaves it dangling. Defer it until the loop is done.
+        mUpdatingTimedActionList = true;
         for (SmartAIEventList::iterator i = mTimedActionList.begin(); i != mTimedActionList.end(); ++i)
         {
             if ((*i).enableTimed)
@@ -3746,6 +3796,13 @@ void SmartScript::OnUpdate(uint32 const diff)
                 needCleanup = false;
             }
         }
+        mUpdatingTimedActionList = false;
+    }
+    if (mPendingTimedActionList)
+    {
+        mPendingTimedActionList = false;
+        SetScript9(mPendingTimedActionListEntry, mPendingTimedActionListTimerType);
+        needCleanup = false;
     }
     if (needCleanup)
         mTimedActionList.clear();
@@ -4008,6 +4065,19 @@ ObjectList* SmartScript::GetTargetList(uint32 id, WorldObject const* scriptTrigg
 
 void SmartScript::SetScript9(SmartScriptHolder& e, uint32 entry)
 {
+    SetScript9(entry, e.action.timedActionList.timerType);
+}
+
+void SmartScript::SetScript9(uint32 entry, uint32 timerType)
+{
+    if (mUpdatingTimedActionList)
+    {
+        mPendingTimedActionList = true;
+        mPendingTimedActionListEntry = entry;
+        mPendingTimedActionListTimerType = timerType;
+        return;
+    }
+
     mTimedActionList.clear();
     mTimedActionList = sSmartScriptMgr->GetScript(entry, SMART_SCRIPT_TYPE_TIMED_ACTIONLIST);
     if (mTimedActionList.empty())
@@ -4016,11 +4086,11 @@ void SmartScript::SetScript9(SmartScriptHolder& e, uint32 entry)
     {
         i->enableTimed = i == mTimedActionList.begin();//enable processing only for the first action
 
-        if (e.action.timedActionList.timerType == 0)
+        if (timerType == 0)
             i->event.type = SMART_EVENT_UPDATE_OOC;
-        else if (e.action.timedActionList.timerType == 1)
+        else if (timerType == 1)
             i->event.type = SMART_EVENT_UPDATE_IC;
-        else if (e.action.timedActionList.timerType > 1)
+        else if (timerType > 1)
             i->event.type = SMART_EVENT_UPDATE;
 
         InitTimer((*i));

@@ -11,7 +11,10 @@
 #include "PlayerbotSpec.h"
 #include "RtiTargetValue.h"
 #include "ScriptedCreature.h"
+#include "Log.h"
 #include "ThreatManager.h"
+#include <atomic>
+#include <ctime>
 
 Unit* FindTargetStrategy::GetResult()
 {
@@ -21,6 +24,41 @@ Unit* FindTargetStrategy::GetResult()
 Unit* TargetValue::FindTarget(FindTargetStrategy* strategy)
 {
     GuidVector attackers = botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get();
+
+    // to-do gotss: Gate of the Setting Sun (962), Striker Ga'dok (56589): retail tactic - tank and damage dealers
+    // stay on the boss, adds only when they hit a healer (source: Wowhead/Wowpedia "Striker Ga'dok"; he summons 2+2 Krik'thik
+    // every 20-28 s and the bots kept picking the adds: run 17275, 213 add kills in 43 min, Ga'dok alive). Not while he strafes
+    // (REACT_PASSIVE, takes no lethal damage), not when out of reach (flags / hovering high); healers unchanged.
+    if (bot->GetMapId() == 962 && !PlayerBotSpec::IsHeal(bot))
+    {
+        Unit* gadok = nullptr;
+        bool healerHit = false;
+        for (ObjectGuid const guid : attackers)
+        {
+            Unit* unit = botAI->GetUnit(guid);
+            if (!unit || !unit->IsAlive())
+                continue;
+            if (unit->GetEntry() == 56589)
+                gadok = unit;
+            else if (Player* victim = unit->GetVictim() ? unit->GetVictim()->ToPlayer() : nullptr)
+                if (victim->GetGroup() == bot->GetGroup() && PlayerBotSpec::IsHeal(victim))
+                    healerHit = true;
+        }
+        Creature* gc = gadok ? gadok->ToCreature() : nullptr;
+        if (gc && !healerHit && gc->IsInCombat() && gc->GetReactState() != REACT_PASSIVE &&
+            !gc->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && !gc->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) &&
+            !gc->HasUnitFlag(UNIT_FLAG_IMMUNE_TO_PC) && gc->GetPositionZ() - bot->GetPositionZ() < 12.0f &&
+            bot->GetExactDist(gc) < 60.0f)
+        {
+            static std::atomic<time_t> s_lastLog{0};
+            time_t const now = time(nullptr);
+            time_t last = s_lastLog.load();
+            if (now - last >= 30 && s_lastLog.compare_exchange_strong(last, now))
+                TC_LOG_INFO("playerbots", "GotSS focus Ga'dok: {} on Ga'dok (dist {:.0f})", bot->GetName(), bot->GetExactDist(gc));
+            return gadok;
+        }
+    }
+
     for (ObjectGuid const guid : attackers)
     {
         Unit* unit = botAI->GetUnit(guid);

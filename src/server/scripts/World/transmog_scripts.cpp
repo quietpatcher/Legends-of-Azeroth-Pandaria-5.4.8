@@ -75,6 +75,7 @@ public:
 
     bool OnGossipHello(Player* player, Creature* creature)
     {
+        std::lock_guard<std::recursive_mutex> guard(sT->mapLock);
         WorldSession* session = player->GetSession();
         //if (player->GetQuestStatus(40328) == QUEST_STATUS_REWARDED || player->GetQuestStatus(40329) == QUEST_STATUS_REWARDED)
         {
@@ -105,6 +106,7 @@ public:
 
     bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action)
     {
+        std::lock_guard<std::recursive_mutex> guard(sT->mapLock);
         player->PlayerTalkClass->ClearMenus();
         WorldSession* session = player->GetSession();
         switch (sender)
@@ -285,6 +287,7 @@ public:
 #ifdef PRESETS
     bool OnGossipSelectCode(Player* player, Creature* creature, uint32 sender, uint32 action, const char* code)
     {
+        std::lock_guard<std::recursive_mutex> guard(sT->mapLock);
         player->PlayerTalkClass->ClearMenus();
         if (sender || action)
             return true; // should never happen
@@ -432,26 +435,32 @@ public:
     void OnLogin(Player* player)
     {
         ObjectGuid playerGUID = player->GetGUID();
-        sT->entryMap.erase(playerGUID);
         QueryResult result = CharacterDatabase.PQuery("SELECT GUID, FakeEntry FROM custom_transmogrification WHERE Owner = {}", player->GetGUID().GetCounter());
+        {
+            std::lock_guard<std::recursive_mutex> guard(sT->mapLock);
+            sT->entryMap.erase(playerGUID);
+            if (result)
+            {
+                do
+                {
+                    ObjectGuid itemGUID = ObjectGuid(HighGuid::Item, (*result)[0].GetUInt32());
+                    ObjectGuid fakeEntry = ObjectGuid(uint64((*result)[1].GetUInt32()));
+                    if (sObjectMgr->GetItemTemplate(fakeEntry))
+                    {
+                        sT->dataMap[itemGUID] = playerGUID;
+                        sT->entryMap[playerGUID][itemGUID] = fakeEntry;
+                    }
+                    else
+                    {
+                        //sLog->outError(LOG_FILTER_SQL, "Item entry (Entry: %u, itemGUID: %u, playerGUID: %u) does not exist, ignoring.", fakeEntry, GUID_LOPART(itemGUID), player->GetGUIDLow());
+                        // CharacterDatabase.PExecute("DELETE FROM custom_transmogrification WHERE FakeEntry = {}", fakeEntry);
+                    }
+                } while (result->NextRow());
+            }
+        }
+
         if (result)
         {
-            do
-            {
-                ObjectGuid itemGUID = ObjectGuid(HighGuid::Item, (*result)[0].GetUInt32());
-                ObjectGuid fakeEntry = ObjectGuid(uint64((*result)[1].GetUInt32()));
-                if (sObjectMgr->GetItemTemplate(fakeEntry))
-                {
-                    sT->dataMap[itemGUID] = playerGUID;
-                    sT->entryMap[playerGUID][itemGUID] = fakeEntry;
-                }
-                else
-                {
-                    //sLog->outError(LOG_FILTER_SQL, "Item entry (Entry: %u, itemGUID: %u, playerGUID: %u) does not exist, ignoring.", fakeEntry, GUID_LOPART(itemGUID), player->GetGUIDLow());
-                    // CharacterDatabase.PExecute("DELETE FROM custom_transmogrification WHERE FakeEntry = {}", fakeEntry);
-                }
-            } while (result->NextRow());
-
             for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
             {
                 if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
@@ -468,9 +477,16 @@ public:
     void OnLogout(Player* player)
     {
         ObjectGuid pGUID = player->GetGUID();
-        for (Transmogrification::transmogData::const_iterator it = sT->entryMap[pGUID].begin(); it != sT->entryMap[pGUID].end(); ++it)
-            sT->dataMap.erase(it->first);
-        sT->entryMap.erase(pGUID);
+        {
+            std::lock_guard<std::recursive_mutex> guard(sT->mapLock);
+            Transmogrification::transmogMap::iterator eit = sT->entryMap.find(pGUID);
+            if (eit != sT->entryMap.end())
+            {
+                for (Transmogrification::transmogData::const_iterator it = eit->second.begin(); it != eit->second.end(); ++it)
+                    sT->dataMap.erase(it->first);
+                sT->entryMap.erase(eit);
+            }
+        }
 
 #ifdef PRESETS
         if (sT->GetEnableSets())

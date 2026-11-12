@@ -432,7 +432,7 @@ bool Quest::IsAutoAccept() const
 
 bool Quest::IsTurnIn() const
 {
-    return !sWorld->getBoolConfig(CONFIG_QUEST_IGNORE_AUTO_COMPLETE) && (_type == QUEST_TYPE_TURNIN || HasFlag(QUEST_FLAGS_AUTO_COMPLETE));
+    return !sWorld->getBoolConfig(CONFIG_QUEST_IGNORE_AUTO_COMPLETE) && (_type == QUEST_TYPE_TURNIN || (HasFlag(QUEST_FLAGS_AUTO_COMPLETE) && Objectives.empty()));
 }
 
 bool Quest::IsRaidQuest(Difficulty difficulty) const

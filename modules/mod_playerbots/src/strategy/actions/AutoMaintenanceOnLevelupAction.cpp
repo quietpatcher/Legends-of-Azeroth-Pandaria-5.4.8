@@ -54,8 +54,9 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
 
     BotFactory factory(bot, bot->GetLevel());
     // a level-up came with a new set of gear; with natural progression a bot wears what it finds
+    // to-do 265: never at max level - from 90 on only loot from dungeons and raids, whatever the config
     static bool const natural = sConfigMgr->GetBoolDefault("AiPlayerbot.NaturalProgression", false);
-    if (!natural)
+    if (!natural && bot->GetLevel() < sPlayerbotAIConfig->randomBotMaxLevel)
         factory.InitEquipment(true);
     factory.InitPet();
     /*if (!sPlayerbotAIConfig->autoUpgradeEquip || !sRandomPlayerbotMgr->IsRandomBot(bot))

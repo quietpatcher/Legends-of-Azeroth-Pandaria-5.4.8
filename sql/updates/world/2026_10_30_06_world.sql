@@ -1,4 +1,4 @@
--- To-do 457 (Andorhal Fore-Commanders clustered; proposal Gemini item457_20261030_2220 reviewed against the DB):
+-- To-do 457 (Andorhal Fore-Commanders clustered; an internal proposal reviewed against the DB):
 -- 22 of 23 Alliance Fore-Commander (44450) spawns wander (MovementType 1, radius 3) while the Horde counterpart Deathguard War-Captain (44449)
 -- has all 15 spawns stationary (MovementType 0). Set the wandering ones stationary. The proposed deletion of 4 "phantom" spawns is NOT applied (no source).
 -- Source: our world DB, creature id 44449 (15x MovementType 0, wander 0) as the faction twin; no sniff of the movement.

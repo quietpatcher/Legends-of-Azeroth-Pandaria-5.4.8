@@ -331,6 +331,26 @@ class boss_yu_lon_tjs : public CreatureScript
                     instance->SendEncounterUnit(ENCOUNTER_FRAME_ENGAGE, me);
             }
 
+            // #1013: Yu'lon is Liu's phase-3 summon at 30% hp (InitializeAI). Evading on his own healed him to 100% while Liu stayed
+            // up, so his fake death (Cleansing Breath, Liu becomes selectable) never came. An evade before that is a wipe of the
+            // encounter: reset it through Liu, whose EnterEvadeMode despawns her summons (him included) and fails the boss state.
+            void EnterEvadeMode(EvadeReason why = EVADE_REASON_OTHER) override
+            {
+                if (leaveEvent)
+                    return;
+
+                if (Creature* liu = instance ? Unit::GetCreature(*me, instance->GetGuidData(DATA_LIU)) : nullptr)
+                {
+                    if (liu->IsAlive() && liu->IsAIEnabled)
+                    {
+                        liu->AI()->EnterEvadeMode(why);
+                        return;
+                    }
+                }
+
+                ScriptedAI::EnterEvadeMode(why);
+            }
+
             void DamageTaken(Unit* attacker, uint32& damage) override
             {
                 if (me->GetHealth() <= damage)

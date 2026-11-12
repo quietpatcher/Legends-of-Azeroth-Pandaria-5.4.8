@@ -292,6 +292,11 @@ struct npc_trigger_scorched_flame : public ScriptedAI
 
     void IsSummonedBy(Unit* summoner) override
     {
+        // the template is level 90 and the damage of 114464 scales with the level of this
+        // trigger, so normal mode (Korloff level 34) burned level 30-38 parties for the level-90 value (~75k per second,
+        // Wowhead MoP Classic spell 114464). The fire field takes the level of the Korloff that drops it.
+        if (summoner)
+            me->SetLevel(summoner->GetLevel());
         me->CastSpell(me, SPELL_TRIGGER_SCORCHED_EARTH, false);
         me->DespawnOrUnsummon(30000);
         trig = false;

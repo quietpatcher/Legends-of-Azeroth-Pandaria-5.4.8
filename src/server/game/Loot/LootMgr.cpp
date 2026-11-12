@@ -443,11 +443,13 @@ LootItem::LootItem(WorldDropLootItem const& item)
     is_counted = false;
     is_looted = false;
     freeforall = true;
+    is_underthreshold = false;
     is_world_drop = true;
     itemid = item.Item;
     needs_quest = false;
     type = LOOT_ITEM_TYPE_ITEM;
     personal = false;
+    canSave = true;
 
     ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemid);
     randomSuffix = GenerateEnchSuffixFactor(itemid);

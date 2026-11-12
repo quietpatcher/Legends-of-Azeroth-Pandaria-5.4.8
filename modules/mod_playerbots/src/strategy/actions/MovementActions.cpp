@@ -1708,7 +1708,6 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
     std::vector<std::pair<Position, float>> hazards;   // centre, radius + 2 yd margin
     Unit* worst = nullptr;
     float worstRadius = 0.0f;
-    Unit* heldTrail = nullptr;   // (trail-source held) the creature that lays the patches while it walks and has this bot as its victim
     std::list<Unit*> nearUnits;
     Trinity::AnyUnitInObjectRangeCheck nearCheck(bot, 15.0f);
     Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> nearSearcher(bot, nearUnits, nearCheck);
@@ -1736,17 +1735,8 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                     float const radius = trigger->Effects[j].CalcRadius();
                     if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius)
                         continue;
-                    // (trail-source held) the victim of the creature that lays the patches: a hop out of its melee range makes it
-                    // walk and lay a new trail (boss_brother_korloff.cpp spell_scorched_earth::PeriodicTick only ticks while the
-                    // owner isMoving()), so only the real radius counts for it, not the 2 yd margin for a bot that has to run
-                    TempSummon* summon = unit->ToTempSummon();
-                    Unit* source = summon ? summon->GetSummoner() : nullptr;
-                    bool const held = source && source != bot && source->IsAlive() && source->GetVictim() == bot;
-                    if (held)
-                        heldTrail = source;
-                    float const margin = held ? 0.5f : 2.0f;
-                    hazards.push_back({ unit->GetPosition(), radius + margin });
-                    if (bot->GetExactDist2d(unit) < radius + margin && (!worst || radius > worstRadius))
+                    hazards.push_back({ unit->GetPosition(), radius + 2.0f });
+                    if (bot->GetExactDist2d(unit) < radius + 2.0f && (!worst || radius > worstRadius))
                     {
                         worst = unit;
                         worstRadius = radius;
@@ -1766,21 +1756,11 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
         float const reach = melee ? 5.0f : 25.0f;
         // candidates by score; the path is only calculated for the best ones until one is reachable
         std::vector<std::pair<float, Position>> candidates;
-        // (trail-source held) the victim only moves along the circle around the creature, inside its melee range: it turns in place
-        // and does not walk, so no new patches; the old ones burn out after 30 s (despawn in npc_trigger_scorched_flame::IsSummonedBy)
-        float const ring = heldTrail ? std::min(bot->GetExactDist2d(heldTrail), heldTrail->GetMeleeRange(bot) - 0.5f) : 0.0f;
         for (int a = 0; a < 16; ++a)
             for (float d : { 5.0f, 8.0f, 11.0f })
             {
-                if (heldTrail && d != 5.0f)
-                    continue;   // one ring of 16 spots
                 float const ang = a * float(M_PI) / 8.0f;
                 float x = bot->GetPositionX() + std::cos(ang) * d, y = bot->GetPositionY() + std::sin(ang) * d, z = bot->GetPositionZ();
-                if (heldTrail)
-                {
-                    x = heldTrail->GetPositionX() + std::cos(ang) * ring;
-                    y = heldTrail->GetPositionY() + std::sin(ang) * ring;
-                }
                 bot->UpdateAllowedPositionZ(x, y, z);
                 if (std::fabs(z - bot->GetPositionZ()) > 4.0f)
                     continue;
@@ -1816,8 +1796,8 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                 return true;
             }
         }
-        // no clear spot found: the old step away from the nearest zone (not for the victim of a trail creature: stay in its melee range)
-        if (!heldTrail && FleePosition(worst->GetPosition(), worstRadius + 2.0f))
+        // no clear spot found: the old step away from the nearest zone
+        if (FleePosition(worst->GetPosition(), worstRadius + 2.0f))
             return true;
     }
     GuidVector const triggers = AI_VALUE(GuidVector, "possible triggers");

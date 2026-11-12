@@ -25,6 +25,11 @@
 #include "Position.h"
 #include "Timer.h"
 
+// (botcost) a creature that chases a bot keeps its running spline while the bot stayed within this many yards of the position
+// the path was made for and the spline has more than this many ms left (see ChaseMovementGenerator::Update)
+#define CHASE_REPATH_DISTANCE 2.0f
+#define CHASE_REPATH_MIN_TIME_LEFT 300
+
 class PathGenerator;
 class Unit;
 
@@ -54,6 +59,7 @@ class ChaseMovementGenerator : public MovementGenerator, public AbstractFollower
         TimeTracker _rangeCheckTimer;
         bool _movingTowards = true;
         bool _mutualChase = true;
+        uint32 _splineEndMs = 0;   // (botcost) getMSTime() at which the running chase spline ends
 };
 
 #endif

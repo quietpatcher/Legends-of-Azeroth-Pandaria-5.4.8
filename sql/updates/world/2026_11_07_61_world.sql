@@ -1,0 +1,23 @@
+-- Lieutenant Valorcall 2612 (Sigil of Arathor 26032): one spawn, alone, patrolling the road between Stromgarde and Refuge Pointe.
+-- mop had two standing spawns and two Stromgarde Cavalrymen 2738; the template says MovementType 2, nobody walked.
+-- Sourced:
+-- - Route: AzerothCore's waypoint_data 145720 (3.3.5), with its two 60 s stops (nodes 66 in Stromgarde, 146 south of Refuge Pointe). It is
+--   pre-Cataclysm. TDB 442's sniffed fragment (285677, path 22854160, 12 nodes) walks the same stretch of road for its nodes 1-6, then turns
+--   back east at (-1451,-2380), which AC's route doesn't do there; its nodes 7-12 only retrace the road. mop's old guid 11256 stood on AC's node
+--   45, and a Wowhead comment on 26032 of 2010-11-25, after The Shattering, says: "if you don't meet him on the way, just wait south of
+--   Refuge Pointe". Every z checked against the 5.4.8 ground. A loop is about 2875 yd, some 21 minutes with the stops.
+-- - Spawn spot and mount: TDB 442 guid 285677; template mount 229, as in AC's addon.
+-- - Respawn 600: the same comment ("about a 10 minute respawn timer"); guid 11256 also had 600. 160855 had 300.
+-- - No Cavalrymen: Wowhead comment on 2612 of 2010-12-01 ("Since The Shattering, Valorcall has lost is buddies"), no 2738 in either
+--   TDB, template level 36-37 never rescaled while Valorcall went to 27, no level on 2738's Wowhead page.
+-- Ours: starting the path at TDB's spawn spot (a rotation of AC's cycle, with that spot as first node and AC's closing node 160, equal to
+-- node 1, dropped), so he appears by the quest's POI.
+-- Wowhead's 2612 and 2738 pins show this road too, but shifted about 6 % east of the map the post-Cataclysm NPCs' pins use: Classic data, so
+-- they neither date the route nor prove the Cavalrymen. They run on east to Dabyrie's Farmstead, where no node source exists.
+-- Reconcile 2026-11-11 (l1/R1111-reconcile): only the DELETE below is applied. The route, respawn 600 and mount statements for guid 160855
+-- (UPDATE creature, creature_addon, waypoint_data 1608550: 160 nodes) are left out: they overwrote our closed fix 283 (to-do 359, repeat
+-- check 359 expects one spawn, MovementType 2, respawn 120, 12 nodes). Our 12 nodes are the sniffed TDB 4.4.2/12.1 path (the fragment
+-- named above); the 160-node route is AzerothCore 3.3.5 data from before the Cataclysm, so it is not the better source. The DELETE still
+-- removes the two Stromgarde Cavalrymen 11251/11260 (11256 is already gone with fix 283).
+-- Rollback: nothing to undo for the reconcile; the Cavalrymen come back from the pre-L1 dump of creature (guids 11251, 11260).
+DELETE FROM `creature` WHERE `guid` IN (11256,11251,11260);

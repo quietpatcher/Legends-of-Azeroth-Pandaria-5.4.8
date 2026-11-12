@@ -387,6 +387,12 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
             isValid = 1;
         }
     }
+    // (botcost) the cost watchdog asked for this bot to leave: it goes through the same logout and standby as a timed-out bot
+    if (isValid && player && sBotLife->TakeCostLogout(player))
+    {
+        TC_LOG_INFO("playerbots", "BOTCOST watchdog: Bot #{} <{}> logs out (cost over the limit for too long)", bot, player->GetName().c_str());
+        isValid = 0;
+    }
     if (!isValid)
     {
         if (!player || !player->GetGroup())
@@ -792,6 +798,20 @@ void RandomPlayerbotMgr::TTKeepBot(ObjectGuid::LowType bot, bool keep)
     // the rotation only logs in while fewer than the maximum are online: a walker comes in right away
     if (!GetPlayerBot(bot))
         AddPlayerBot(ObjectGuid::Create<HighGuid::Player>(bot), 0);
+}
+
+// 439b: like TTKeepBot but not kept - a normal rotation session (the bot logs out by itself later)
+bool RandomPlayerbotMgr::TTLoginBot(ObjectGuid::LowType bot)
+{
+    if (!IsPoolBot(bot) || GetPlayerBot(bot) || std::find(_currentBots.begin(), _currentBots.end(), bot) != _currentBots.end())
+        return false;
+    SetEventValue(bot, "add", 1, urand(sPlayerbotAIConfig->minRandomBotInWorldTime, sPlayerbotAIConfig->maxRandomBotInWorldTime));
+    SetEventValue(bot, "logout", 0, 0);
+    SetEventValue(bot, "randomize", 1, 62208000);
+    SetEventValue(bot, "teleport", 1, 62208000);
+    _currentBots.push_back(bot);
+    AddPlayerBot(ObjectGuid::Create<HighGuid::Player>(bot), 0);
+    return true;
 }
 
 bool RandomPlayerbotMgr::IsRandomBot(ObjectGuid::LowType bot)

@@ -1,0 +1,4 @@
+-- Temple of the Jade Serpent, to-do 451: Liu Flameheart (56732) has a static placeholder spawn (guid 539885) at z 243.612, 64 yd above the courtyard (ground z ~180) and outside the navmesh. The instance script summons the real Liu at LiuSpawnPosition (929.787, -2561.016, 185.070) after 17 trash kills (instance_temple_of_the_jade_serpent.cpp:372, temple_of_the_jade_serpent.h:133), so the placeholder is a duplicate; bots chose it as boss #3 and stalled with NOPATH.
+-- Source: own code (script summon position) and world DB (creature guid 539885, no creature_addon). Blizzlike: Liu appears only through the courtyard event.
+-- Rollback: restore the single row from joint_sql_20261102/2026_11_02_10_world_rollback.sql (mysqldump of creature guid 539885 taken 02-11-2026).
+DELETE FROM `creature` WHERE `guid` = 539885 AND `id` = 56732 AND `map` = 960 AND `position_z` > 240;

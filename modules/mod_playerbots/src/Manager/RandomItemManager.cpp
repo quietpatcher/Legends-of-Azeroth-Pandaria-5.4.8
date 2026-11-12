@@ -2,6 +2,8 @@
 
 #include "Player.h"
 #include "PlayerbotSpec.h"
+#include "Config.h"             // to-do 265: MaxLevelFactoryItemLevel
+#include "PlayerbotAIConfig.h"
 
 #include <bitset>
 #include <map>
@@ -725,6 +727,7 @@ uint32 RandomItemManager::FindBestItemForLevelAndEquip(Player* bot, InventoryTyp
     uint32 bot_class = bot->GetClass();
     uint32 bot_race = bot->GetRace();
     int32 delta = std::min(level, 10u);
+    static uint32 const maxLevelCap = uint32(std::max(0, sConfigMgr->GetIntDefault("AiPlayerbot.MaxLevelFactoryItemLevel", 440)));   // (to-do 265)
 
     for (uint32 requiredLevel = bot->GetLevel(); requiredLevel > std::max((int32)bot->GetLevel() - delta, 0); requiredLevel--)
     {
@@ -750,6 +753,10 @@ uint32 RandomItemManager::FindBestItemForLevelAndEquip(Player* bot, InventoryTyp
             if (proto->RequiredLevel > level) continue;
             if ((proto->AllowableClass & bot->GetClassMask()) == 0 || (proto->AllowableRace & bot->GetRaceMask()) == 0) continue;
             if (!ItemLevelFits(level, proto)) continue;
+            // to-do 265: at max level the factory stays at the fresh-90 baseline (AiPlayerbot.MaxLevelFactoryItemLevel,
+            // 0 = no cap): MaxItemLevelForLevel(90) is unlimited and the best-candidate pick handed out item level 572 raid epics to
+            // every bot the level balance moved to 90. From 90 on a bot earns its upgrades in dungeons and raids.
+            if (maxLevelCap && level >= sPlayerbotAIConfig->randomBotMaxLevel && proto->ItemLevel > maxLevelCap) continue;
 
             // Item Quality
             {

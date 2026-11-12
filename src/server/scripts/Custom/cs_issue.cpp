@@ -87,7 +87,7 @@ namespace
         uint32 account = 0, zone = 0, area = 0, targetEntry = 0, targetSpawn = 0;
         int32 map = -1;
         float x = 0.0f, y = 0.0f, z = 0.0f;
-        std::string name = "console", targetName;
+        std::string name = "console", targetName, phase;
         if (WorldSession* session = handler->GetSession())
         {
             Player* player = session->GetPlayer();
@@ -101,6 +101,24 @@ namespace
                 z = player->GetPositionZ();
                 zone = player->GetZoneId();
                 area = player->GetAreaId();
+                // the phase of the reporter (to-do 475, Dwarfhunter 1-11-2026): what a player sees depends on it
+                std::ostringstream ph;
+                ph << "mask " << player->GetPhaseMask();
+                auto list = [&ph](char const* label, std::set<uint32> const& ids)
+                {
+                    if (ids.empty())
+                        return;
+                    ph << "; " << label;
+                    char sep = ' ';
+                    for (uint32 id : ids)
+                    {
+                        ph << sep << id;
+                        sep = ',';
+                    }
+                };
+                list("phases", player->GetPhases());
+                list("terrain swaps", player->GetTerrainSwaps());
+                phase = ph.str().substr(0, 250);
                 if (Unit* target = player->GetSelectedUnit())
                 {
                     if (target != player)
@@ -120,9 +138,10 @@ namespace
         CharacterDatabase.EscapeString(targetName);
         CharacterDatabase.EscapeString(category);
         CharacterDatabase.EscapeString(text);
-        CharacterDatabase.PExecute("INSERT INTO todo_reports (account, name, map, x, y, z, zone, area, target_entry, target_spawn, target_name, quest, category, text) "
-            "VALUES ({}, '{}', {}, {}, {}, {}, {}, {}, {}, {}, '{}', {}, '{}', '{}')",
-            account, name, map, x, y, z, zone, area, targetEntry, targetSpawn, targetName, quest, category, text);
+        CharacterDatabase.EscapeString(phase);
+        CharacterDatabase.PExecute("INSERT INTO todo_reports (account, name, map, x, y, z, zone, area, target_entry, target_spawn, target_name, quest, category, text, phase) "
+            "VALUES ({}, '{}', {}, {}, {}, {}, {}, {}, {}, {}, '{}', {}, '{}', '{}', '{}')",
+            account, name, map, x, y, z, zone, area, targetEntry, targetSpawn, targetName, quest, category, text, phase);
     }
 }
 

@@ -913,6 +913,7 @@ enum PlayerLoginQueryIndex
     PLAYER_LOGIN_QUERY_LOAD_DESERTER_INFO,
     PLAYER_LOGIN_QUERY_LOAD_BATTLGEROUND_STATS,
     PLAYER_LOGIN_QUERY_LOAD_CORPSE_LOCATION,
+    PLAYER_LOGIN_QUERY_LOAD_ACCOUNT_QUEST_REWARDED,
     MAX_PLAYER_LOGIN_QUERY
 };
 
@@ -3375,6 +3376,7 @@ protected:
     void _LoadQuestStatus(PreparedQueryResult result);
     void _LoadQuestObjectiveStatus(PreparedQueryResult result);
     void _LoadQuestStatusRewarded(PreparedQueryResult result);
+    void _LoadAccountQuestRewarded(PreparedQueryResult result);
     void _LoadDailyQuestStatus(PreparedQueryResult result);
     void _LoadWeeklyQuestStatus(PreparedQueryResult result);
     void _LoadMonthlyQuestStatus(PreparedQueryResult result);
@@ -3486,6 +3488,8 @@ protected:
     QuestStatusSaveMap m_QuestStatusSave;
 
     RewardedQuestSet m_RewardedQuests;
+    // quests with QUEST_FLAGS_EX_ACCOUNT rewarded by any character of this account (incl. this one)
+    RewardedQuestSet m_AccountRewardedQuests;
     QuestStatusSaveMap m_RewardedQuestsSave;
 
     boost::dynamic_bitset<uint8> _completedQuestBits;

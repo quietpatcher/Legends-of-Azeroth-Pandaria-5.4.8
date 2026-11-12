@@ -63,7 +63,6 @@ enum Spells
     // Faceless Sapper
     SPELL_ENTANGLING_GRASP              = 83463,
 
-    SPELL_ENCOUNTER_COMPLETE            = 95673,
 }; 
 
 enum Events
@@ -287,7 +286,8 @@ class npc_neptulon : public CreatureScript
                                     }
                         }
                     }
-                    instance->UpdateEncounterState(ENCOUNTER_CREDIT_CAST_SPELL, SPELL_ENCOUNTER_COMPLETE, me); 
+                    // instance_encounters 1047 expects a kill of creature 42172 (the server-side marker spell 95673 was rejected by the loader)
+                    instance->UpdateEncounterState(ENCOUNTER_CREDIT_KILL_CREATURE, 42172, me);
                     instance->SetBossState(DATA_OZUMAT, DONE);
                 }
                 EnterEvadeMode();

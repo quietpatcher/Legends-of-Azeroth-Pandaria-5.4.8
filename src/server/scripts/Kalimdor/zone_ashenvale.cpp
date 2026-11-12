@@ -177,6 +177,8 @@ enum RuulSnowhoof
 {
     SAY_RUUL_COMPLETE           = 0,
 
+    SPELL_RUUL_SHAPECHANGE      = 20514,
+
     NPC_THISTLEFUR_URSA         = 3921,
     NPC_THISTLEFUR_TOTEMIC      = 3922,
     NPC_THISTLEFUR_PATHFINDER   = 3926,
@@ -230,6 +232,7 @@ class npc_ruul_snowhoof : public CreatureScript
                         break;
                     case 21:
                         Talk(SAY_RUUL_COMPLETE, player);
+                        me->RemoveAurasDueToSpell(SPELL_RUUL_SHAPECHANGE);
                         player->GroupEventHappens(QUEST_FREEDOM_TO_RUUL, me);
                         break;
                 }
@@ -239,6 +242,9 @@ class npc_ruul_snowhoof : public CreatureScript
 
             void Reset() override
             {
+                if (!me->HasAura(SPELL_RUUL_SHAPECHANGE))
+                    me->CastSpell(me, SPELL_RUUL_SHAPECHANGE, true);
+
                 if (GameObject* Cage = me->FindNearestGameObject(GO_CAGE, 20))
                     Cage->SetGoState(GO_STATE_READY);
             }

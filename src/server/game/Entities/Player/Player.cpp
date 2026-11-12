@@ -2638,8 +2638,12 @@ Creature* Player::GetNPCIfCanInteractWith(ObjectGuid guid, uint32 npcflagmask)
     if (FactionTemplateEntry const* factionTemplate = sFactionTemplateStore.LookupEntry(creature->GetFaction()))
         if (factionTemplate->faction)
             if (FactionEntry const* faction = sFactionStore.LookupEntry(factionTemplate->faction))
-                if (faction->reputationListID >= 0 && GetReputationMgr().GetRank(faction) <= REP_UNFRIENDLY)
+            {
+                // A forced reaction (SPELL_AURA_FORCE_REACTION, a disguise) overrules the standing, as it does in IsHostileTo and on the client
+                ReputationRank const* forcedRank = GetReputationMgr().GetForcedRankIfAny(factionTemplate);
+                if (faction->reputationListID >= 0 && (forcedRank ? *forcedRank : GetReputationMgr().GetRank(faction)) <= REP_UNFRIENDLY)
                     return nullptr;
+            }
 
     // not too far
     if (!creature->IsWithinDistInMap(this, npcflagmask & UNIT_NPC_FLAG_WILDPET_CAPTURABLE ? PETBATTLE_INTERACTION_DIST : (creature->GetEntry() == 60166 || creature->GetEntry() == 60167) ? 9.6f : creature->GetEntry() == 3678 ? 12.0f : INTERACTION_DISTANCE))   // Muyoh (Wailing Caverns) hovers in owl form
@@ -2689,8 +2693,12 @@ Creature* Player::GetNPCIfCanInteractWithFlag2(ObjectGuid guid, uint32 npcflagma
     if (FactionTemplateEntry const* factionTemplate = sFactionTemplateStore.LookupEntry(creature->GetFaction()))
     if (factionTemplate->faction)
     if (FactionEntry const* faction = sFactionStore.LookupEntry(factionTemplate->faction))
-    if (faction->reputationListID >= 0 && GetReputationMgr().GetRank(faction) <= REP_UNFRIENDLY)
-        return nullptr;
+    {
+        // A forced reaction (SPELL_AURA_FORCE_REACTION, a disguise) overrules the standing, as it does in IsHostileTo and on the client
+        ReputationRank const* forcedRank = GetReputationMgr().GetForcedRankIfAny(factionTemplate);
+        if (faction->reputationListID >= 0 && (forcedRank ? *forcedRank : GetReputationMgr().GetRank(faction)) <= REP_UNFRIENDLY)
+            return nullptr;
+    }
 
     // not too far
     if (!creature->IsWithinDistInMap(this, INTERACTION_DISTANCE))
@@ -3295,9 +3303,10 @@ void Player::InitStatsForLevel(bool reapplyMods)
     // Init data for form but skip reapply item mods for form
     InitDataForForm(reapplyMods);
 
-    // save new stats
+    // save new stats (the alternate power maximum is owned by SPELL_AURA_ENABLE_ALT_POWER, see UpdateMaxPower)
     for (uint8 i = POWER_MANA; i < MAX_POWERS; ++i)
-        SetMaxPower(Powers(i), GetCreatePowers(Powers(i)));
+        if (i != POWER_ALTERNATE_POWER)
+            SetMaxPower(Powers(i), GetCreatePowers(Powers(i)));
 
     SetMaxHealth(basehp);                     // stamina bonus will applied later
 
@@ -5281,7 +5290,7 @@ Corpse* Player::CreateCorpse()
     Corpse* corpse = new Corpse((m_ExtraFlags & PLAYER_EXTRA_PVP_DEATH) ? CORPSE_RESURRECTABLE_PVP : CORPSE_RESURRECTABLE_PVE);
     SetPvPDeath(false);
 
-    if (!corpse->Create(GetMap()->GenerateLowGuid<HighGuid::Corpse>(), this))
+    if (!corpse->Create(sObjectMgr->GetGenerator<HighGuid::Corpse>().Generate(), this))
     {
         delete corpse;
         return nullptr;
@@ -9852,9 +9861,6 @@ void Player::SendLoot(ObjectGuid guid, LootType lootType, bool isAoE)
         }
     }
 
-    if (!isAoE)
-        SetLootGUID(guid);
-
     // LOOT_INSIGNIA and LOOT_FISHINGHOLE unsupported by client
     switch (lootType)
     {
@@ -9871,8 +9877,12 @@ void Player::SendLoot(ObjectGuid guid, LootType lootType, bool isAoE)
     SendDirectMessage(&data);
 
     // add 'this' player as one of the players that are looting 'loot'
+    // The loot guid is set only with a loot permission. Set unconditionally, a corpse the player may not loot left a
+    // stale loot guid with no loot view, and the next SendLoot released it ("RemoveLootedObject ... not found in view").
     if (permission != NONE_PERMISSION)
     {
+        if (!isAoE)
+            SetLootGUID(guid);
         loot->AddLooter(GetGUID());
         m_lootView.emplace(loot->GetGUID(), guid);
     }
@@ -16177,8 +16187,14 @@ bool Player::CanCompleteQuest(uint32 questId)
             if (qInfo->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT) && !questStatus.Explored)
                 return false;
 
+            // An objective flagged optional (QuestObjective flag 0x4, e.g. 8488 "[Optional] Speak with Apprentice Mirveda")
+            // never blocks completion (TrinityCore QUEST_OBJECTIVE_FLAG_OPTIONAL); kept local so QuestDef.h is untouched.
+            constexpr uint32 QUEST_OBJECTIVE_FLAG_OPTIONAL_LOCAL = 0x4;
             for (const auto& questObjective : qInfo->Objectives)
             {
+                if (questObjective.Flags & QUEST_OBJECTIVE_FLAG_OPTIONAL_LOCAL)
+                    continue;
+
                 if (!IsQuestObjectiveComplete(qInfo, questObjective))
                     return false;
             }
@@ -16253,7 +16269,7 @@ bool Player::CanCompleteRepeatableQuest(Quest const* quest)
 bool Player::CanRewardQuest(Quest const* quest, bool msg)
 {
     // not auto complete quest and not completed quest (only cheating case, then ignore without message)
-    if (!quest->IsDFQuest() && !quest->IsTurnIn() && !(quest->GetFlags() & QUEST_FLAGS_AUTO_COMPLETE) && GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE)
+    if (!quest->IsDFQuest() && !quest->IsTurnIn() && !(quest->HasFlag(QUEST_FLAGS_AUTO_COMPLETE) && quest->GetObjectives().empty()) && GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE)
         return false;
 
     // daily quest can't be rewarded (25 daily quest already completed)
@@ -16537,6 +16553,12 @@ void Player::AddQuest(Quest const* quest, Object* questGiver)
     }
 
     SendQuestUpdate(questId);
+
+    // Accepting a quest changes its status to incomplete without going through SetQuestStatus, so phase definitions
+    // that depend on the quest being taken (condition type 9) were only re-evaluated on the next zone change or login.
+    PhaseUpdateData phaseUpdateData;
+    phaseUpdateData.AddQuestUpdate(questId);
+    phaseMgr.NotifyConditionChanged(phaseUpdateData);
 
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, questStatusData.Status);
     sScriptMgr->OnPlayerQuestAdded(this, quest);
@@ -16893,6 +16915,8 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
     RemoveActiveQuest(quest_id, false);
     m_RewardedQuests.insert(quest_id);
     m_RewardedQuestsSave[quest_id] = true;
+    if (quest->HasFlagEx(QUEST_FLAGS_EX_ACCOUNT) && !quest->IsRepeatable())
+        m_AccountRewardedQuests.insert(quest_id);
 
     PhaseUpdateData phaseUpdateData;
     phaseUpdateData.AddQuestUpdate(quest_id);
@@ -17091,8 +17115,9 @@ bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg) const
     if (qInfo->GetPrevQuestId() > 0 && IsQuestRewarded(prevId))
         return true;
 
-    // If negative previous quest active, return true
-    if (qInfo->GetPrevQuestId() < 0 && GetQuestStatus(prevId) == QUEST_STATUS_INCOMPLETE)
+    // If negative previous quest was taken (in the log, completed or rewarded), return true. Requiring INCOMPLETE only
+    // made a quest untakeable once its breadcrumb was handed in.
+    if (qInfo->GetPrevQuestId() < 0 && GetQuestStatus(prevId) != QUEST_STATUS_NONE)
         return true;
 
     // Has only positive prev. quests in non-rewarded state
@@ -17828,6 +17853,20 @@ void Player::AreaExploredOrEventHappens(uint32 questId)
                 if (!CanCompleteQuest(questId))
                     SendQuestComplete(questId);
             }
+
+            // An event objective (type AREATRIGGER, ObjectID 0 or -1: "the event happened") is what this call reports, so it is
+            // counted here. HandleAreaTriggerOpcode counts it for quests completed by entering an areatrigger; a quest
+            // completed by a scripted event (SmartAI CALL_AREAEXPLOREDOREVENTHAPPENS, quest scripts) was never counted
+            // and could not complete.
+            if (q_status.Status == QUEST_STATUS_INCOMPLETE)
+                if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+                    for (QuestObjective const& objective : quest->Objectives)
+                        if (objective.Type == QUEST_OBJECTIVE_AREATRIGGER && (int32(objective.ObjectID) == -1 || objective.ObjectID == 0) && !GetQuestObjectiveCounter(objective.ID))
+                        {
+                            m_questObjectiveStatus[objective.ID] = 1;
+                            MarkQuestObjectiveToSave(questId, objective.ID);
+                            SendQuestUpdateAddCreditSimple(quest, &objective);
+                        }
         }
         if (CanCompleteQuest(questId))
             CompleteQuest(questId);
@@ -19314,6 +19353,7 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
     _LoadQuestStatus(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_QUEST_STATUS));
     _LoadQuestObjectiveStatus(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_QUEST_OBJECTIVE_STATUS));
     _LoadQuestStatusRewarded(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_QUEST_STATUS_REW));
+    _LoadAccountQuestRewarded(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_ACCOUNT_QUEST_REWARDED));
     _LoadDailyQuestStatus(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_DAILY_QUEST_STATUS));
     _LoadWeeklyQuestStatus(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_WEEKLY_QUEST_STATUS));
     _LoadSeasonalQuestStatus(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_SEASONAL_QUEST_STATUS));
@@ -20471,6 +20511,23 @@ void Player::_LoadQuestStatusRewarded(PreparedQueryResult result)
     }
 }
 
+void Player::_LoadAccountQuestRewarded(PreparedQueryResult result)
+{
+    // SELECT DISTINCT quest FROM character_queststatus_rewarded JOIN characters WHERE account = ?
+    m_AccountRewardedQuests.clear();
+    if (!result)
+        return;
+
+    do
+    {
+        uint32 questId = (*result)[0].GetUInt32();
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (quest && quest->HasFlagEx(QUEST_FLAGS_EX_ACCOUNT) && !quest->IsRepeatable())
+            m_AccountRewardedQuests.insert(questId);
+    }
+    while (result->NextRow());
+}
+
 void Player::_LoadDailyQuestStatus(PreparedQueryResult result)
 {
     //for (uint32 quest_daily_idx = 0; quest_daily_idx < PLAYER_MAX_DAILY_QUESTS; ++quest_daily_idx)
@@ -20587,10 +20644,40 @@ void Player::_LoadSpells(PreparedQueryResult result)
 {
     //QueryResult* result = CharacterDatabase.PQuery("SELECT spell, active, disabled FROM character_spell WHERE guid = '{}'", GetGUID().GetCounter());
 
+    // AddSpell refuses a recipe of a primary profession the character does not know, so the recipe never enters m_spells
+    // and its character_spell row stays behind. When the profession is learned again the recipe comes back as
+    // PLAYERSPELL_NEW, _SaveSpells INSERTs it, MySQL 1062 rolls back the whole save and the same happens at every login.
+    // Such an orphan row is deleted at load (as AzerothCore does in Player::_LoadSpells).
+    auto isRecipeOfUnknownProfession = [this](uint32 spellId) -> bool
+    {
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo || spellInfo->IsAccountWide() || spellInfo->HasEffect(SPELL_EFFECT_SKILL))
+            return false;
+
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (!itr->second->AcquireMethod && IsPrimaryProfessionSkill(itr->second->SkillLine) && !HasSkill(itr->second->SkillLine))
+                return true;
+        return false;
+    };
+
     if (result)
     {
         do
-            AddSpell((*result)[0].GetUInt32(), (*result)[1].GetBool(), false, false, (*result)[2].GetBool(), true);
+        {
+            uint32 const spellId = (*result)[0].GetUInt32();
+            AddSpell(spellId, (*result)[1].GetBool(), false, false, (*result)[2].GetBool(), true);
+
+            if (m_spells.find(spellId) == m_spells.end() && isRecipeOfUnknownProfession(spellId))
+            {
+                TC_LOG_DEBUG("entities.player.loading", "Player::_LoadSpells: {} (guid {}) has recipe {} of a profession it does not know - deleting the orphan character_spell row",
+                    GetName().c_str(), GetGUID().GetCounter(), spellId);
+                CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_SPELL_BY_SPELL);
+                stmt->setUInt32(0, spellId);
+                stmt->setUInt32(1, GetGUID().GetCounter());
+                CharacterDatabase.Execute(stmt);
+            }
+        }
         while (result->NextRow());
     }
 }
@@ -25305,6 +25392,13 @@ void Player::UpdateVisibilityForPlayer()
         notifier.VisitSet(m_seer->GetMap()->GetCustomVisibilityObjects(m_seer == this ? m_zoneUpdateId : m_seer->GetZoneId()));
     }
     notifier.SendToSelf();   // send gathered data
+
+    // Moving transports are sent map-wide, outside the grids. Those with a phase rule are created or destroyed at
+    // the client here when the player's phases changed (TrinityCore master Map::SendUpdateTransportVisibility).
+    if (IsInWorld())
+        for (ObjectGuid const& guid : sTransportMgr->GetPhasedTransports())
+            if (Transport* transport = GetMap()->GetTransport(guid))
+                transport->UpdatePhaseVisibilityFor(this);
 }
 
 void Player::InitPrimaryProfessions()
@@ -25352,11 +25446,15 @@ void Player::SetMoney(uint64 value)
 
 bool Player::IsQuestRewarded(uint32 quest_id) const
 {
-    if (m_RewardedQuests.find(quest_id) == m_RewardedQuests.end())
-        return false;
-
     Quest const* qInfo = sObjectMgr->GetQuestTemplate(quest_id);
     if (!qInfo)
+        return false;
+
+    // account-level quest rewarded by any character of this account
+    if (m_AccountRewardedQuests.find(quest_id) != m_AccountRewardedQuests.end())
+        return true;
+
+    if (m_RewardedQuests.find(quest_id) == m_RewardedQuests.end())
         return false;
 
     return !qInfo->IsSeasonal() || !const_cast<Player*>(this)->SatisfyQuestSeasonal(qInfo, false);

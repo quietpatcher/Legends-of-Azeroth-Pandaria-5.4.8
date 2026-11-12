@@ -1693,6 +1693,31 @@ BotLife.CalendarSignups = 20
 BotLife.EventRaidSize = 20
 BotLife.Debug = 0
 
+# BotLife: flight paths (to-do 219). A random bot whose destination on the same continent is at least TaxiMinDistance
+# yards away walks to a flight master within TaxiMasterRange yards and flies to a flight point it knows near the
+# destination, when the flight takes at least 60% of the way on foot away. Bots know the flight points of their race,
+# the ones whose flight master they talked to or passed, and the one of a zone bot life relocated them into.
+# TaxiPerMinute caps the boardings per minute server-wide; TaxiCooldown (seconds) is the pause per bot after a landing.
+# Not for grouped bots, walkers, bots in instances or battlegrounds, or bots with a real player as master.
+BotLife.Taxi = 1
+
+# Ferry: random bots that are relocated to another continent and stand within FerryDockRange of a dock of a boat or
+# zeppelin that stops on the destination map ride it instead of being teleported. Every failure ends in the teleport.
+# default: 0 (disabled)
+BotLife.Ferry = 0
+# percent of the cross-map relocations that try a ferry first (default 25)
+BotLife.FerryChance = 25
+# yards from a dock (default 300)
+BotLife.FerryDockRange = 300
+# minutes to wait for the transport at the dock (default 12), at most on the transport (default 20), without a new trip after a failure (default 10)
+BotLife.FerryDockWaitMin = 12
+BotLife.FerryRideMin = 20
+BotLife.FerryRetryAfterFailMin = 10
+BotLife.TaxiMinDistance = 800
+BotLife.TaxiMasterRange = 300
+BotLife.TaxiPerMinute = 6
+BotLife.TaxiCooldown = 600
+
 # BotLife: a bad-dungeon mark runs out - a dungeon the bots have beaten before is tried again after RetryHours, one
 # they never got a boss in after RetryDays. DungeonFocus = LfgDungeons ids that are picked first (FocusChance percent
 # of the new dungeon parties), whatever their record.
@@ -1700,3 +1725,53 @@ BotLife.BadDungeonRetryHours = 3
 BotLife.BadDungeonRetryDays = 3
 BotLife.DungeonFocus =
 BotLife.DungeonFocusChance = 0
+
+# BotLife roles and gear (to-do 265). Every faction + level band (level / 10) aims at RoleTargetTank % tanks and
+# RoleTargetHealer % healers, the rest dps (default 20 / 20 / 60 = 1 tank : 1 healer : 3 dps, the dungeon finder group).
+# A new bot picks the spec of the role the band misses most; an existing bot whose role is more than RoleTolerance points
+# over its target respecs to a role more than RoleTolerance points under it (never away from a role that is short), at most
+# RoleRespecsPerHour for all bots together, handed out per minute. At max level a bot respecs only while it still wears the
+# fresh-90 baseline (see MaxLevelFactoryItemLevel): earned dungeon and raid gear is never made useless by a role change.
+# .botlife roles shows the split and the counters.
+BotLife.RoleTargetTank = 20
+BotLife.RoleTargetHealer = 20
+BotLife.RoleTolerance = 5
+BotLife.RoleRespecsPerHour = 80
+
+# Gear check every ten levels: when a bot enters a new level band (20, 30, ... 80, also at login and after a relevel) its
+# nine armor pieces are compared with 0.7 x the item level of the band (86-89: level item level - 60). A bot that is behind
+# gets factory gear of its band for the slots that lag (incremental: nothing worn is downgraded); pieces with the wrong
+# primary stat for the spec are replaced. GearRefillsPerHour refills for all bots together, handed out per minute; a bot
+# that misses out is looked at again a minute later. Level 90 never gets a refill.
+BotLife.GearRefillsPerHour = 150
+
+# No free gear at max level: a level 90 bot only improves through loot from dungeons and raids (and what it buys itself).
+# The factory dresses a bot of max level in one case only - the level balance moves it to 90 (Randomize) - and then never
+# above this item level (fresh-90 quest gear; heroic dungeons start at 463). 0 = no cap (the old behaviour: the factory
+# handed out item level 572 raid epics to every bot at 90).
+AiPlayerbot.MaxLevelFactoryItemLevel = 440
+
+# BotLife cost log: Map::Update times every bot (AI + packets, and the cells around it = the creatures that fight it). A map
+# tick longer than TickMs logs the Top most expensive bots (guid, name, level, map/zone, combat, attackers, dead, cost), at most
+# once per IntervalSeconds per map. Costs about 0.2 us per bot per tick; with both Enable keys at 0 nothing is measured.
+BotLife.CostLog.Enable = 1
+BotLife.CostLog.TickMs = 100
+BotLife.CostLog.IntervalSeconds = 30
+BotLife.CostLog.Top = 3
+
+# BotLife cost watchdog: a random bot (no party, no instance, no real master) whose moving average cost stays over BotMs
+# milliseconds per tick for Seconds seconds is pulled out: attack stop, reset, the attackers are avoided, and it moves to
+# another spot. If it is over the limit another Seconds seconds (or again within 15 minutes) it is logged out through the
+# rotation (standby). Normal bots cost about 0.5 ms.
+BotLife.CostWatchdog.Enable = 1
+BotLife.CostWatchdog.BotMs = 20
+BotLife.CostWatchdog.Seconds = 60
+
+# BotLife die loop: killed twice by the same creature entry (within 20 minutes), or 4 deaths in 10 minutes: the bot leaves
+# for another grind spot and keeps AvoidRadius yards away from the place of the deaths for 30 minutes.
+BotLife.DieLoop.Enable = 1
+BotLife.DieLoop.AvoidRadius = 300
+
+# BotLife profession tools (pick, skinning knife...): with no room in the bags the bot waits this many minutes before the
+# next try (was: one "Can't equip or store initial item" error line per bot per minute).
+BotLife.ToolBackoffMinutes = 20

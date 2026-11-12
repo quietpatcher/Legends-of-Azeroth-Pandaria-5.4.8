@@ -122,12 +122,8 @@ WayPoint* SmartAI::GetNextWayPoint()
 
 void SmartAI::StartPath(bool run/* = false*/, uint32 pathId/* = 0*/, bool repeat/* = false*/, Unit* invoker/* = nullptr*/, uint32 nodeId/* = 1*/)
 {
-    if (me->IsInCombat())// no wp movement in combat
-    {
-        TC_LOG_ERROR("misc", "SmartAI::StartPath: Creature entry {} wanted to start waypoint movement while in combat, ignoring.", me->GetEntry());
-        return;
-    }
-
+    // No in-combat refusal: the path starts in or out of combat. Refusing dropped every "On Just Summoned - Start WP" of
+    // summons that aggro on spawn (e.g. Angershade/Gharsul 8488, Kalecgos 36689, Civilian Recruit 25220).
     if (HasEscortState(SMART_ESCORT_ESCORTING))
         StopPath();
  

@@ -36,6 +36,7 @@
 
 #include <bitset>
 #include <list>
+#include <memory>
 
 class Unit;
 
@@ -69,7 +70,8 @@ struct ScriptAction
     ObjectGuid sourceGUID;
     ObjectGuid targetGUID;
     ObjectGuid ownerGUID;                                   ///> owner of source if source is item
-    ScriptInfo const* script;                               ///> pointer to static script data
+    ScriptInfo const* script = nullptr;                     ///> static DB data or ownedScript.get()
+    std::shared_ptr<ScriptInfo const> ownedScript;           ///> snapshot for ScriptCommandStart, survives queue copies
 };
 
 /// Represents a map magic value of 4 bytes (used in versions)

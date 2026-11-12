@@ -208,7 +208,10 @@ struct npc_silverpine_grand_executor_mortuus : public ScriptedAI
         {
             case ACTION_START_SCENE_COMETH:
             {
-                _eventInProgress = true;
+                // One run per event: Raise Forsaken (83173) has no target conditions, hits Mortuus too and calls DoAction(1) on him
+                // (same value as ACTION_RISE_DURING_RAISE), which restarted the whole scene and summoned Garrosh a second time (434).
+                if (_eventInProgress)
+                    break;
 
                 if (Creature* sylvanas = me->FindNearestCreature(NPC_LADY_SYLVANAS_WINDRUNNER_COMETH, 100.0f))
                 {
@@ -217,6 +220,8 @@ struct npc_silverpine_grand_executor_mortuus : public ScriptedAI
                     if (Creature* agatha = me->FindNearestCreature(NPC_AGATHA_COMETH, 100.0f))
                     {
                         _agathaGUID = agatha->GetGUID();
+
+                        _eventInProgress = true;
 
                         _events.ScheduleEvent(EVENT_START_SCENE_COMETH, 250ms);
                     }
@@ -689,6 +694,9 @@ struct npc_silverpine_grand_executor_mortuus : public ScriptedAI
 
     void SummonGarroshAndHisEliteGuards()
     {
+        if (_garroshGUID)
+            return;
+
         for (Position const& pos : HellscreamElitePos)
             me->SummonCreature(NPC_HELLSCREAM_ELITE_COMETH, pos, TEMPSUMMON_TIMED_DESPAWN, 300s);
 
@@ -744,6 +752,10 @@ class spell_silverpine_raise_forsaken_83173 : public AuraScript
 
         if (Creature* fallenHuman = target->ToCreature())
         {
+            // The spell has no target conditions: only the Fallen Humans may react (Mortuus uses the same action id to start the scene).
+            if (fallenHuman->GetEntry() != NPC_MALE_FALLEN_HUMAN && fallenHuman->GetEntry() != NPC_FEMALE_FALLEN_HUMAN)
+                return;
+
             if (fallenHuman->IsAIEnabled)
                 fallenHuman->AI()->DoAction(ACTION_RISE_DURING_RAISE);
         }
@@ -755,6 +767,9 @@ class spell_silverpine_raise_forsaken_83173 : public AuraScript
 
         if (Creature* fallenHuman = target->ToCreature())
         {
+            if (fallenHuman->GetEntry() != NPC_MALE_FALLEN_HUMAN && fallenHuman->GetEntry() != NPC_FEMALE_FALLEN_HUMAN)
+                return;
+
             if (fallenHuman->IsAIEnabled)
                 fallenHuman->AI()->DoAction(ACTION_DESCEND_AFTER_RAISE);
         }
@@ -945,7 +960,8 @@ struct go_silverpine_abandoned_outhouse : public GameObjectAI
 
     bool OnQuestAccept(Player* player, Quest const* quest) override
     {
-        if (quest->GetQuestId() == QUEST_WAITING_TO_EXSANGUINATE)
+        // One Yorick per player: the summon aura lives as long as he does
+        if (quest->GetQuestId() == QUEST_WAITING_TO_EXSANGUINATE && !player->HasAura(SPELL_SUMMON_DEATHSTALKER_YORICK))
             player->CastSpell(player, SPELL_SUMMON_DEATHSTALKER_YORICK, true);
 
         return false;
@@ -953,8 +969,12 @@ struct go_silverpine_abandoned_outhouse : public GameObjectAI
 
     bool OnGossipSelect(Player* player, uint32 /*sender*/, uint32 /*action*/) override
     {
-        player->CastSpell(player, SPELL_SUMMON_DEATHSTALKER_YORICK, true);
         player->PlayerTalkClass->SendCloseGossip();
+
+        // Every click used to summon another Yorick; only give one back when he is gone and the quest is still open
+        if (player->GetQuestStatus(QUEST_WAITING_TO_EXSANGUINATE) == QUEST_STATUS_INCOMPLETE
+            && !player->HasAura(SPELL_SUMMON_DEATHSTALKER_YORICK))
+            player->CastSpell(player, SPELL_SUMMON_DEATHSTALKER_YORICK, true);
         return true;
     }
 };
@@ -1009,9 +1029,24 @@ struct npc_silverpine_deathstalker_rane_yorick : public ScriptedAI
 
     void IsSummonedBy(Unit* summoner) override
     {
+        // Escort NPC of the player: it never takes part in a fight, a Worgen Renegade used to pull him out of his path
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
+
         me->SetFacingToObject(summoner);
 
         _events.ScheduleEvent(EVENT_START_QUEST_EXSANGUINATE, 1s);
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+
+    void EnterEvadeMode(EvadeReason /*why*/) override
+    {
+        // Safety net: if he still got into combat, resume the walk to the armoire instead of standing still
+        me->CombatStop(true);
+
+        if (!_playerArrived && !_playerSkipped && me->GetWaypointPath() == PATH_YORICK_UP)
+            me->GetMotionMaster()->MovePath(PATH_YORICK_UP, false);
     }
 
     void MovementInform(uint32 type, uint32 id) override
@@ -1224,6 +1259,7 @@ enum WaitingToExsanguinate
     EVENT_ACTION_SCENE_EXSANGUINATE         = 27,
     EVENT_SWITCH_SCENE_CAMERA               = 33,
     EVENT_FINISH_SCENE_EXSANGUINATE         = 40,
+    EVENT_EJECT_NO_SCENE                    = 90,
 
     TALK_YORICK_EXSANGUINATE_DEATH           = 2,
     TALK_CROWLEY_EXSANGUINATE_0              = 0,
@@ -1256,7 +1292,22 @@ enum WaitingToExsanguinate
 // 44893 - Armoire
 struct npc_silverpine_armoire : public VehicleAI
 {
-    npc_silverpine_armoire(Creature* creature) : VehicleAI(creature) { }
+    npc_silverpine_armoire(Creature* creature) : VehicleAI(creature), _sceneStarted(false), _passengerLeft(false) { }
+
+    // Unit::ExitVehicle(Position const*) ignores its argument in this core and Vehicle::RemovePassenger overwrites any exit position
+    // with the vehicle base, so a leaving player stood inside the Armoire model with the camera stuck (436). This hook is the one place
+    // that decides the exit position for every exit path (scene end, no-scene eject, stepping out): 2 yd in front of the Armoire, facing it.
+    void GetPassengerExitPosition(Unit* /*passenger*/, int8 /*seatId*/, Position& pos) override
+    {
+        Position exitPos = me->GetNearPosition(2.0f, 0.0f);
+
+        // GetNearPosition already snaps to the floor; never accept a big jump in height (no fall, no clipping through the floor).
+        if (std::fabs(exitPos.GetPositionZ() - me->GetPositionZ()) > 3.0f)
+            exitPos.m_positionZ = me->GetPositionZ();
+
+        exitPos.SetOrientation(Position::NormalizeOrientation(me->GetOrientation() + float(M_PI)));
+        pos = exitPos;
+    }
 
     void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
     {
@@ -1267,17 +1318,67 @@ struct npc_silverpine_armoire : public VehicleAI
         {
             if (Player* player = passenger->ToPlayer())
             {
-                if (player->GetQuestStatus(QUEST_WAITING_TO_EXSANGUINATE) == QUEST_STATUS_INCOMPLETE)
+                // The scene runs once per Armoire and only while this player's Yorick is still there; stepping out (misclick) cancels
+                // Yorick, so getting back in must not replay the scene without him (436).
+                bool canStart = !_sceneStarted && !_passengerLeft && player->GetQuestStatus(QUEST_WAITING_TO_EXSANGUINATE) == QUEST_STATUS_INCOMPLETE;
+
+                if (canStart)
+                {
+                    // Not FindNearestCreature: it does not return Yorick here (he stands on the Armoire, distance 0, 436 regression on dev129),
+                    // the grid list does. Pick the live Yorick this player summoned.
+                    Creature* yorick = nullptr;
+                    std::list<Creature*> yoricks;
+                    me->GetCreatureListWithEntryInGrid(yoricks, NPC_DEATHSTALKER_RANE_YORICK, 40.0f);
+                    for (Creature* candidate : yoricks)
+                    {
+                        if (candidate->IsAlive() && candidate->ToTempSummon() && candidate->ToTempSummon()->GetSummonerGUID() == player->GetGUID())
+                        {
+                            yorick = candidate;
+                            break;
+                        }
+                    }
+
+                    canStart = yorick != nullptr;
+                    TC_LOG_INFO("scripts", "Armoire scene: yorick of player found={} candidates={}", canStart ? 1 : 0, uint32(yoricks.size()));
+
+                    // Yorick only tells the Armoire about himself after his hide line; make sure the scene can grab him in any case.
+                    if (yorick)
+                        _yorickGUID = yorick->GetGUID();
+                }
+
+                if (canStart)
+                {
+                    _sceneStarted = true;
                     _events.ScheduleEvent(EVENT_START_SCENE_EXSANGUINATE, 400ms);
+                }
+                else
+                    _events.ScheduleEvent(EVENT_EJECT_NO_SCENE, 100ms);
             }
         }
         else
         {
+            _passengerLeft = true;
+            _events.Reset();
+
+            // The camera dummy auras sit on the player (cast with the summoner as target) and no script removes them.
+            if (passenger)
+            {
+                passenger->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_CROWLEY);
+                passenger->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_BLOODFANG);
+            }
+
+            // The camera auras go with the actors; clear them first so the view returns to the player.
             if (Creature* crowley = ObjectAccessor::GetCreature(*me, _crowleyGUID))
+            {
+                crowley->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_CROWLEY);
                 crowley->DespawnOrUnsummon();
+            }
 
             if (Creature* bloodfang = ObjectAccessor::GetCreature(*me, _bloodfangGUID))
+            {
+                bloodfang->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_BLOODFANG);
                 bloodfang->DespawnOrUnsummon();
+            }
 
             if (Creature* yorick = ObjectAccessor::GetCreature(*me, _yorickGUID))
                 yorick->CastSpell(yorick, SPELL_CANCEL_SUMMON_YORICK, true);
@@ -1326,6 +1427,11 @@ struct npc_silverpine_armoire : public VehicleAI
 
             switch (eventId)
             {
+                case EVENT_EJECT_NO_SCENE:
+                    if (Unit* summoner = tempSummon->GetSummoner())
+                        summoner->ExitVehicle();
+                    break;
+
                 case EVENT_START_SCENE_EXSANGUINATE:
                 {
                     if (Unit* summoner = tempSummon->GetSummoner())
@@ -1863,6 +1969,10 @@ struct npc_silverpine_armoire : public VehicleAI
 
                         summoner->RemoveAura(SPELL_HIDE_IN_ARMOIRE);
 
+                        // Camera dummy auras (83763/83764) have no script and would keep the client on the Armoire camera (436).
+                        summoner->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_CROWLEY);
+                        summoner->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_BLOODFANG);
+
                         summoner->ExitVehicle();
                     }
                     break;
@@ -1879,6 +1989,8 @@ private:
     ObjectGuid _yorickGUID;
     ObjectGuid _crowleyGUID;
     ObjectGuid _bloodfangGUID;
+    bool _sceneStarted;
+    bool _passengerLeft;
 };
 
 enum DariusCrowleyExsanguinate
@@ -1972,8 +2084,11 @@ class spell_gen_reverse_cast_target_to_caster_triggered : public SpellScript
     // and is thrown out of the Armoire. Only the explicit target of the cast may reverse-cast.
     void FilterTargets(std::list<WorldObject*>& targets)
     {
+        // Not remove_if: the explicit target must be hit even when the area search did not return it (Yorick was never grabbed, 436).
         Unit* explicitTarget = GetExplTargetUnit();
-        targets.remove_if([explicitTarget](WorldObject* target) { return target != explicitTarget; });
+        targets.clear();
+        if (explicitTarget)
+            targets.push_back(explicitTarget);
     }
 
     void HandleScriptEffect(SpellEffIndex effIndex)
@@ -1986,6 +2101,60 @@ class spell_gen_reverse_cast_target_to_caster_triggered : public SpellScript
     {
         OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_gen_reverse_cast_target_to_caster_triggered::FilterTargets, EFFECT_0, TARGET_UNIT_SRC_AREA_ENTRY);
         OnEffectHitTarget += SpellEffectFn(spell_gen_reverse_cast_target_to_caster_triggered::HandleScriptEffect, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// 83763, 83764 - Armoire Camera (Crowley / Bloodfang): in 5.4.8 these are only dummy auras, nothing moved the player's view
+class spell_silverpine_armoire_camera : public AuraScript
+{
+    PrepareAuraScript(spell_silverpine_armoire_camera);
+
+    uint32 GetCameraEntry() const
+    {
+        return GetId() == SPELL_ARMOIRE_CAMERA_ON_CROWLEY ? NPC_LORD_DARIUS_CROWLEY : NPC_PACKLEADER_IVAR_BLOODFANG;
+    }
+
+    void OnApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* target = GetTarget();
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+
+        // The spell has no target conditions: every unit near the player gets the aura, only the right actor becomes the camera.
+        if (!player || target->GetEntry() != GetCameraEntry())
+            return;
+
+        // Switch from the previous camera actor first
+        if (ObjectGuid oldGuid = player->GetGuidValue(PLAYER_FIELD_FARSIGHT_OBJECT))
+        {
+            if (oldGuid != target->GetGUID())
+            {
+                if (Unit* old = ObjectAccessor::GetUnit(*player, oldGuid))
+                {
+                    old->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_CROWLEY, player->GetGUID());
+                    old->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_BLOODFANG, player->GetGUID());
+                }
+            }
+        }
+
+        player->SetViewpoint(target, true);
+    }
+
+    void OnRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* target = GetTarget();
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+
+        if (!player || target->GetEntry() != GetCameraEntry())
+            return;
+
+        if (player->GetGuidValue(PLAYER_FIELD_FARSIGHT_OBJECT) == target->GetGUID())
+            player->SetViewpoint(target, false);
+    }
+
+    void Register() override
+    {
+        OnEffectApply += AuraEffectApplyFn(spell_silverpine_armoire_camera::OnApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        OnEffectRemove += AuraEffectRemoveFn(spell_silverpine_armoire_camera::OnRemove, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
     }
 };
 
@@ -2002,4 +2171,5 @@ void AddSC_silverpine_forest_high_command()
     RegisterCreatureAI(npc_silverpine_packleader_ivar_bloodfang_exsanguinate);
     RegisterSpellScript(spell_gen_eject_passenger_1);
     RegisterSpellScript(spell_gen_reverse_cast_target_to_caster_triggered);
+    RegisterSpellScript(spell_silverpine_armoire_camera);
 }

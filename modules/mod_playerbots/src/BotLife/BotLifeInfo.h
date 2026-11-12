@@ -141,6 +141,31 @@ struct BotLifeInfo
     bool wantMount = false;          // set by Travel() during this update
     uint32 lastWantMount = 0;
 
+    // ferry (BotLife.Ferry): a boat or zeppelin instead of the teleport to another continent
+    uint8 ferryPhase = 0;            // 0 none, 1 walks to the dock, 2 waits for the transport, 3 rides
+    uint32 ferryGuid = 0;            // spawn guid of the transport (transports table)
+    uint32 ferrySince = 0;           // ms the current phase began
+    uint32 ferryNextAllowed = 0;     // ms, no new trip before this (after a failure)
+    uint32 ferryDockMap = 0;
+    float ferryDockX = 0.0f, ferryDockY = 0.0f, ferryDockZ = 0.0f;
+    uint32 ferryDestMap = 0;         // the parked relocation
+    float ferryDestX = 0.0f, ferryDestY = 0.0f, ferryDestZ = 0.0f;
+
+    // flight paths (to-do 219): a far destination on the same continent is reached by a flight master, as a player does.
+    // The real destination is parked in taxiDest* while the bot walks to the flight master; the core flies the bot.
+    uint8 taxiPhase = 0;             // 0 none, 1 on the way to the flight master, 2 in the air
+    uint32 taxiFrom = 0;             // taxi node of the flight master the bot boards at
+    uint32 taxiTo = 0;               // taxi node near the destination (last of taxiNodes)
+    std::vector<uint32> taxiNodes;   // the node list a client sends with CMSG_ACTIVATE_TAXI_EXPRESS
+    uint32 taxiCost = 0;             // copper, all legs
+    uint32 taxiSince = 0;            // ms the current phase began
+    uint32 taxiNextCheck = 0;        // ms, the flight option is not evaluated before this
+    uint32 taxiLandedAt = 0;         // ms of the last landing (cooldown)
+    uint32 taxiDestMap = 0;
+    float taxiDestX = 0.0f, taxiDestY = 0.0f, taxiDestZ = 0.0f, taxiArriveDist = 0.0f;
+    float taxiWalkDist = 0.0f;       // yards on foot the flight replaces
+    bool taxiForced = false;         // ".botlife taxi go": no rate limit, no cooldown
+
     // rest / regen
     bool resting = false;
     uint32 lastRegen = 0;
@@ -189,8 +214,26 @@ struct BotLifeInfo
     uint32 noVictimCombatSince = 0;    // phantom-combat watchdog (see BotLife.cpp)
     bool weaponChecked = false;
     uint32 nextGearCheck = 0;          // next EquipBagUpgrades
+    // to-do 265: BotLifeMgr::MaintenanceTick runs for every random bot (also a minimal one) once a minute;
+    // gearBandChecked is the level band (level / 10) whose gear check (EnsureGear) completed, 255 = never
+    uint32 nextMaintenance = 0;
+    uint8 gearBandChecked = 255;
     std::deque<uint32> recentDeaths;   // death streak detection (msTime of the last deaths)
     bool relocateAfterDeaths = false;
+    // (botcost) die loop: the place of the last death streak; a relocation keeps away from it until dieLoopUntil (ms)
+    uint32 dieLoopMap = 0;
+    float dieLoopX = 0.0f;
+    float dieLoopY = 0.0f;
+    uint32 dieLoopUntil = 0;
+    // (botcost) cost watchdog: moving average of the microseconds this bot costs per map tick, since when it is over the
+    // threshold, the escalation stage (0 none, 1 pulled out, 2 logout scheduled) and an order to leave the place at once
+    uint32 costEmaUs = 0;
+    uint32 costSampleAt = 0;
+    uint32 costOverSince = 0;
+    uint32 costStageAt = 0;
+    uint8 costStage = 0;
+    bool costRelocate = false;
+    uint32 nextToolTry = 0;            // (botcost) profession tool: no room in the bags, next try (ms)
     ObjectGuid gatherTarget;           // node or corpse being gathered
     uint32 gatherSpell = 0;
     uint32 gatherSince = 0;
@@ -242,6 +285,8 @@ struct BotLifeInfo
     bool realWaitGaveUp = false;     // the 5 minute time-out ran out; reset once the player is within reach again
     uint8 realWaitRounds = 0;        // run3: how often the wait was taken up again after a time-out (then 90 s per round)
     float realGaveX = 0.0f, realGaveY = 0.0f, realGaveZ = 0.0f;   // where the lead stood when it gave up waiting
+    bool realWalkBack = false;       // the lead walks back to a real player > 40 yd behind (until 15 yd)
+    uint32 realWalkAt = 0;           // last MovePoint towards him
     uint32 realGaveBosses = 0;       // dungeonBosses at that moment
     uint32 lfgLeadSince = 0;         // when this bot became lead of a dungeon finder group with a real player (arrival)
     bool lfgArrivalDone = false;     // the real player was within 30 yd once, or the arrival wait (5 min) ran out

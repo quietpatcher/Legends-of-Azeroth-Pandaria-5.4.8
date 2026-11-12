@@ -1647,7 +1647,7 @@ void BattlegroundMgr::ApplyDeserter(ObjectGuid guid, uint32 duration)
 
         trans->PAppend("SET @MAX_SLOT = 0;");
         trans->PAppend("SELECT MAX(slot) + 0 INTO @MAX_SLOT FROM character_aura WHERE guid = {}", guidLow);
-        trans->PAppend("INSERT INTO character_aura (guid, slot, caster_guid, item_guid, spell, effect_mask, recalculate_mask, stackcount, maxduration, remaintime, remaincharges) VALUES ({}, IFNULL(@MAX_SLOT + 1, 0), " "{}" ", 0, {}, 1, 1, 1, {}, {}, 0)", guidLow, guid, SPELL_DESERTER, duration, duration);
+        trans->PAppend("INSERT INTO character_aura (guid, slot, caster_guid, item_guid, spell, effect_mask, recalculate_mask, stackcount, maxduration, remaintime, remaincharges) VALUES ({}, IFNULL(@MAX_SLOT + 1, 0), " "{}" ", 0, {}, 1, 1, 1, {}, {}, 0)", guidLow, guid.GetRawValue(), SPELL_DESERTER, duration, duration);
         trans->PAppend("INSERT INTO character_aura_effect (guid, slot, effect, base_amount, amount) VALUES ({}, IFNULL(@MAX_SLOT + 1, 0), 0, 0, 0)", guidLow);
         CharacterDatabase.CommitTransaction(trans);
     }

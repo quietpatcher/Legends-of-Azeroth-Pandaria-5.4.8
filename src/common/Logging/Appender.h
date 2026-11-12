@@ -20,6 +20,7 @@
 
 #include "Define.h"
 #include "LogCommon.h"
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -50,6 +51,7 @@ class TC_COMMON_API Appender
         std::string name;
         LogLevel level;
         AppenderFlags flags;
+        mutable std::mutex _writeLock;
 };
 
 class TC_COMMON_API InvalidAppenderArgsException : public std::length_error

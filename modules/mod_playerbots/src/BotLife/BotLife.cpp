@@ -26,6 +26,7 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-ar
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GameTime.h"
+#include "DBCStores.h"   // (to-do 219) taxi nodes and paths
 #include "Group.h"
 #include "InstanceSaveMgr.h"
 #include "MapManager.h"
@@ -137,8 +138,21 @@ void BotLifeMgr::LoadConfig()
     LoadGuildConfig();
     LoadProfessionConfig();
     LoadAuctionConfig();
+    LoadCostConfig();   // (botcost)
     _relocate = sConfigMgr->GetBoolDefault("BotLife.RelocateForLevel", true);
     _homeStartLevel = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.HomeStartLevel", 10)));
+    // flight paths (to-do 219)
+    _ferry = sConfigMgr->GetBoolDefault("BotLife.Ferry", false);
+    _ferryChance = uint32(std::min(100, std::max(0, sConfigMgr->GetIntDefault("BotLife.FerryChance", 25))));
+    _ferryDockRange = float(std::max(50, sConfigMgr->GetIntDefault("BotLife.FerryDockRange", 300)));
+    _ferryDockWait = uint32(std::max(1, sConfigMgr->GetIntDefault("BotLife.FerryDockWaitMin", 12)));
+    _ferryRide = uint32(std::max(1, sConfigMgr->GetIntDefault("BotLife.FerryRideMin", 20)));
+    _ferryRetryAfterFail = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.FerryRetryAfterFailMin", 10)));
+    _taxi = sConfigMgr->GetBoolDefault("BotLife.Taxi", true);
+    _taxiMinDist = float(std::max(200, sConfigMgr->GetIntDefault("BotLife.TaxiMinDistance", 800)));
+    _taxiMasterRange = float(std::max(50, sConfigMgr->GetIntDefault("BotLife.TaxiMasterRange", 300)));
+    _taxiPerMinute = uint32(std::max(1, sConfigMgr->GetIntDefault("BotLife.TaxiPerMinute", 6)));
+    _taxiCooldown = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.TaxiCooldown", 600)));
     _townVisits = sConfigMgr->GetBoolDefault("BotLife.TownVisits", true);
     _townMinutesMin = std::max(5, sConfigMgr->GetIntDefault("BotLife.TownMinutesMin", 40));
     _townMinutesMax = std::max<uint32>(_townMinutesMin, sConfigMgr->GetIntDefault("BotLife.TownMinutesMax", 90));
@@ -177,6 +191,37 @@ void BotLifeMgr::LoadConfig()
     _levelBalance = sConfigMgr->GetBoolDefault("BotLife.LevelBalance", true);   // (level-balance)
     _levelBalanceMoves = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.LevelBalanceMoves", 10)));
     _raidMinutes = std::max(10, sConfigMgr->GetIntDefault("BotLife.RaidMinutes", 75));
+    // to-do 265: role split per level band (1 tank : 1 healer : 3 dps), gear check every ten levels, no free
+    // gear at max level
+    _roleTargetTank = uint32(std::min(50, std::max(0, sConfigMgr->GetIntDefault("BotLife.RoleTargetTank", 20))));
+    _roleTargetHeal = uint32(std::min(50, std::max(0, sConfigMgr->GetIntDefault("BotLife.RoleTargetHealer", 20))));
+    _roleTolerance = uint32(std::min(30, std::max(1, sConfigMgr->GetIntDefault("BotLife.RoleTolerance", 5))));
+    _roleRespecsPerHour = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.RoleRespecsPerHour", 80)));
+    _gearRefillsPerHour = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.GearRefillsPerHour", 150)));
+    _maxLevelFactoryItemLevel = uint32(std::max(0, sConfigMgr->GetIntDefault("AiPlayerbot.MaxLevelFactoryItemLevel", 440)));
+}
+
+// to-do 265: hourly cap handed out per minute: perHour / 60 (rounded up, at least 1) in every minute slice.
+// 0 = nothing at all. Lock-free; a slot taken by a bot that then does nothing is lost, which is fine for a cap.
+bool BotLifeMgr::TakeSlot(std::atomic<uint32>& sliceStart, std::atomic<uint32>& inSlice, uint32 perHour)
+{
+    if (!perHour)
+        return false;
+    uint32 const now = getMSTime();
+    uint32 const start = sliceStart.load(std::memory_order_relaxed);
+    if (!start || now - start >= 60000)
+    {
+        sliceStart.store(now ? now : 1, std::memory_order_relaxed);
+        inSlice.store(0, std::memory_order_relaxed);
+    }
+    return inSlice.fetch_add(1, std::memory_order_relaxed) < (perHour + 59) / 60;
+}
+
+void BotLifeMgr::RoleTargets(float target[3]) const
+{
+    target[0] = float(_roleTargetTank);
+    target[1] = float(_roleTargetHeal);
+    target[2] = float(100 - std::min<uint32>(100, _roleTargetTank + _roleTargetHeal));
 }
 
 void BotLifeMgr::LoadCaches()
@@ -187,6 +232,21 @@ void BotLifeMgr::LoadCaches()
     {
         TC_LOG_INFO("server.loading", ">> BotLife disabled");
         return;
+    }
+
+    // flight paths (to-do 219): the flight points of the taxi network per map (the DBC does not change at runtime)
+    _taxiNodesByMap.clear();
+    for (uint32 i = 1; i < sTaxiNodesStore.GetNumRows(); ++i)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
+        if (!node)
+            continue;
+        uint32 const field = (i - 1) / 8;
+        if (field >= TaxiMaskSize)
+            break;
+        if ((sTaxiNodesMask[field] & (1 << ((i - 1) % 8))) == 0)   // no taxi path from or to it
+            continue;
+        _taxiNodesByMap[node->map_id].push_back(i);
     }
 
     // spawns that only exist during a game event (seasonal NPCs and objects) are skipped
@@ -2394,6 +2454,27 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
         if ((seat->GetEntry() == 34438 || seat->GetEntry() == 34582 || seat->GetEntry() == 52210 || seat->GetEntry() == 52314 || seat->GetEntry() == 44821) && RideCaravan(bot, t, now))
             return true;
 
+    // ferry: on the way to / on a transport nothing else moves the bot (phase 1 lets the travel logic walk to the dock)
+    if (t.ferryPhase && FerryTick(bot, t, now))
+        return true;
+
+    // flight paths (to-do 219): in the air the core flies the bot; bot life only watches for the end of a leg (a client
+    // would report it) - before any other order, so nothing moves the bot while it flies. A flight the core resumed at
+    // login (Player::ContinueTaxiFlight) or a taxi state left behind without a client is taken over here as well.
+    if (_taxi && t.taxiPhase != 2 && !bot->GetGroup() && (bot->IsInFlight() || !bot->m_taxi.empty()))
+    {
+        if (t.taxiPhase == 1)   // took off on the way to its flight master: the parked destination counts again
+            SetDest(t, t.taxiDestMap, t.taxiDestX, t.taxiDestY, t.taxiDestZ, t.taxiArriveDist);
+        t.taxiPhase = 2;
+        t.taxiSince = now;
+        t.taxiFrom = bot->m_taxi.GetTaxiSource();
+        t.taxiTo = bot->m_taxi.GetTaxiDestination();
+        t.taxiWalkDist = 0.0f;
+        t.taxiNodes.clear();
+    }
+    if (t.taxiPhase == 2 && TaxiFlightTick(bot, t, now))
+        return true;
+
     if (_castDiagLeft.load(std::memory_order_relaxed) > 0 && bot->IsInCombat())
         CastDiag(botAI);
     if (_aggroDiagLeft.load(std::memory_order_relaxed) > 0 && bot->IsInCombat())
@@ -2446,8 +2527,38 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     }
     if (t.banker && !walker && !bot->GetGroup() && !bot->InBattleground() && !botAI->HasRealPlayerMaster())
         return BankerUpdate(botAI, t, now);
-    if (t.relocateAfterDeaths && !walker && bot->IsAlive() && !bot->IsInCombat() && !bot->GetGroup() && !bot->IsBeingTeleported())
+    // (botcost) pulled out by the cost watchdog: leave this place, whatever is fighting the bot
+    if (t.costRelocate)
     {
+        if (walker || bot->GetGroup() || bot->InBattleground() || bot->GetMap()->Instanceable())
+            t.costRelocate = false;
+        else if (!bot->IsBeingTeleported())
+        {
+            if (bot->IsAlive())
+            {
+                t.costRelocate = false;
+                bot->CombatStop(true);
+                if (RelocateForLevel(bot))
+                {
+                    t.path.clear();
+                    t.pathIdx = 0;
+                    SetState(bot, t, BotLifeState::IDLE, now, 0);
+                    TC_LOG_INFO("playerbots", "BOTCOST watchdog: {} left its place, now map {} {:.0f} {:.0f} {:.0f}", bot->GetName(),
+                        bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                    return true;
+                }
+            }
+            else if (!t.graveyardRevive)
+                t.graveyardRevive = now;   // dead: revives at the graveyard below, then this order runs
+        }
+    }
+    // (botcost die-loop) a bot revived next to aggressive mobs (graveyard, Cammond: 2009 deaths at the Crystalsong graveyard) is in
+    // combat again before it is ever out of combat: while a die loop is pending the combat check is skipped (the way out is a teleport)
+    bool dieLoopPending = t.dieLoopUntil && now < t.dieLoopUntil;
+    if (t.relocateAfterDeaths && !walker && bot->IsAlive() && (!bot->IsInCombat() || dieLoopPending) && !bot->GetGroup() && !bot->IsBeingTeleported())
+    {
+        if (bot->IsInCombat())
+            bot->CombatStop(true);
         if (RelocateForLevel(bot))
         {
             t.relocateAfterDeaths = false;
@@ -2469,9 +2580,7 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             factory.InitTalentsTree(false);
             Count(BLC_TALENTS);
         }
-        // to-do 265: rebalance the roles per level band (rare, capped per hour)
-        if (RoleRespec(botAI))
-            return true;
+        // to-do 265: the role respec moved to MaintenanceTick (2-11): it has to reach the minimal bots too
     }
     // gathering also for group members and bots that follow a player, and inside instances
     // (skinning dungeon mobs, ore/herbs there) - not for whoever leads a dungeon run (the run would stall)
@@ -2515,6 +2624,12 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             t.path.clear();
             t.pathIdx = 0;
             t.lastProgressCheck = 0;
+            // (botcost die-loop) leave in the same tick as the revive: the graveyard is where the killers stand, the next tick is too late
+            if (t.relocateAfterDeaths && !walker && !bot->GetGroup() && RelocateForLevel(bot))
+            {
+                t.relocateAfterDeaths = false;
+                Count(BLC_DEATH_RELOCATE);
+            }
             TC_LOG_INFO("playerbots", "BotLife {}: killed again by the same creature, revived at the graveyard ({:.0f} {:.0f} {:.0f} map {})",
                 bot->GetName(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
             Count(BLC_GHOST_REVIVE);
@@ -2695,7 +2810,7 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
             {
                 Creature* horseman = bot->FindNearestCreature(23682, 200.0f);
                 if (horseman && !horseman->IsVisible() && !bot->GetVictim())
-                    if (GameObject* shrine = bot->FindNearestGameObject(186267, 250.0f))
+                    if (bot->FindNearestGameObject(186267, 250.0f))
                     {
                         // (lfg-shrine-walk2) on the open ground between the shrine and the spot where the Horseman lands. The shrine
                         // stands inside a small fence: a near point of it put the lead on that fence, the Horseman could not reach
@@ -2711,36 +2826,6 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
                             }
                             return true;
                         }
-                        // (lfg-shrine-call) to-do 450: the lead stood at the shrine for ever and waited for a click of the player. When
-                        // every living real member of the group has come up to the lead and stood there for 20 s, the lead calls the
-                        // Horseman itself, as a click on the shrine does (gossip option 1000). From the wait spot, not from the
-                        // shrine: no walk onto the fence
-                        static thread_local std::unordered_map<ObjectGuid, uint32> shrineReadySince;
-                        uint32& readySince = shrineReadySince[bot->GetGUID()];
-                        bool allHere = true;
-                        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-                        {
-                            Player* member = ref->GetSource();
-                            if (!member || member == bot || !member->GetSession() || member->GetSession()->IsBot() || !member->IsAlive())
-                                continue;
-                            if (member->GetMap() != bot->GetMap() || member->GetDistance(bot) > 40.0f)
-                                allHere = false;
-                        }
-                        if (!allHere || bot->IsInCombat() || !shrine->isSpawned())
-                        {
-                            readySince = 0;
-                            return false;   // combat and the rest of the bot AI go on as before
-                        }
-                        if (!readySince)
-                            readySince = now;
-                        if (now - readySince >= 20000)
-                        {
-                            readySince = 0;
-                            bool started = sScriptMgr->OnGossipSelect(bot, shrine, 1, GOSSIP_ACTION_INFO_DEF);
-                            TC_LOG_INFO("playerbots", "BotLife {}: calls the Headless Horseman at the Pumpkin Shrine ({})", bot->GetName(),
-                                started ? "script took it" : "no script answer");
-                        }
-                        return false;
                     }
             }
             return false;
@@ -3017,6 +3102,12 @@ void BotLifeMgr::SetState(Player* bot, BotLifeInfo& t, BotLifeState state, uint3
     t.stuck = 0;
     t.lastProgressCheck = 0;
     t.targetWaitSince = 0;
+    if (t.taxiPhase == 1)   // (to-do 219) a new state sets its own destination: the walk to the flight master is off
+    {
+        t.taxiPhase = 0;
+        t.taxiNodes.clear();
+        t.taxiForced = false;
+    }
     if (state == BotLifeState::IDLE || state == BotLifeState::REST)
     {
         t.hasDest = false;
@@ -3451,7 +3542,9 @@ bool BotLifeMgr::Act(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
 {
     Player* bot = botAI->GetBot();
     t.wantMount = false;
-    bool result = ActState(botAI, t, now);
+    // flight paths (to-do 219): on the way to the flight master the destination is the flight master, not what the state
+    // expects - the taxi tick walks and boards, the state logic waits
+    bool result = t.taxiPhase == 1 ? TaxiWalkTick(bot, t, now) : ActState(botAI, t, now);
     // off the mount when not traveling for a moment (the engine cannot fight mounted)
     if (t.wantMount)
         t.lastWantMount = now;
@@ -4073,6 +4166,14 @@ bool BotLifeMgr::Travel(Player* bot, BotLifeInfo& t, uint32 now)
         return false;
     }
 
+    // flight paths (to-do 219): a long way on this continent - to the flight master instead when a flight pays off
+    if (_taxi && !t.taxiPhase && d >= _taxiMinDist && now >= t.taxiNextCheck)
+    {
+        t.taxiNextCheck = now + MINUTE * IN_MILLISECONDS;
+        if (TaxiPlan(bot, t, now, d))
+            d = bot->GetExactDist(t.destX, t.destY, t.destZ);
+    }
+
     if (bot->IsSitState())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
 
@@ -4121,6 +4222,8 @@ bool BotLifeMgr::Travel(Player* bot, BotLifeInfo& t, uint32 now)
         t.lastPosY = bot->GetPositionY();
         t.lastDist = d;
         t.lastProgressCheck = now;
+        if (_taxi)
+            TaxiLearnNearby(bot, 30.0f);   // (to-do 219) a flight master passed on the way is a flight point known
         if (t.stuck >= 2)
         {
             t.path.clear();
@@ -4130,7 +4233,7 @@ bool BotLifeMgr::Travel(Player* bot, BotLifeInfo& t, uint32 now)
         {
             // ~50 seconds without progress: give up this destination
             // almost at a quest area whose centre cannot be reached (cliff, water): work from here
-            if (t.state == BotLifeState::DO_QUEST && d < 80.0f)
+            if (t.state == BotLifeState::DO_QUEST && d < 80.0f && !t.taxiPhase)
             {
                 t.destX = bot->GetPositionX();
                 t.destY = bot->GetPositionY();
@@ -4234,6 +4337,504 @@ bool BotLifeMgr::Travel(Player* bot, BotLifeInfo& t, uint32 now)
 }
 
 // ---------------------------------------------------------------------------------------------
+// flight paths (to-do 219): a bot with a far destination on its continent takes a flight master, as a player does.
+//
+// Travel() asks TaxiPlan() once a minute for a destination at least BotLife.TaxiMinDistance away. The plan needs a flight
+// master of the bot's faction within BotLife.TaxiMasterRange, a flight point the bot KNOWS near the destination, a route
+// between them over known points (the client routes over discovered points only), the money for it, and the flight has to
+// take at least 60% of the way on foot away. The real destination is parked; the bot walks to the flight master (phase 1,
+// TaxiWalkTick), learns that point as a player does when it talks to the flight master, and boards through the core's
+// Player::ActivateTaxiPathTo - the path the client's CMSG_ACTIVATE_TAXI_EXPRESS takes. In the air (phase 2) the core flies
+// the bot; TaxiFlightTick() stands in for the client's CMSG_MOVE_SPLINE_DONE at the end of every leg
+// (WorldSession::HandleMoveSplineDoneOpcode): the next leg, or the landing. Then Travel() carries on to the destination.
+//
+// Flight points a bot knows: a character starts with the points of its race (PlayerTaxi::InitTaxiNodesForLevel); it learns
+// one when it talks to a flight master (boarding), when it passes within 30 yd of one while traveling, and when bot life
+// relocates it into a zone for its level (RelocateForLevel): that teleport stands in for the journey a player makes into
+// the zone, on which the player would have come by the zone's flight point.
+
+namespace
+{
+    bool TaxiNodeForTeam(TaxiNodesEntry const* node, uint32 team)
+    {
+        // the mount of the faction, as ObjectMgr::GetNearestTaxiNode checks it (index 1 alliance, 0 horde)
+        return node && node->MountCreatureID[team == ALLIANCE ? 1 : 0] != 0;
+    }
+
+    char const* TaxiNodeName(uint32 id)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(id);
+        return node && node->name ? node->name : "?";
+    }
+}
+
+bool BotLifeMgr::TaxiPlan(Player* bot, BotLifeInfo& t, uint32 now, float walkDist)
+{
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->IsInFlight() || bot->IsBeingTeleported() || bot->GetGroup() || bot->GetVehicle()
+        || bot->GetTransport() || bot->InBattleground() || bot->InBattlegroundQueue() || bot->GetMap()->Instanceable()
+        || bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_ROOT) || !bot->m_taxi.empty() || IsWalker(bot) || t.banker)
+        return false;
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI || botAI->HasRealPlayerMaster())
+        return false;
+    uint32 const team = bot->GetTeam();
+    if (team != ALLIANCE && team != HORDE)
+        return false;   // a pandaren without a faction has no flight master yet
+    if (!t.taxiForced && _taxiCooldown && t.taxiLandedAt && now - t.taxiLandedAt < _taxiCooldown * IN_MILLISECONDS)
+        return false;
+    auto mapIt = _taxiNodesByMap.find(bot->GetMapId());
+    if (mapIt == _taxiNodesByMap.end())
+        return false;
+
+    // the nearest flight master within reach, and the known flight point nearest to the destination
+    uint32 from = 0, to = 0;
+    float fromDist = _taxiMasterRange, toDist = walkDist;
+    for (uint32 id : mapIt->second)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(id);
+        if (!TaxiNodeForTeam(node, team))
+            continue;
+        float const dBot = bot->GetExactDist(node->x, node->y, node->z);
+        if (dBot < fromDist)
+        {
+            fromDist = dBot;
+            from = id;
+        }
+        if (!bot->m_taxi.IsTaximaskNodeKnown(id))
+            continue;
+        float const dx = node->x - t.destX, dy = node->y - t.destY, dz = node->z - t.destZ;
+        float const dDest = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dDest < toDist)
+        {
+            toDist = dDest;
+            to = id;
+        }
+    }
+    if (!from || !to || from == to)
+        return false;
+    // the flight has to take most of the way away: what stays on foot (to the flight master, from the landing point) under 40%
+    if (fromDist + toDist > walkDist * 0.4f)
+        return false;
+    std::vector<uint32> nodes;
+    uint32 cost = 0;
+    if (!TaxiRoute(bot, from, to, nodes, cost) || bot->GetMoney() < cost)
+        return false;
+    // so many boardings per minute server-wide: hundreds of bots must not take off together
+    if (!t.taxiForced)
+    {
+        uint32 const minute = now / (MINUTE * IN_MILLISECONDS);
+        if (_taxiMinute.exchange(minute) != minute)
+            _taxiMinuteCount.store(0);
+        if (_taxiMinuteCount.fetch_add(1) >= _taxiPerMinute)
+            return false;
+    }
+
+    TaxiNodesEntry const* src = sTaxiNodesStore.LookupEntry(from);
+    t.taxiDestMap = t.destMap;
+    t.taxiDestX = t.destX;
+    t.taxiDestY = t.destY;
+    t.taxiDestZ = t.destZ;
+    t.taxiArriveDist = t.arriveDist;
+    t.taxiWalkDist = walkDist;
+    t.taxiFrom = from;
+    t.taxiTo = to;
+    t.taxiNodes = std::move(nodes);
+    t.taxiCost = cost;
+    t.taxiPhase = 1;
+    t.taxiSince = now;
+    SetDest(t, bot->GetMapId(), src->x, src->y, src->z, 5.0f);
+    TC_LOG_INFO("playerbots", "BotLife taxi: {} ({}) walks {:.0f} yd to the flight master at {} ({}) for a flight to {} ({}), {} leg(s), {} copper, {:.0f} yd on foot left instead of {:.0f}",
+        bot->GetName(), uint32(bot->GetLevel()), fromDist, TaxiNodeName(from), from, TaxiNodeName(to), to, uint32(t.taxiNodes.size() - 1), cost,
+        toDist, walkDist);
+    return true;
+}
+
+bool BotLifeMgr::TaxiRoute(Player* bot, uint32 from, uint32 to, std::vector<uint32>& nodes, uint32& cost) const
+{
+    // breadth-first over the taxi paths between flight points the bot knows (a client routes over discovered points only),
+    // on the bot's map; at most six legs
+    uint32 const mapId = bot->GetMapId();
+    uint32 const team = bot->GetTeam();
+    std::unordered_map<uint32, uint32> prev;
+    prev[from] = from;
+    std::deque<std::pair<uint32, uint8>> open;
+    open.emplace_back(from, 0);
+    bool found = false;
+    while (!open.empty() && !found)
+    {
+        uint32 const cur = open.front().first;
+        uint8 const depth = open.front().second;
+        open.pop_front();
+        auto src = sTaxiPathSetBySource.find(cur);
+        if (src == sTaxiPathSetBySource.end())
+            continue;
+        for (auto const& dest : src->second)
+        {
+            uint32 const next = dest.first;
+            if (prev.count(next))
+                continue;
+            TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(next);
+            if (!TaxiNodeForTeam(node, team) || node->map_id != mapId)
+                continue;
+            if (next != to && !bot->m_taxi.IsTaximaskNodeKnown(next))
+                continue;
+            prev[next] = cur;
+            if (next == to)
+            {
+                found = true;
+                break;
+            }
+            if (depth + 1 < 6)
+                open.emplace_back(next, uint8(depth + 1));
+        }
+    }
+    if (!found)
+        return false;
+    nodes.clear();
+    for (uint32 n = to; n != from; n = prev[n])
+        nodes.push_back(n);
+    nodes.push_back(from);
+    std::reverse(nodes.begin(), nodes.end());
+    cost = 0;
+    for (size_t i = 1; i < nodes.size(); ++i)
+    {
+        uint32 path = 0, price = 0;
+        sObjectMgr->GetTaxiPath(nodes[i - 1], nodes[i], path, price);
+        if (!path)
+            return false;
+        cost += price;
+    }
+    return true;
+}
+
+Creature* BotLifeMgr::FindFlightMaster(Player* bot, TaxiNodesEntry const* node) const
+{
+    auto isMaster = [bot](Unit* u)
+    {
+        Creature* c = u->ToCreature();
+        return c && c->IsAlive() && c->IsTaxi() && !c->IsHostileTo(bot) && !c->GetCharmerGUID();
+    };
+    std::list<Unit*> masters;
+    Trinity::UnitListSearcher<decltype(isMaster)> searcher(bot, masters, isMaster);
+    Cell::VisitAllObjects(bot, searcher, 30.0f);
+    Creature* best = nullptr;
+    float bestDist = 30.0f;   // the one that belongs to this node: nearest to the node position
+    for (Unit* u : masters)
+    {
+        float const d = u->GetExactDist(node->x, node->y, node->z);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            best = u->ToCreature();
+        }
+    }
+    return best;
+}
+
+bool BotLifeMgr::TaxiWalkTick(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(t.taxiFrom);
+    if (!_taxi)
+    {
+        TaxiAbort(bot, t, now, "BotLife.Taxi turned off");
+        return true;
+    }
+    if (!node || !bot->IsAlive() || bot->GetGroup() || bot->GetMap()->Instanceable() || bot->InBattleground() || bot->GetVehicle()
+        || bot->GetMapId() != node->map_id)
+    {
+        TaxiAbort(bot, t, now, "no longer fit for a flight");
+        return true;
+    }
+    if (now - t.taxiSince > 4 * MINUTE * IN_MILLISECONDS)
+    {
+        TaxiAbort(bot, t, now, "did not reach the flight master in four minutes");
+        return true;
+    }
+    if (!t.hasDest || t.destMap != node->map_id || Dist2d(t.destX, t.destY, node->x, node->y) > 40.0f)
+    {
+        // the state logic set another destination in the meantime (a quest objective moved, a town spot): that one counts,
+        // the walk to the flight master is off and nothing is restored
+        t.taxiPhase = 0;
+        t.taxiNodes.clear();
+        t.taxiForced = false;
+        return false;
+    }
+    if (bot->IsInCombat())
+        return false;
+
+    float const dNode = bot->GetExactDist(node->x, node->y, node->z);
+    Creature* master = dNode < 20.0f ? FindFlightMaster(bot, node) : nullptr;
+    if (dNode < 20.0f && !master)
+    {
+        TaxiAbort(bot, t, now, "no flight master at the node");
+        return true;
+    }
+    // the core wants the bot within twice the interaction distance of the node, the client within interaction distance of the NPC
+    bool const atMaster = master && bot->IsWithinDistInMap(master, INTERACTION_DISTANCE - 0.5f) && dNode <= 2 * INTERACTION_DISTANCE - 1.0f;
+    if (!atMaster)
+    {
+        if (master && Arrived(bot, t))
+        {
+            if (t.arriveDist > 3.0f)   // the flight master stands a few yards off the node: the last steps go to it
+                SetDest(t, bot->GetMapId(), master->GetPositionX(), master->GetPositionY(), master->GetPositionZ(), 3.0f);
+            else
+            {
+                TaxiAbort(bot, t, now, "cannot get next to the flight master");
+                return true;
+            }
+        }
+        Travel(bot, t, now);
+        if (!t.hasDest)
+            TaxiAbort(bot, t, now, "stuck on the way to the flight master");
+        return true;
+    }
+
+    // at the flight master: talk to it (the point becomes known, as WorldSession::SendLearnNewTaxiNode does for a client)
+    Dismount(bot);   // Player::ActivateTaxiPathTo refuses a mounted player
+    if (bot->isMoving())
+        bot->StopMoving();
+    bot->SetFacingToObject(master);
+    if (bot->m_taxi.SetTaximaskNode(t.taxiFrom))
+        Count(BLC_TAXI_NODE);
+    // the real destination is back in place before take-off: the landing hands the bot straight back to Travel()
+    SetDest(t, t.taxiDestMap, t.taxiDestX, t.taxiDestY, t.taxiDestZ, t.taxiArriveDist);
+    if (!bot->ActivateTaxiPathTo(t.taxiNodes, master))
+    {
+        if (bot->IsBeingTeleported())   // InstantFlightPaths: the core sent the bot straight to the landing point
+            TaxiLanded(bot, t, now);
+        else
+            TaxiAbort(bot, t, now, "the core refused the flight");
+        return true;
+    }
+    t.taxiPhase = 2;
+    t.taxiSince = now;
+    Count(BLC_TAXI_FLIGHT);
+    TC_LOG_INFO("playerbots", "BotLife taxi: {} boards at {} ({}) for {} ({}), {} leg(s), {} copper", bot->GetName(), TaxiNodeName(t.taxiFrom),
+        t.taxiFrom, TaxiNodeName(t.taxiTo), t.taxiTo, uint32(t.taxiNodes.size() - 1), t.taxiCost);
+    return true;
+}
+
+bool BotLifeMgr::TaxiFlightTick(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    if (bot->IsBeingTeleported())
+        return true;
+    if (bot->IsInFlight() || bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FLIGHT_MOTION_TYPE)
+    {
+        if (now - t.taxiSince > 12 * MINUTE * IN_MILLISECONDS)   // no flight on one continent takes this long
+        {
+            bot->GetMotionMaster()->MovementExpired(false);
+            bot->CleanupAfterTaxiFlight();
+            TaxiAbort(bot, t, now, "flight time ran out");
+        }
+        return true;
+    }
+    // the spline of this leg has ended - what a client reports with CMSG_MOVE_SPLINE_DONE (HandleMoveSplineDoneOpcode)
+    if (!bot->m_taxi.empty())
+    {
+        if (uint32 next = bot->m_taxi.NextTaxiDestination())
+        {
+            uint32 const source = bot->m_taxi.GetTaxiSource();
+            uint32 path = 0, cost = 0;
+            sObjectMgr->GetTaxiPath(source, next, path, cost);
+            uint32 const mount = sObjectMgr->GetTaxiMountDisplayId(source, bot->GetTeam());
+            // the next leg starts where the last one ended; a bot that was teleported away in between does not fly on
+            TaxiNodesEntry const* here = sTaxiNodesStore.LookupEntry(source);
+            if (path && mount && here && bot->GetMapId() == here->map_id && bot->GetExactDist(here->x, here->y, here->z) < 60.0f)
+            {
+                bot->GetSession()->SendDoFlight(mount, path, 1);   // the start node of the leg is where the bot is
+                return true;
+            }
+            bot->m_taxi.ClearTaxiDestinations();   // a leg without path or mount: down here
+        }
+    }
+    bot->CleanupAfterTaxiFlight();
+    bot->SetFallInformation(0, bot->GetPositionZ());
+    TaxiLanded(bot, t, now);
+    return true;
+}
+
+void BotLifeMgr::TaxiLanded(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    uint32 const seconds = (now - t.taxiSince) / IN_MILLISECONDS;
+    t.taxiPhase = 0;
+    t.taxiLandedAt = now;
+    t.taxiNextCheck = now + MINUTE * IN_MILLISECONDS;
+    t.taxiForced = false;
+    t.taxiNodes.clear();
+    // a fresh travel order from the landing point
+    t.path.clear();
+    t.pathIdx = 0;
+    t.lastProgressCheck = 0;
+    t.lastMoveOrder = 0;
+    t.stuck = 0;
+    Count(BLC_TAXI_LANDED);
+    TC_LOG_INFO("playerbots", "BotLife taxi: {} landed at {} ({}) after {} s, {:.0f} yd left to its destination (instead of {:.0f} on foot)",
+        bot->GetName(), TaxiNodeName(t.taxiTo), t.taxiTo, seconds, t.hasDest ? bot->GetExactDist(t.destX, t.destY, t.destZ) : 0.0f, t.taxiWalkDist);
+}
+
+void BotLifeMgr::TaxiAbort(Player* bot, BotLifeInfo& t, uint32 now, char const* why)
+{
+    TC_LOG_INFO("playerbots", "BotLife taxi: {} gives up its flight {} ({}) -> {} ({}): {}", bot->GetName(), TaxiNodeName(t.taxiFrom), t.taxiFrom,
+        TaxiNodeName(t.taxiTo), t.taxiTo, why);
+    if (t.taxiPhase == 1)   // the real destination is still parked: on foot after all
+        SetDest(t, t.taxiDestMap, t.taxiDestX, t.taxiDestY, t.taxiDestZ, t.taxiArriveDist);
+    else
+    {
+        t.path.clear();
+        t.pathIdx = 0;
+        t.lastProgressCheck = 0;
+    }
+    if (!bot->IsInFlight() && !bot->m_taxi.empty())
+        bot->CleanupAfterTaxiFlight();
+    t.taxiPhase = 0;
+    t.taxiNodes.clear();
+    t.taxiForced = false;
+    t.taxiNextCheck = now + 10 * MINUTE * IN_MILLISECONDS;
+    Count(BLC_TAXI_ABORT);
+}
+
+void BotLifeMgr::TaxiLearnNearby(Player* bot, float range)
+{
+    uint32 const team = bot->GetTeam();
+    if (team != ALLIANCE && team != HORDE)
+        return;
+    auto mapIt = _taxiNodesByMap.find(bot->GetMapId());
+    if (mapIt == _taxiNodesByMap.end())
+        return;
+    for (uint32 id : mapIt->second)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(id);
+        if (!TaxiNodeForTeam(node, team) || bot->GetExactDist(node->x, node->y, node->z) > range || !bot->m_taxi.SetTaximaskNode(id))
+            continue;
+        Count(BLC_TAXI_NODE);
+        if (_debug)
+            TC_LOG_INFO("playerbots", "BotLife taxi: {} passes the flight master of {} ({}) and knows the point now", bot->GetName(), TaxiNodeName(id), id);
+    }
+}
+
+void BotLifeMgr::TaxiLearnNearest(Player* bot, uint32 mapId, float x, float y, float z)
+{
+    // the relocation teleport stands in for the journey a player makes into the zone; that player would have come by the
+    // zone's flight point, so the bot knows the point nearest to where it arrives (a zone away at most)
+    uint32 const team = bot->GetTeam();
+    if (team != ALLIANCE && team != HORDE)
+        return;
+    auto mapIt = _taxiNodesByMap.find(mapId);
+    if (mapIt == _taxiNodesByMap.end())
+        return;
+    uint32 best = 0;
+    float bestDist = 1500.0f;
+    for (uint32 id : mapIt->second)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(id);
+        if (!TaxiNodeForTeam(node, team))
+            continue;
+        float const dx = node->x - x, dy = node->y - y, dz = node->z - z;
+        float const d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            best = id;
+        }
+    }
+    if (best && bot->m_taxi.SetTaximaskNode(best))
+    {
+        Count(BLC_TAXI_NODE);
+        if (_debug)
+            TC_LOG_INFO("playerbots", "BotLife taxi: {} moves into the zone of {} ({}) and knows the point now", bot->GetName(), TaxiNodeName(best), best);
+    }
+}
+
+std::string BotLifeMgr::TaxiStatus()
+{
+    std::ostringstream out;
+    out << "taxi: " << (_taxi ? "on" : "off") << ", destination at least " << uint32(_taxiMinDist) << " yd away, flight master within "
+        << uint32(_taxiMasterRange) << " yd, " << _taxiPerMinute << " boardings/min, cooldown " << _taxiCooldown << " s | flights "
+        << _counters[BLC_TAXI_FLIGHT].load() << ", landed " << _counters[BLC_TAXI_LANDED].load() << ", given up " << _counters[BLC_TAXI_ABORT].load()
+        << ", points learned " << _counters[BLC_TAXI_NODE].load() << "\n";
+    uint32 const now = getMSTime();
+    uint32 listed = 0;
+    for (auto const& pair : sRandomPlayerbotMgr->GetAllBots())
+    {
+        Player* bot = pair.second;
+        if (!bot || !bot->IsInWorld())
+            continue;
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI || !botAI->life.taxiPhase)
+            continue;
+        BotLifeInfo const& t = botAI->life;
+        out << (t.taxiPhase == 1 ? "  to the flight master: " : "  in the air: ") << bot->GetName() << " " << TaxiNodeName(t.taxiFrom) << " (" << t.taxiFrom
+            << ") -> " << TaxiNodeName(t.taxiTo) << " (" << t.taxiTo << "), " << (t.taxiNodes.empty() ? 0 : uint32(t.taxiNodes.size() - 1)) << " leg(s), "
+            << (now - t.taxiSince) / IN_MILLISECONDS << " s" << (t.taxiForced ? ", forced" : "") << ", map " << bot->GetMapId() << " "
+            << int32(bot->GetPositionX()) << " " << int32(bot->GetPositionY()) << " " << int32(bot->GetPositionZ())
+            << (bot->IsInFlight() ? ", in flight" : "") << "\n";
+        if (++listed >= 30)
+        {
+            out << "  ...\n";
+            break;
+        }
+    }
+    if (!listed)
+        out << "  no bot on a flight errand right now\n";
+    return out.str();
+}
+
+std::string BotLifeMgr::TaxiNodes(std::string const& name)
+{
+    Player* bot = ObjectAccessor::FindPlayerByName(name);
+    if (!bot || !bot->IsInWorld())
+        return "taxi: " + name + " is not online";
+    std::ostringstream out;
+    uint32 known = 0, onMap = 0;
+    out << "taxi: " << name << " (" << (bot->GetTeam() == ALLIANCE ? "Alliance" : bot->GetTeam() == HORDE ? "Horde" : "no faction") << ", map "
+        << bot->GetMapId() << ") knows:";
+    for (uint32 i = 1; i < sTaxiNodesStore.GetNumRows() && (i - 1) / 8 < TaxiMaskSize; ++i)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
+        if (!node || !bot->m_taxi.IsTaximaskNodeKnown(i))
+            continue;
+        ++known;
+        if (node->map_id != bot->GetMapId())
+            continue;
+        ++onMap;
+        out << " " << TaxiNodeName(i) << " (" << i << ", " << uint32(bot->GetExactDist(node->x, node->y, node->z)) << " yd)";
+    }
+    out << " | " << known << " known, " << onMap << " on this map";
+    return out.str();
+}
+
+std::string BotLifeMgr::TaxiTest(std::string const& name, float x, float y, float z)
+{
+    Player* bot = ObjectAccessor::FindPlayerByName(name);
+    if (!bot || !bot->IsInWorld())
+        return "taxi: " + name + " is not online";
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI || !sRandomPlayerbotMgr->IsRandomBot(bot))
+        return "taxi: " + name + " is not a random bot";
+    if (!_taxi)
+        return "taxi: BotLife.Taxi is off";
+    if (IsWalker(bot))
+        return "taxi: " + name + " is a walker; walkers do not fly";
+    BotLifeInfo& t = botAI->life;
+    if (t.taxiPhase)
+        return "taxi: " + name + " is already on a flight errand (phase " + std::to_string(t.taxiPhase) + ")";
+    if (bot->GetGroup() || bot->GetMap()->Instanceable() || bot->InBattleground() || !bot->IsAlive())
+        return "taxi: " + name + " is grouped, in an instance, in a battleground or dead";
+    uint32 const now = getMSTime();
+    // a plain travel order to the point, as to a grind spot: Travel() asks TaxiPlan() for the flight the usual way
+    SetState(bot, t, BotLifeState::GO_GRIND, now, 15 * MINUTE * IN_MILLISECONDS);
+    SetDest(t, bot->GetMapId(), x, y, z, 12.0f);
+    t.taxiNextCheck = 0;
+    t.taxiLandedAt = 0;
+    t.taxiForced = true;   // no rate limit, no cooldown; the distance rule (BotLife.TaxiMinDistance) still applies
+    t.nextThink = now + 10000;
+    std::ostringstream out;
+    out << "taxi: " << name << " travels to " << int32(x) << " " << int32(y) << " " << int32(z) << " on map " << bot->GetMapId() << " ("
+        << uint32(bot->GetExactDist(x, y, z)) << " yd); the plan follows within seconds in the 'BotLife taxi:' log lines, '.botlife taxi status' shows the errand";
+    return out.str();
+}
+
+// ---------------------------------------------------------------------------------------------
 // grinding / level fit
 
 bool BotLifeMgr::FindGrindSpot(Player* bot, BotLifeGrindSpot& out, bool anyZone)
@@ -4276,6 +4877,20 @@ bool BotLifeMgr::FindGrindSpot(Player* bot, BotLifeGrindSpot& out, bool anyZone)
     return seen > 0;
 }
 
+// to-do 265: the continent of a level band, the same bands RelocateForLevel picks a spot on
+bool BotLifeMgr::MapFitsLevel(uint32 map, uint32 level) const
+{
+    if (level < 58)
+        return map == 0 || map == 1;
+    if (level < 68)
+        return map == 530;
+    if (level < 80)
+        return map == 571;
+    if (level < 85)
+        return map == 0 || map == 1 || map == 646;
+    return map == 870 || map == 1064;
+}
+
 bool BotLifeMgr::ZoneFitsLevel(Player* bot) const
 {
     // scripted/phased starting-zone maps (Ebon Hold, Wandering Isle, Gilneas, Lost Isles): bots cannot progress there
@@ -4301,10 +4916,16 @@ bool BotLifeMgr::ZoneFitsLevel(Player* bot) const
     // grew with every restart
     if (bot->GetMap()->Instanceable() && !bot->InBattleground() && !bot->GetGroup())
         return false;
+    int32 level = bot->GetLevel();
+    // to-do 265: the continent of the level band counts as well. The zone samples of Northrend sit at
+    // 80-83, so with the six levels of slack a bot of 80 to 86 kept "fitting" Icecrown or Storm Peaks, a city without
+    // samples (Dalaran) always fit, and the Cataclysm zones of the 80-85 band were never reached: 141 of the 201 level-80
+    // bots sat in Northrend. The same held for Outland at 68-76.
+    if (!MapFitsLevel(bot->GetMapId(), uint32(level)))
+        return false;
     auto it = _zoneLevels.find(bot->GetZoneId());
     if (it == _zoneLevels.end())
         return true;
-    int32 level = bot->GetLevel();
     // a starter area (band up to level 6) is left two levels above its band, not six: with the bot
     // rotation a hundred bots shared thirty boars there
     if (level > int32(it->second.high) + (it->second.high <= 6 ? 2 : 6))
@@ -4350,6 +4971,13 @@ bool BotLifeMgr::RelocateForLevel(Player* bot)
 
     uint32 level = bot->GetLevel();
     FactionTemplateEntry const* homeFaction = bot->GetFactionTemplateEntry();
+    // (botcost) a die loop / watchdog pull-out: no spot within the radius of the place that kept killing / costing
+    PlayerbotAI* avoidAI = GET_PLAYERBOT_AI(bot);
+    BotLifeInfo const* avoid = avoidAI && avoidAI->life.dieLoopUntil && now < avoidAI->life.dieLoopUntil ? &avoidAI->life : nullptr;
+    auto nearDieLoop = [&](uint32 spotMap, BotLifeGrindSpot const& spot)
+    {
+        return avoid && avoid->dieLoopMap == spotMap && Dist2d(avoid->dieLoopX, avoid->dieLoopY, spot.x, spot.y) < _dieLoopRadius;
+    };
     // batch 11h: below level 10 first a spot near the start area of the bot's race
     uint32 homeMap = 0;
     float hx = 0.0f, hy = 0.0f;
@@ -4363,7 +4991,7 @@ bool BotLifeMgr::RelocateForLevel(Player* bot)
             for (uint32 attempt = 0; attempt < 40; ++attempt)
             {
                 BotLifeGrindSpot const& spot = spots[urand(0, spots.size() - 1)];
-                if (Dist2d(hx, hy, spot.x, spot.y) > 2500.0f)
+                if (Dist2d(hx, hy, spot.x, spot.y) > 2500.0f || nearDieLoop(homeMap, spot))
                     continue;
                 if ((spot.teamDisabled && spot.teamDisabled == bot->GetTeam()) || IsEnemyTerritory(bot, spot.zone))
                     continue;
@@ -4376,8 +5004,12 @@ bool BotLifeMgr::RelocateForLevel(Player* bot)
                     continue;
                 --relocateTokens;
                 Count(BLC_RELOCATE);
+                if (homeMap != bot->GetMapId() && GET_PLAYERBOT_AI(bot) && FerryPlan(bot, GET_PLAYERBOT_AI(bot)->life, homeMap, spot.x, spot.y, spot.z, now))
+                    return true;
                 AdjustMapPopulation(bot->GetMapId(), -1);
                 AdjustMapPopulation(homeMap, +1);
+                if (_taxi)
+                    TaxiLearnNearest(bot, homeMap, spot.x, spot.y, spot.z);   // (to-do 219)
                 bot->TeleportTo(homeMap, spot.x, spot.y, spot.z + 0.5f, frand(0.0f, 2 * float(M_PI)));
                 return true;
             }
@@ -4420,6 +5052,8 @@ bool BotLifeMgr::RelocateForLevel(Player* bot)
             BotLifeGrindSpot const& spot = spots[urand(0, spots.size() - 1)];
             if (spot.teamDisabled && spot.teamDisabled == bot->GetTeam())
                 continue;
+            if (nearDieLoop(map, spot))
+                continue;
             if (IsEnemyTerritory(bot, spot.zone))
                 continue;
             if (spot.faction && botFaction)
@@ -4434,9 +5068,13 @@ bool BotLifeMgr::RelocateForLevel(Player* bot)
             if (_debug)
                 TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): zone {} does not fit, relocating to map {} zone {}",
                     bot->GetName(), level, bot->GetZoneId(), map, spot.zone);
+            if (map != bot->GetMapId() && GET_PLAYERBOT_AI(bot) && FerryPlan(bot, GET_PLAYERBOT_AI(bot)->life, map, spot.x, spot.y, spot.z, now))
+                return true;   // by boat or zeppelin; FerryFinish teleports to the spot at the end
             // keep the population snapshot current between counts (all 595 stranded bots went to one continent)
             AdjustMapPopulation(bot->GetMapId(), -1);
             AdjustMapPopulation(map, +1);
+            if (_taxi)
+                TaxiLearnNearest(bot, map, spot.x, spot.y, spot.z);   // (to-do 219)
             bot->TeleportTo(map, spot.x, spot.y, spot.z + 0.5f, frand(0.0f, 2 * float(M_PI)));
             return true;
         }
@@ -7386,6 +8024,11 @@ void BotLifeMgr::OnKilledByCreature(Creature* killer, Player* killed)
         {
             t.relocateAfterDeaths = true;
             t.recentDeaths.clear();
+            // (botcost) the new spot must not be the one that kept killing the bot
+            t.dieLoopMap = killed->GetMapId();
+            t.dieLoopX = killed->GetPositionX();
+            t.dieLoopY = killed->GetPositionY();
+            t.dieLoopUntil = now + 30 * MINUTE * IN_MILLISECONDS;
         }
         // ASan: clear BEFORE taking the reference - clearing after it left d dangling and the
         // d.first = 0 below wrote into freed memory (heap corruption, jemalloc crashes 27/28-9)
@@ -7395,13 +8038,27 @@ void BotLifeMgr::OnKilledByCreature(Creature* killer, Player* killed)
         d.first = (d.second && now - d.second < 20 * MINUTE * IN_MILLISECONDS) ? d.first + 1 : 1;
         d.second = now;
         // the corpse lies next to the killer: a solo bot does not come back there again
-        if (!killed->GetMap()->Instanceable() && !killed->GetGroup() && (d.first >= 2 || t.recentDeaths.size() >= 3))
+        if (!killed->GetMap()->Instanceable() && !killed->GetGroup()
+            && (d.first >= 2 || t.recentDeaths.size() >= 3 || (t.relocateAfterDeaths && t.dieLoopUntil && now < t.dieLoopUntil)))
             t.graveyardRevive = now + 4000;
         if (d.first >= 2 && !killed->GetMap()->Instanceable())
         {
             t.avoidCreature[killer->GetEntry()] = now + 30 * MINUTE * IN_MILLISECONDS;
             d.first = 0;
             Count(BLC_AVOID_CREATURE);
+            // (botcost) die loop: killed twice by the same creature entry (Castino, lvl 58 rogue, Hellfire: 10 worgs at the
+            // graveyard path, the avoid entry alone does not keep a bot away from aggressive mobs): leave for another spot too
+            if (_dieLoop && !killed->GetGroup())
+            {
+                t.relocateAfterDeaths = true;
+                t.dieLoopMap = killed->GetMapId();
+                t.dieLoopX = killed->GetPositionX();
+                t.dieLoopY = killed->GetPositionY();
+                t.dieLoopUntil = now + 30 * MINUTE * IN_MILLISECONDS;
+                TC_LOG_INFO("playerbots", "BOTCOST dieloop: {} (lvl {}) killed twice by {} ({}) at map {} {:.0f} {:.0f} zone {}, leaves for another spot",
+                    killed->GetName(), uint32(killed->GetLevel()), killer->GetName(), killer->GetEntry(), killed->GetMapId(),
+                    killed->GetPositionX(), killed->GetPositionY(), killed->GetZoneId());
+            }
             if (t.questId && t.state == BotLifeState::DO_QUEST)
             {
                 BotLifeQuestPlan const* plan = FindPlan(t.questId);   // was an unlocked _plans.find
@@ -7904,7 +8561,9 @@ void BotLifeMgr::PrintStats(ChatHandler* handler)
         "party_quest_shared", "party_quest_turnin", "dungeon_start", "dungeon_cleared", "dungeon_timeout",
         "dungeon_wipeout", "dungeon_abort", "dungeon_boss", "dungeon_kill", "dungeon_rez", "dungeon_wipe", "raid_start", "unstuck", "ghost_revive", "orphan_group", "mount", "death", "death_by_creature", "death_by_higher", "death_by_elite", "death_by_guard",
         "death_by_player", "potion", "dungeon_stalled", "avoid_creature", "town_visit", "door_open", "quest_engage", "quest_engage_fail", "bg_queued", "bg_joined", "bg_capture", "bg_left", "bg_flag", "bg_flag_capture", "areatrigger", "self_heal", "repair", "guild_created", "guild_join", "pandaren_faction", "gbank_gold", "gbank_item", "ah_post", "ah_buy", "gear_fix", "gear_upgrade", "death_relocate", "profession_set", "gather_node", "gather_skin", "ah_post_mat", "tank_shield", "bags_given", "stranded_out", "rebalance", "cast_call", "cast_strict_fail", "cast_moving", "cast_prepared", "cast_timed", "gbank_supply", "gbank_equip", "gbank_treasure", "gbank_tab_bought", "banker_picked", "banker_home", "banker_withdraw", "banker_vendor", "banker_gold", "mail_gold", "lfg_bot_queued", "lfg_short", "lfg_master", "phantom_combat_cleared", "craft", "craft_fail", "recipe_learned", "profession_swap", "banker_sort", "lfg_lead", "talents", "event_gossip", "kill_gate", "craft_supply", "guild_repair", "gbank_resort", "refine", "enchant_scroll", "fish_cast", "fish_catch", "heroic_start", "daily_turnin", "dig_survey", "dig_find", "dig_solve", "quest_bad_skip", "quest_roam", "quest_skip", "vendor_gear", "dk_chain_giveup", "dk_portal", "dk_eye", "dk_eye_siphon",
-        "duel_requested", "duel_accepted", "duel_declined", "duel_won", "duel_lost", "level_balance", "role_respec" };   // (bot-duels) (level-balance)
+        "duel_requested", "duel_accepted", "duel_declined", "duel_won", "duel_lost", "level_balance", "role_respec",
+        "taxi_flight", "taxi_landed", "taxi_abort", "taxi_node",   // (bot-duels) (level-balance) (to-do 219)
+        "gear_band_check" };   // (to-do 265)
     static char const* const stateNames[] = { "idle", "go_grind", "at_grind", "go_questgiver", "do_quest", "go_turnin", "rest", "town", "dig" };
 
     uint32 states[9] = {};
@@ -8045,17 +8704,67 @@ namespace
 
 // bots randomized before the BotFactory::Randomize fix (and bots that lost their gear) log in naked or
 // without a spec; fill them up once per login with factory gear (incremental: nothing worn is downgraded)
+// to-do 479 / 265: equips the armor pieces of the race/class starter outfit (CharStartOutfit.dbc) into
+// EMPTY slots only (CanEquipNewItem with swap=false refuses an occupied slot, so nothing worn is ever replaced).
+// Returns the number of pieces put on. Why: BotFactory::Randomize(false) (level balance, relevel) destroys the worn
+// starter gear and RandomItemManager::FindBestItemForLevelAndEquip finds (almost) no armor on level 2-20 (stat-less
+// white items are refused by CheckItemStats, only a handful of green pieces with stats exist per slot), so the bot
+// stayed naked for good, also with natural progression (no factory gear there).
+static uint32 GiveStarterArmor(Player* bot)
+{
+    CharStartOutfitEntry const* outfit = sDBCManager.GetCharStartOutfitEntry(bot->GetRace(), bot->GetClass(), uint8(bot->GetGender()));
+    if (!outfit)
+        return 0;
+    uint32 given = 0;
+    for (int j = 0; j < MAX_OUTFIT_ITEMS; ++j)
+    {
+        if (outfit->ItemID[j] <= 0)
+            continue;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(uint32(outfit->ItemID[j]));
+        if (!proto || proto->Class != ITEM_CLASS_ARMOR)
+            continue;
+        uint16 dest;
+        if (bot->CanEquipNewItem(NULL_SLOT, dest, proto->ItemId, false) != EQUIP_ERR_OK)
+            continue;
+        if (bot->EquipNewItem(dest, proto->ItemId, true))
+            ++given;
+    }
+    return given;
+}
+
 bool BotLifeMgr::EnsureGear(PlayerbotAI* botAI)
 {
     Player* bot = botAI->GetBot();
-    if (bot->GetLevel() < 5)
-        return false;
     static uint8 const armorSlots[] = { EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_SHOULDERS, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WAIST,
         EQUIPMENT_SLOT_LEGS, EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_WRISTS, EQUIPMENT_SLOT_HANDS, EQUIPMENT_SLOT_BACK };
     uint32 worn = 0;
     for (uint8 slot : armorSlots)
         if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             ++worn;
+    // level 1-20 with fewer than 3 armor pieces worn: starter outfit into the empty slots, also
+    // with natural progression and below level 5. A bot that already wears gear is not touched (empty slots only).
+    bool starterGiven = false;
+    if (bot->GetLevel() <= 20 && worn < 3 && GiveStarterArmor(bot))
+    {
+        starterGiven = true;
+        worn = 0;
+        for (uint8 slot : armorSlots)
+            if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                ++worn;
+        if (_debug)
+            TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): starter armor put on ({} armor pieces worn now)", bot->GetName(),
+                uint32(bot->GetLevel()), worn);
+    }
+    if (bot->GetLevel() < 5)
+    {
+        botAI->life.gearBandChecked = 0;   // (2-11, to-do 265) band 1-9 looked at; the next check comes at level 10
+        if (starterGiven)
+        {
+            botAI->ResetStrategies();
+            Count(BLC_GEAR_FIX);
+        }
+        return starterGiven;
+    }
     bool noSpec = bot->GetLevel() >= 10 && bot->GetSpecialization() == Specializations::SPEC_NONE;
     // level 86 and up: armor that is far behind the level (the set of level 85 on a bot of 89) is
     // replaced, also with natural progression - such a bot cannot do the content of its level
@@ -8075,28 +8784,35 @@ bool BotLifeMgr::EnsureGear(PlayerbotAI* botAI)
             : uint32(0.7f * RandomItemManager::MaxItemLevelForLevel(std::max<uint32>((level / 10) * 10, 20)));
         behind = average < wanted;
     }
-    // at most 150 "behind" refills per hour for all bots together (the factory is not cheap; a bot that misses out is
-    // checked again at its next login)
-    if (behind)
-    {
-        uint32 const nowMs = getMSTime();
-        uint32 start = _gearHourStart.load(std::memory_order_relaxed);
-        if (!start || nowMs - start >= 3600000)
-        {
-            _gearHourStart.store(nowMs ? nowMs : 1, std::memory_order_relaxed);
-            _gearInHour.store(0, std::memory_order_relaxed);
-        }
-        if (_gearInHour.fetch_add(1, std::memory_order_relaxed) >= 150)
-            behind = false;
-    }
-    // 
-    if ((worn >= 5 || _naturalProgression) && !noSpec && !behind)
+    // BotLife.GearRefillsPerHour "behind" refills per hour for all bots together, handed out per minute (the factory is not
+    // cheap). a bot that misses out keeps its band unchecked and is looked at again a minute later
+    // by MaintenanceTick, not only at its next login.
+    // a bot above level 20 with fewer than 3 armor pieces worn is "naked": with natural progression the
+    // factory never dresses a bot, and BotFactory::Randomize(false) / the first randomize leave it with no armor at all (GiveStarterArmor
+    // only covers level <= 20), so such a bot stayed naked for good. It gets one factory fill (InitEquipment(true), empty slots) even
+    // with natural progression; max level stays excluded (loot only), a bot with 3+ pieces keeps natural progression.
+    uint32 const maxLevelCfg = sPlayerbotAIConfig->randomBotMaxLevel;
+    bool const naked = level > 20 && worn < 3 && level < maxLevelCfg;
+    if ((behind || naked) && !TakeSlot(_gearSliceStart, _gearInSlice, _gearRefillsPerHour))
         return false;
+    botAI->life.gearBandChecked = uint8(level / 10);
+    // at max level the factory never dresses a bot: from 90 on only loot from dungeons and raids
+    // (the relevel to 90 by the level balance is the one exception, see BotFactory::Randomize, capped at MaxLevelFactoryItemLevel)
+    bool const maxLevel = level >= sPlayerbotAIConfig->randomBotMaxLevel;
+    // 
+    if ((worn >= 5 || (_naturalProgression && !naked) || maxLevel) && !noSpec && !behind)
+    {
+        if (!starterGiven)
+            return false;
+        botAI->ResetStrategies();   // only the starter armor was added
+        Count(BLC_GEAR_FIX);
+        return true;
+    }
 
     BotFactory factory(bot, bot->GetLevel());
     if (noSpec)
         factory.InitTalentsTree(false);
-    if ((worn < 5 && !_naturalProgression) || behind)
+    if (((worn < 5 && (!_naturalProgression || naked)) || behind) && !maxLevel)
         factory.InitEquipment(true);
     botAI->ResetStrategies();
     Count(BLC_GEAR_FIX);
@@ -9324,7 +10040,7 @@ static uint8 RoleOfSpec(uint32 spec)
     }
 }
 
-static float const roleTarget[3] = { 15.0f, 20.0f, 65.0f };
+// (2-11, to-do 265) the targets are config now: BotLife.RoleTargetTank / RoleTargetHealer, see BotLifeMgr::RoleTargets
 
 static int32 RoleFaction(uint8 race)
 {
@@ -9380,6 +10096,8 @@ int32 BotLifeMgr::PickSpecTab(Player* bot, int32 forceRole)
     float share[3];
     if (!snap || !RoleShares(*snap, bot, share))
         return -1;
+    float roleTarget[3];
+    RoleTargets(roleTarget);
     dbc::TalentTabs const tabs = dbc::GetClassSpecializations(bot->GetClass());
     uint32 const tabCount = bot->GetClass() == CLASS_DRUID ? 4 : 3;
     uint32 dpsSpecs = 0;
@@ -9430,13 +10148,16 @@ bool BotLifeMgr::RoleRespec(PlayerbotAI* botAI)
     float share[3];
     if (!RoleShares(*snap, bot, share))
         return false;
+    float roleTarget[3];
+    RoleTargets(roleTarget);
+    float const tol = float(_roleTolerance);
     uint8 const current = RoleOfSpec(uint32(bot->GetSpecialization()));
-    // a role more than 5 points over its target always may leave; a dps bot that is merely over the dps target
-    // (not yet +5) may also go to a missing role the class can play, so warriors/DKs cannot block the heal shortage
-    // (never leave a role that is under its target: no oscillation)
-    if (share[current] <= roleTarget[current] + 5.0f && !(current == 2 && share[2] > roleTarget[2]))
+    // a role more than RoleTolerance points over its target always may leave; a dps bot that is merely over the dps
+    // target (not yet +tolerance) may also go to a missing role the class can play, so warriors/DKs cannot block the heal
+    // shortage (never leave a role that is under its target: no oscillation)
+    if (share[current] <= roleTarget[current] + tol && !(current == 2 && share[2] > roleTarget[2]))
         return false;
-    // the missing role (share more than 5 points under its target) the class can play, the biggest gap first
+    // the missing role (share more than RoleTolerance points under its target) the class can play, the biggest gap first
     dbc::TalentTabs const tabs = dbc::GetClassSpecializations(bot->GetClass());
     uint32 const tabCount = bot->GetClass() == CLASS_DRUID ? 4 : 3;
     int32 want = -1;
@@ -9447,7 +10168,7 @@ bool BotLifeMgr::RoleRespec(PlayerbotAI* botAI)
             continue;
         uint8 const role = RoleOfSpec(tabs[i]);
         float const g = roleTarget[role] - share[role];
-        if (role != current && g > 5.0f && g > gap)
+        if (role != current && g > tol && g > gap)
         {
             gap = g;
             want = role;
@@ -9456,28 +10177,86 @@ bool BotLifeMgr::RoleRespec(PlayerbotAI* botAI)
     // 265: a strongly skewed band (gap > 8) converges twice as fast
     if (want < 0 || urand(0, 99) >= (gap > 8.0f ? 60u : 30u))
         return false;
-    // at most 80 respecs per hour for all bots together (6 converged too slowly: ~50 h for the prod skew)
-    uint32 const now = getMSTime();
-    uint32 start = _respecHourStart.load(std::memory_order_relaxed);
-    if (!start || now - start >= 3600000)
+    // at max level a bot only respecs while it still wears the fresh-90 baseline (average armor item
+    // level at or below MaxLevelFactoryItemLevel): gear earned in dungeons and raids is never made useless by a role change,
+    // and the baseline for the new role costs nothing the bot had earned
+    uint32 const level = bot->GetLevel();
+    bool const maxLevel = level >= sPlayerbotAIConfig->randomBotMaxLevel;
+    if (maxLevel && _maxLevelFactoryItemLevel)
     {
-        _respecHourStart.store(now ? now : 1, std::memory_order_relaxed);
-        _respecInHour.store(0, std::memory_order_relaxed);
+        static uint8 const armorSlots[] = { EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_SHOULDERS, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WAIST,
+            EQUIPMENT_SLOT_LEGS, EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_WRISTS, EQUIPMENT_SLOT_HANDS, EQUIPMENT_SLOT_BACK };
+        uint32 sum = 0, worn = 0;
+        for (uint8 slot : armorSlots)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            {
+                sum += item->GetTemplate()->ItemLevel;
+                ++worn;
+            }
+        if (worn && sum / worn > _maxLevelFactoryItemLevel)
+            return false;
     }
-    if (_respecInHour.fetch_add(1, std::memory_order_relaxed) >= 80)
+    // BotLife.RoleRespecsPerHour respecs per hour for all bots together, handed out per minute (6 an hour converged too slowly:
+    // ~50 h for the prod skew)
+    if (!TakeSlot(_respecSliceStart, _respecInSlice, _roleRespecsPerHour))
         return false;
 
     BotFactory factory(bot, bot->GetLevel());
     factory.InitTalentsTree(true, want);   // ResetTalents (incl. the specialization), then the forced role
     botAI->ResetStrategies();
     EquipBagUpgrades(bot);                 // gear that fits the new spec (role-weighted GearScore)
-    if (!_naturalProgression)
+    // the pieces that carry the wrong primary stat for the new role are replaced by the factory at
+    // the level band's own item level (InitEquipment is incremental: a worn piece that fits the spec is never downgraded), also
+    // with natural progression - the owner's wish is the right gear for the right spec. Counts against the gear refill cap;
+    // when the cap is taken the bot keeps what it has and the next ten-level check (MaintenanceTick) looks again.
+    if (TakeSlot(_gearSliceStart, _gearInSlice, _gearRefillsPerHour))
         factory.InitEquipment(true);
+    else
+        botAI->life.gearBandChecked = 255;
     Count(BLC_ROLE_RESPEC);
-    if (_debug)
-        TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): role respec {} -> {} (spec now {})", bot->GetName(), uint32(bot->GetLevel()),
-            uint32(current), want, uint32(bot->GetSpecialization()));
+    // (to-do 265) always logged, also without BotLife.Debug: a respec is rare (BotLife.RoleRespecsPerHour) and the one proof the
+    // role balance works
+    TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): role respec {} -> {} (spec now {})", bot->GetName(), uint32(bot->GetLevel()),
+        uint32(current), want, uint32(bot->GetSpecialization()));
     return true;
+}
+
+// to-do 265: once a minute per random bot, from PlayerbotAI::UpdateAIInternal before the minimal gate: UpdateBot
+// only runs for active bots (players near), so on a realm with few players the login gear check and the role respec hardly ever
+// ran (dev 2-11: 1 respec and 10 gear fixes in 3.5 h with 31 eligible bots). Does, on the map thread of the bot itself:
+// 1. the gear check when the bot is in a new level band (every ten levels, also right after login and after a relevel):
+//    EnsureGear (band item level, starter armor, spec) and EnsureWeapon;
+// 2. the role respec towards the band's missing role.
+// Returns true when something was done so the caller ends the tick there.
+bool BotLifeMgr::MaintenanceTick(PlayerbotAI* botAI)
+{
+    if (!_enabled || !_loaded || !botAI)
+        return false;
+    Player* bot = botAI->GetBot();
+    if (!bot || !bot->IsInWorld() || !bot->GetSession() || !sRandomPlayerbotMgr->IsRandomBot(bot))
+        return false;
+    BotLifeInfo& t = botAI->life;
+    uint32 const now = getMSTime();
+    if (now < t.nextMaintenance)
+        return false;
+    t.nextMaintenance = now + 60000;
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->IsBeingTeleported() || bot->IsInFlight() || botAI->HasRealPlayerMaster()
+        || t.relevelTo || bot->duel)
+        return false;
+    bool acted = false;
+    if (t.gearBandChecked != uint8(bot->GetLevel() / 10))
+    {
+        if (EnsureGear(botAI))   // marks the band as checked unless the refill cap was taken (then: again in a minute)
+        {
+            acted = true;
+            Count(BLC_GEAR_BAND_CHECK);
+        }
+        if (EnsureWeapon(bot))
+            acted = true;
+    }
+    if (!acted && RoleRespec(botAI))
+        acted = true;
+    return acted;
 }
 
 void BotLifeMgr::PrintRoles(ChatHandler* handler)
@@ -9499,5 +10278,9 @@ void BotLifeMgr::PrintRoles(ChatHandler* handler)
             handler->PSendSysMessage("%s %u%s: tank %u (%.0f%%) heal %u (%.0f%%) dps %u (%.0f%%) of %u", faction ? "Horde" : "Alliance",
                 band * 10, band == 9 ? "" : "-", n[0], 100.0f * n[0] / total, n[1], 100.0f * n[1] / total, n[2], 100.0f * n[2] / total, total);
         }
-    handler->PSendSysMessage("roles: respecs so far %u (max 40 per hour)", uint32(_counters[BLC_ROLE_RESPEC].load()));
+    float target[3];
+    RoleTargets(target);
+    handler->PSendSysMessage("roles: target tank %.0f%% heal %.0f%% dps %.0f%% (tolerance %u), respecs so far %u (max %u per hour), "
+        "gear band checks %u (refills max %u per hour)", target[0], target[1], target[2], _roleTolerance,
+        uint32(_counters[BLC_ROLE_RESPEC].load()), _roleRespecsPerHour, uint32(_counters[BLC_GEAR_BAND_CHECK].load()), _gearRefillsPerHour);
 }

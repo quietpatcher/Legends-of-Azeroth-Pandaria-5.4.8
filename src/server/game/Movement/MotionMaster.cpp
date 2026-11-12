@@ -300,8 +300,16 @@ void MotionMaster::Update(uint32 diff)
     if (!_owner)
         return;
 
+    // A rooted or stunned unit is not updated, except while its home generator is on top: HomeMovementGenerator launches no
+    // spline under root/stun and then ends at once, so a rooted or stunned creature can finish its evade (otherwise
+    // UNIT_STATE_EVADE stayed set and Creature::Update stopped calling UpdateAI). Upstream also lets the waypoint generator
+    // through (#894); our tree does not have that exception and it is not part of this port.
     if (_owner->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED))
-        return;
+    {
+        MovementGenerator* top = Empty() ? nullptr : GetCurrentMovementGenerator();
+        if (!top || top->GetMovementGeneratorType() != HOME_MOTION_TYPE)
+            return;
+    }
 
     ASSERT(!Empty());
 

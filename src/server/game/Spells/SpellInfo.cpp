@@ -612,8 +612,10 @@ int32 SpellEffectInfo::CalcValue(Unit const* caster, int32 const* bp, Unit const
             int32 level = int32(caster->GetLevel());
             if (level > int32(_spellInfo->MaxLevel) && _spellInfo->MaxLevel > 0)
                 level = int32(_spellInfo->MaxLevel);
-            if (level >= int32(_spellInfo->BaseLevel))
-                level -= int32(_spellInfo->BaseLevel);
+            // a caster below the spell's base level gets no per-level bonus
+            level -= int32(_spellInfo->BaseLevel);
+            if (level < 0)
+                level = 0;
             basePoints += int32(level * basePointsPerLevel);
         }
 
@@ -2185,32 +2187,32 @@ SpellSchoolMask SpellInfo::GetSchoolMask() const
 uint32 SpellInfo::GetAllEffectsMechanicMask() const
 {
     uint32 mask = 0;
-    if (Mechanic)
-        mask |= 1 << Mechanic;
+    if (Mechanic && Mechanic < 32)
+        mask |= uint32(1) << Mechanic;
     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-        if (Effects[i].IsEffect() && Effects[i].Mechanic)
-            mask |= 1 << Effects[i].Mechanic;
+        if (Effects[i].IsEffect() && Effects[i].Mechanic && Effects[i].Mechanic < 32)
+            mask |= uint32(1) << Effects[i].Mechanic;
     return mask;
 }
 
 uint32 SpellInfo::GetEffectMechanicMask(uint8 effIndex) const
 {
     uint32 mask = 0;
-    if (Mechanic)
-        mask |= 1 << Mechanic;
-    if (Effects[effIndex].IsEffect() && Effects[effIndex].Mechanic)
-        mask |= 1 << Effects[effIndex].Mechanic;
+    if (Mechanic && Mechanic < 32)
+        mask |= uint32(1) << Mechanic;
+    if (Effects[effIndex].IsEffect() && Effects[effIndex].Mechanic && Effects[effIndex].Mechanic < 32)
+        mask |= uint32(1) << Effects[effIndex].Mechanic;
     return mask;
 }
 
 uint32 SpellInfo::GetSpellMechanicMaskByEffectMask(uint32 effectMask) const
 {
     uint32 mask = 0;
-    if (Mechanic)
-        mask |= 1 << Mechanic;
+    if (Mechanic && Mechanic < 32)
+        mask |= uint32(1) << Mechanic;
     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-        if ((effectMask & (1 << i)) && Effects[i].Mechanic)
-            mask |= 1 << Effects[i].Mechanic;
+        if ((effectMask & (uint32(1) << i)) && Effects[i].Mechanic && Effects[i].Mechanic < 32)
+            mask |= uint32(1) << Effects[i].Mechanic;
     return mask;
 }
 

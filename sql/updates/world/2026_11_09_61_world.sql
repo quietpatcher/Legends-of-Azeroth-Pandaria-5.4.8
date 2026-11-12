@@ -1,0 +1,16 @@
+-- Ongo'longo's Revenge (26367 Horde, 26515 Alliance): Ongo'longo breaks free at low health instead of dying
+-- Sourced: the objective "Ongo'longo Enraged" is the kill credit of 42815; Wowhead comments: "bring him down to 1HP (it won't
+-- drop any lower) and you'll get credit", "We don't kill him, just hit him till he breaks free and runs off"; his two yells
+-- (broadcast 42750 "PUNY TROLLS NOT STOP ONGOLONGO!", 42749 "NO MORE! ONGOLONGO GO HOME!", quoted as his on npc 42815's page);
+-- spell 79875 "Ongolongo Smash!" (knock back, 5.4.8 DBC).
+-- Ours: which yell goes with the pull and which with the break, the 1 % threshold, the smash on his victim, the credit (the
+-- tapper's group and every player on his threat list), and the exit: he stops fighting, cannot be attacked, and is gone after
+-- 2 s (SmartAI hides him then and removes him 5 s later; he respawns after his 60 s). A reset makes him attackable again.
+-- Reconcile 2026-11-11 (l1/R1111-reconcile): the creature_text and smart_scripts statements of this file are left out. Ongo'longo already
+-- breaks free with us: closed fix 294 (to-do 394 and 397, repeat checks expect 19 SmartAI rows and 4 texts for 42815/42843), played twice
+-- with the own client. Ours does everything this script does (cannot die, yell 42749, quest credit, stops fighting, immune, leaves, reset
+-- on respawn) and more: Slam 90325 and Ongolongo Smash! 79875 during the fight, Enrage, the Vilebranch Handler's line 42753 and the walk
+-- to the Handler (source: retail video of quest 26515, Wowhead npc 42815). The upstream header marks its own sequence as "Ours" (not
+-- sniffed), and its DELETE dropped our aggro line 43289. Only the template line below stays (already true with us).
+-- Rollback: none for the reconcile (no row changes on our data).
+UPDATE `creature_template` SET `AIName`='SmartAI', `ScriptName`='' WHERE `entry`=42815;

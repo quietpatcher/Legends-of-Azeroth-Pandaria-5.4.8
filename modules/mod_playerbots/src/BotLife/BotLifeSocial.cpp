@@ -448,7 +448,14 @@ void BotLifeMgr::SocialTick(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
 void BotLifeMgr::OnLevelChanged(Player* player, uint8 oldLevel)
 {
     if (player && player->GetSession() && player->GetSession()->IsBot() && player->GetLevel() > oldLevel)
+    {
         Count(BLC_LEVELUP);
+        // to-do 265: a bot that reaches 20, 30, ... gets its gear checked right away (MaintenanceTick on its
+        // own map thread, this hook runs there too) instead of up to a minute later
+        if (player->GetLevel() / 10 != oldLevel / 10)
+            if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+                botAI->life.nextMaintenance = 0;
+    }
     if (!_enabled || !_loaded || !_chat || !player || player->GetLevel() <= oldLevel)
         return;
     uint32 guildId = player->GetGuildId();

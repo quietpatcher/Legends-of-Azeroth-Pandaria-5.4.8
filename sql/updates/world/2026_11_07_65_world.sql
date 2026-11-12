@@ -1,0 +1,12 @@
+-- Arathi Highlands: twelve spawns that doubled another of the same entry (under 3 yd apart, within each other's 3 yd wander).
+-- Sourced: each pair falls on one single TDB 442 spawn. Ours: which of the two goes; where one has a path, it stays.
+-- Kept spawns are on the 5.4.8 ground. Other surplus spawns are spread out and were left alone.
+-- Reconcile 2026-11-11 (l1/R1111-reconcile): Syndicate Thieves 161087 and 161200 are taken out of the list. Our closed fix 275 (to-do 350
+-- and 352, repeat check 350 expects 40 Thieves) already removed the stacked copies; in our data 161087's nearest Thief is 12.4 yd away,
+-- so here the delete took the last spawn of that spot. Cause: the upstream list was made on a database without fix 275.
+-- Also out of the list (found by the same scan, no repeat check covers them): Syndicate Highwayman 160983 (and the delete of its addon
+-- row), Pathstalkers 161047 and 161064, Mercenary 161067. In our data none of them has a twin: the nearest spawn of the same entry is 25
+-- to 26 yd away, so "under 3 yd apart" does not hold here and the delete would empty a spot. Of the six guids left, 161044 and
+-- 161065 exist with us and are real doubles (2.8 and 2.9 yd from a kept spawn); the other four are already gone.
+-- Rollback: none for the reconcile (statement only narrowed); 161044 and 161065 come back from the pre-L1 dump of creature.
+DELETE FROM `creature` WHERE `guid` IN (161128,161069,161044,161065,161246,161228);

@@ -22,7 +22,9 @@
 #include "Hash.h"
 #include "Errors.h"
 #include <list>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 class Player;
 class Unit;
@@ -290,8 +292,17 @@ class TC_GAME_API ConditionMgr
         bool IsObjectMeetingVendorItemConditions(uint32 creatureId, uint32 itemId, Player* player, Creature* vendor) const;
 
 
-        void RegisterVehicleAI(VehicleAIBase* ai) { m_vehicleAIs.insert(ai); }
-        void UnregisterVehicleAI(VehicleAIBase* ai) { m_vehicleAIs.erase(ai); }
+        void RegisterVehicleAI(VehicleAIBase* ai)
+        {
+            std::lock_guard<std::mutex> lock(m_vehicleAIsLock);
+            m_vehicleAIs.insert(ai);
+        }
+
+        void UnregisterVehicleAI(VehicleAIBase* ai)
+        {
+            std::lock_guard<std::mutex> lock(m_vehicleAIsLock);
+            m_vehicleAIs.erase(ai);
+        }
 
         struct ConditionTypeInfo
         {
@@ -325,6 +336,7 @@ class TC_GAME_API ConditionMgr
 
         PhaseDefinitionConditionContainer PhaseDefinitionsConditionStore;
 
+        std::mutex m_vehicleAIsLock;
         std::unordered_set<VehicleAIBase*> m_vehicleAIs;
 };
 

@@ -15,6 +15,7 @@
 * with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "BattlePayMgr.h"
 #include "AchievementMgr.h"
 #include "ArenaTeam.h"
 #include "Battleground.h"
@@ -2439,6 +2440,7 @@ void AchievementMgr::CompletedAchievement(AchievementEntry const* achievement, P
         {
             accMgr.m_completedAchievements.emplace(achievement->ID, ca);
             accMgr.m_achievementPoints += achievement->Points;
+            sBattlePayMgr->AddAchievementPoints(referencePlayer->GetSession(), achievement->Points);   // shop balance
         }
     }
 

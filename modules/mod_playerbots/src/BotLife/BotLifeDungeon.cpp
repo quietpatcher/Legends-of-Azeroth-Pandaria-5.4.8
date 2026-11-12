@@ -96,6 +96,48 @@ namespace
     std::unordered_map<uint32, std::vector<DungeonQuestNpc>> s_dungeonQuestNpcs;
     // scripted gossip NPCs of each instance map (event starters: Brann in the Halls of Stone, ...)
     std::unordered_map<uint32, std::vector<DungeonQuestNpc>> s_eventNpcs;
+
+    // 437/hos-brann: a boss whose door the instance script keeps shut until an event NPC has run its event (Halls of Stone: Sjonnir waits for
+    // Brann Bronzebeard's Tribunal of Ages, boss state 2). The bots used to walk (or hop) to the closed room first, stand there 5 minutes
+    // (his pets even made him evade, CheckRequiredBosses), and only then went for Brann - too late for the 8 minute stall rule.
+    struct BotLifeEventGatedBoss { uint32 mapId; uint32 bossEntry; uint32 npcEntry; uint32 encounterId; };
+    static const BotLifeEventGatedBoss s_eventGatedBosses[] =
+    {
+        { 599, 27978, 28070, 2 },   // Halls of Stone: Sjonnir the Ironshaper <- Brann Bronzebeard (DATA_BRANN_EVENT)
+    };
+
+    // the boss waits for an event NPC of this run that has not been talked to yet and whose event is not done
+    bool BossWaitsForEvent(Player* bot, BotLifeInfo const& t, uint32 bossEntry)
+    {
+        for (BotLifeEventGatedBoss const& g : s_eventGatedBosses)
+        {
+            if (g.mapId != bot->GetMapId() || g.bossEntry != bossEntry)
+                continue;
+            InstanceScript* instance = bot->GetInstanceScript();
+            if (!instance || instance->GetBossState(g.encounterId) == DONE)
+                return false;
+            auto en = s_eventNpcs.find(g.mapId);
+            if (en == s_eventNpcs.end())
+                return false;
+            for (DungeonQuestNpc const& n : en->second)
+                if (n.entry == g.npcEntry && !t.gossipUsed.count(n.spawnId))
+                    return true;
+            return false;
+        }
+        return false;
+    }
+
+    // 0: not an event NPC of the table, 1: its event is running / failed, 2: its event is done
+    uint32 EventNpcState(Player* bot, uint32 npcEntry)
+    {
+        for (BotLifeEventGatedBoss const& g : s_eventGatedBosses)
+            if (g.mapId == bot->GetMapId() && g.npcEntry == npcEntry)
+            {
+                InstanceScript* instance = bot->GetInstanceScript();
+                return instance && instance->GetBossState(g.encounterId) == DONE ? 2 : 1;
+            }
+        return 0;
+    }
     // (event-objects) scripted levers, summoning rituals (altars) and door objects of each dungeon map (not raids); filled once by LoadDungeons
     struct DungeonEventObject { uint32 guid; uint32 entry; uint32 type; uint32 spawnMask; float x, y, z; uint32 area; };
     std::unordered_map<uint32, std::vector<DungeonEventObject>> s_eventObjects;
@@ -287,6 +329,10 @@ static std::map<uint32, std::set<uint32>> s_encounterBossMaps;
 // (boss-order) DungeonEncounter.dbc encounterIndex per (map, boss entry): the strict order in which the party takes the bosses of a dungeon
 static std::map<std::pair<uint32, uint32>, uint32> s_bossOrder;
 static std::set<uint32> s_eventSpawnIds;
+// (p301f-hakkar-order) spawn ids of bosses that were seen hidden and pacified (they rise on a scripted trigger, e.g. the Avatar of Hakkar);
+// once such a boss is visible and attackable somebody triggered it on purpose and it is taken before the encounter order. Map threads: locked.
+static std::set<uint32> s_risenBosses;
+static std::mutex s_risenBossesLock;
 
 void BotLifeMgr::LoadDungeons()
 {
@@ -823,6 +869,41 @@ void BotLifeMgr::FormInstanceParties(uint32 now, bool raid)
             if (focusIndex < 0 && !wantedDungeons.empty())
                 TC_LOG_INFO("playerbots", "BotLife: dungeon focus: no free tank of the right level and faction in pool {} ({} tanks, {} heals, {} dps)",
                     &pool == &pools[0] ? "Alliance" : "Horde", uint32(pool.tanks.size()), uint32(pool.heals.size()), uint32(pool.dps.size()));
+            // 439b: no fitting tank online - bring one in from the offline pool for the next pass (at most one per minute)
+            if (focusIndex < 0 && !wantedDungeons.empty())
+            {
+                static uint32 s_lastFocusLogin = 0;
+                uint32 const nowSec = uint32(GameTime::GetGameTime());
+                if (!s_lastFocusLogin || nowSec - s_lastFocusLogin >= 60)
+                {
+                    s_lastFocusLogin = nowSec;
+                    BotLifeDungeon const& fd = _dungeons[wantedDungeons[0]];   // already in random order
+                    std::string ids;
+                    for (uint32 id : sPlayerbotAIConfig->randomBotAccounts)
+                        ids += (ids.empty() ? "" : ",") + std::to_string(id);
+                    // tank specs as in RoleOfSpec (BotLife.cpp): 73 66 250 104 268
+                    if (!ids.empty())
+                        if (QueryResult result = CharacterDatabase.PQuery("SELECT guid, race FROM characters WHERE account IN ({}) AND online = 0 "
+                            "AND level BETWEEN {} AND {} AND CAST(SUBSTRING_INDEX(talentTree, ' ', 1) AS UNSIGNED) IN (73,66,250,104,268) "
+                            "ORDER BY RAND() LIMIT 30", ids, fd.minLevel, fd.maxLevel))
+                            do
+                            {
+                                Field* f = result->Fetch();
+                                ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(f[0].GetUInt32());
+                                uint32 const team = Player::TeamForRace(f[1].GetUInt8());
+                                if (fd.faction >= 0 && (team != HORDE && team != ALLIANCE || (fd.faction == 0) != (team == HORDE)))
+                                    continue;
+                                if (IsBanker(guid) || IsLfgBot(guid))
+                                    continue;
+                                if (sRandomPlayerbotMgr->TTLoginBot(guid.GetCounter()))
+                                {
+                                    TC_LOG_INFO("playerbots", "BotLife: dungeon focus: logged in tank {} for dungeon {} (level {}-{})",
+                                        guid.GetCounter(), fd.id, fd.minLevel, fd.maxLevel);
+                                    break;
+                                }
+                            } while (result->NextRow());
+                }
+            }
         }
         // of a handful of tanks, the one whose guild has the most healers and damage dealers of
         // about its level waiting - so that the group really is a guild group and not two guild mates with strangers
@@ -1070,6 +1151,18 @@ bool BotLifeMgr::DungeonTargetValid(Player* bot, BotLifeInfo const& t, BotLifeIn
         return false;
     if (creature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
         return false;
+    // (p301f-hakkar) a boss that waits invisible and pacified for a scripted trigger (Sunken Temple: the Avatar of Hakkar rises when the
+    // Shrine of the Soulflayer, go 208321, is used) is no pull target yet: the bots attacked the hidden boss for 3 minutes (leader combat
+    // stop) before the event object search clicked the shrine. Without a target the event search (TryEventGossip) takes over at once.
+    // Players are not touched: this only steers the bot dungeon walker.
+    // Source: boss_avatar_of_hakkar.cpp (InitializeAI: SetVisible(false) + UNIT_FLAG_PACIFIED; go_shrine_of_soulflayer -> ACTION_HAKKAR_RISE);
+    // Wowhead npc=8443 (the Avatar appears when the Shrine of the Soulflayer is activated).
+    if (s.boss && creature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED) && !creature->IsVisible())
+    {
+        std::lock_guard<std::mutex> lock(s_risenBossesLock);
+        s_risenBosses.insert(s.spawnId);
+        return false;
+    }
     // trash far above the party (mis-levelled decoration/trigger spawns, e.g. Scarlet Halls "Books" lvl 86) is never a pull target
     if (!s.boss && creature->GetLevel() > bot->GetLevel() + 10)
         return false;
@@ -1181,7 +1274,9 @@ void BotLifeMgr::SkipDungeonTarget(Player* bot, BotLifeInfo& t, char const* reas
 
 BotLifeInstanceSpawn const* BotLifeMgr::PickKillGate(Player* bot, BotLifeInfo const& t, Map* map, std::vector<BotLifeInstanceSpawn> const& spawns, uint32 now, Creature*& creature)
 {
-    static thread_local uint32 t_lastKillGateLog = 0;
+    // (fix304) per bot: the timestamp was shared by every bot on the thread
+    thread_local std::unordered_map<ObjectGuid::LowType, uint32> s_killGateLog;
+    uint32& t_lastKillGateLog = s_killGateLog[bot->GetGUID().GetCounter()];
     auto git = s_killGates.find(map->GetId());
     if (git == s_killGates.end())
         return nullptr;
@@ -1472,6 +1567,8 @@ static bool LeaderRouteBlocked(Player* bot, BotLifeInfo& t, float x, float y, fl
     {
         if (bot->isMoving())
             bot->StopMoving();
+        if (t.dungeonGateTarget)
+            t.dungeonGateSkip.insert(t.dungeonTarget);   // (fix304) a gate mob behind the door is not picked again every tick
         t.dungeonTarget = 0;
         t.dungeonGateTarget = false;
         t.dungeonEngageSince = 0;
@@ -1589,10 +1686,10 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 t.dungeonBosses = done - uint32(t.dungeonStateBase);
         }
     // ev_strat_service_alliance_run2.txt, point 1: arrival hold. The lead of a dungeon finder group with a real player
-    // does not pull the first pack or walk off until that player is in this map and within 30 yd (at most 90 s after arrival, then it
-    // goes on anyway). run3 point 1: "within reach" is within 30 yd AND on the same path (<= 40 yd of mmap path, no
+    // does not pull the first pack or walk off until that player is in this map and within 25 yd (at most 90 s after arrival, then it
+    // goes on anyway). run3 point 1: "within reach" is within 25 yd AND on the same path (<= 40 yd of mmap path, no
     // closed door in between, LfgPlayerCutOff); the time-out is now 5 minutes (as PartyLeaderWait). Runs before the combat handling; a bot that is already fighting (or whose party is) just fights on, and the
-    // combat branches below never pick a new target. After this the normal wait (PartyLeaderWait: 40/30 yd, 5 min) takes over.
+    // combat branches below never pick a new target. After this the normal wait (PartyLeaderWait: 40/25 yd, 5 min) takes over. 04-11: within reach = 25 yd, inside the 28 yd follow range of a client.
     if (!t.lfgArrivalDone && bot->IsAlive() && bot->GetGroup() && bot->GetGroup()->isLFGGroup() && !t.party && t.lfgLeadInstance
         && t.lfgLeadInstance == bot->GetInstanceId() && t.lfgLeadSince)
     {
@@ -1604,7 +1701,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 continue;
             hasReal = true;
             Map* memberMap = member->IsInWorld() ? member->FindMap() : nullptr;
-            if (memberMap && memberMap == bot->GetMap() && bot->GetExactDist(member) <= 30.0f && !LfgPlayerCutOff(bot, member, t, now))
+            if (memberMap && memberMap == bot->GetMap() && bot->GetExactDist(member) <= 25.0f && !LfgPlayerCutOff(bot, member, t, now))
                 realNear = true;
         }
         if (!hasReal || realNear || now - t.lfgLeadSince > 300000)
@@ -1830,7 +1927,16 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     if (!t.escortNpc.IsEmpty())
     {
         Creature* npc = ObjectAccessor::GetCreature(*bot, t.escortNpc);
-        if (!npc || !npc->IsAlive() || !npc->IsInWorld() || now > t.escortUntil)
+        // 437/hos-brann: Brann's event is done (boss state DONE): he stays at his console for good - stop following him, Sjonnir's door is open.
+        // He died before it was done: he may talk again after his respawn (the instance script resets the event), so the NPC counts as new.
+        uint32 const eventState = npc ? EventNpcState(bot, npc->GetEntry()) : 0;
+        if (npc && eventState == 1 && !npc->IsAlive() && npc->GetSpawnId())
+        {
+            t.gossipUsed.erase(uint32(npc->GetSpawnId()));
+            t.eventFarVisited.erase(uint32(npc->GetSpawnId()));
+            t.nextGossipTry = now + 30000;
+        }
+        if (!npc || !npc->IsAlive() || !npc->IsInWorld() || now > t.escortUntil || eventState == 2)
             t.escortNpc.Clear();
         else
         {
@@ -2206,7 +2312,12 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 continue;
             if (s.boss)
                 bossLeft = true;
+            if (s.boss && BossWaitsForEvent(bot, t, s.entry))   // 437/hos-brann: the event NPC first (TryEventGossip), then the boss
+                continue;
             if (c && IsAvoidedTarget(bot, c))   // (unhurt-foe) left alone for now, still counts as a boss left
+                continue;
+            // (fix304) a patrol that walked more than 60 yd from its home is no pull target (the leader chased it out of the instance)
+            if (!s.boss && c && !c->IsInCombat() && c->GetExactDist(c->GetHomePosition()) > 60.0f)
                 continue;
             float x = c ? c->GetPositionX() : s.x, y = c ? c->GetPositionY() : s.y, z = c ? c->GetPositionZ() : s.z;
             float dx = bot->GetPositionX() - x, dy = bot->GetPositionY() - y, dz = (bot->GetPositionZ() - z) * 3.0f;
@@ -2221,6 +2332,13 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             {
                 if (!s->boss)
                     return 0xFFFFFFFFu;
+                // (p301f-hakkar-order) a boss that rose after a trigger (a player used the Shrine of the Soulflayer: Avatar of Hakkar, encounter index 7)
+                // is not held back by the bosses with a lower index: the bots stood 4 minutes at the wardens (index 1-6) while the Avatar was up
+                {
+                    std::lock_guard<std::mutex> lock(s_risenBossesLock);
+                    if (s_risenBosses.count(s->spawnId))
+                        return 0;
+                }
                 auto o = s_bossOrder.find(std::make_pair(map->GetId(), s->entry));
                 return o != s_bossOrder.end() ? o->second : 0xFFFFFFFFu;
             };
@@ -2340,8 +2458,13 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 t.doorBlockedSince = now;
             if (now - t.doorBlockedSince < 300000)
             {
-                if (now - t.doorBlockedSince < 2000)
+                thread_local std::unordered_map<ObjectGuid::LowType, uint32> s_doorWaitLog;   // (fix304) once per 30 s per bot
+                uint32& lastDoorLog = s_doorWaitLog[bot->GetGUID().GetCounter()];
+                if (now - lastDoorLog > 30000)
+                {
+                    lastDoorLog = now;
                     TC_LOG_INFO("playerbots", "BotLife: {} dungeon map {}: {} targets lie behind a closed door, kill-gate or wait", bot->GetName(), bot->GetMapId(), doorBlocked);
+                }
                 doorWait = true;
             }
         }
@@ -2359,7 +2482,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             {
                 current = gate;
                 gatePicked = true;
-                t.doorBlockedSince = 0;   // (door-held) the wait starts again when the gate is done
+                // (fix304) doorBlockedSince is not reset here: the wait must be able to expire when the gate cannot be reached
                 Count(BLC_KILL_GATE);
             }
         // what an encounter summoned, or a boss that opened up during the run, is in no spawn list
@@ -2383,6 +2506,39 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             return true;
         if (!current && doorWait)   // (door-held) nothing else to do: the door opens when its boss is down (the boss wakes up in 15 s)
             return true;
+        // BotLife (boss-left): a mandatory boss that is still alive (sealed until an event runs: the Avatar of Hakkar waits for
+        // the Shrine of the Soulflayer, the Shade of Eranikus for the Avatar) is no cleared dungeon. Look again (sealed visits
+        // and event objects) up to three rounds of 30 s, then the old rule applies so a boss nobody can reach never hangs the run.
+        if (!current && hasBoss)
+        {
+            bool aliveBoss = false;
+            for (BotLifeInstanceSpawn const& s : spawnsIt->second)
+            {
+                if (!s.boss || (!(s.spawnMask & diffBit)) || t.dungeonSkip.count(s.spawnId)
+                    || OutsideWing(t.dungeonWingArea, t.dungeonWingList, s.spawnId, s.area))
+                    continue;
+                Creature* c = SpawnCreature(map, s.spawnId);
+                if (c && c->IsAlive() && !c->IsInEvadeMode())
+                {
+                    aliveBoss = true;
+                    break;
+                }
+            }
+            uint32& rounds = t.gossipEmpty[0x3FFFFFF0u + (t.dungeonBosses & 0xF)];   // rounds per boss count
+            if (aliveBoss && rounds < 3)
+            {
+                ++rounds;
+                TC_LOG_INFO("playerbots", "BotLife {}: map {} bosses still alive after the sweep, round {} of 3: sealed boss and event objects again",
+                    bot->GetName(), map->GetId(), rounds);
+                t.dungeonSealedVisited.clear();
+                t.dungeonSealedTarget = 0;
+                for (auto it = t.gossipEmpty.begin(); it != t.gossipEmpty.end();)   // event objects given up earlier: again
+                    it = ((it->first & 0xE0000000u) == 0x20000000u && it->first < 0x3FFFFFF0u) ? t.gossipEmpty.erase(it) : std::next(it);
+                t.nextGossipTry = 0;
+                t.dungeonSealedWait = now + 30000;
+                return true;
+            }
+        }
         if (!current)
         {
             t.dungeonDone = true;   // nothing left: the world thread brings us home
@@ -2884,6 +3040,35 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
         t.dungeonSealedTarget = 0;
         return true;
     }
+    // (yanzhu-keg) Stormstout Brewery: Hoptallus sits on a platform behind his keg (z 165, x -741..-717, y 1237..1263) that the navmesh
+    // holds as a 10-polygon island - the ramp up to it has no polygons - and a party that fought him there (he only jumps down for a
+    // player east of x -705) had no way out: the walk to Uncle Gao ended at the island edge (-721 1238), "unreachable", the run
+    // ended without Yan-Zhu. With no real player in the instance the party is set down on the floor of the room at the carrot
+    // door side, which is joined to Gao (path of 79 polygons), at most three times per run.
+    if (map->GetId() == 961 && IsBossSummoner(961, best->entry) && !RealPlayerNear(bot, 100000.0f)
+        && bot->GetPositionX() > -750.0f && bot->GetPositionX() < -714.0f && bot->GetPositionY() > 1236.0f && bot->GetPositionY() < 1266.0f
+        && bot->GetPositionZ() > 161.5f && bot->GetPositionZ() < 168.5f)
+    {
+        PathGenerator islandPath(bot);
+        islandPath.CalculatePath(tx, ty, tz, false);
+        uint32& islandHops = t.dungeonDynPicks[0xFFFFFFFEu];
+        if ((islandPath.GetPathType() & PATHFIND_INCOMPLETE) && islandHops < 3)
+        {
+            ++islandHops;
+            float const fx = -698.0f, fy = 1252.0f, fz = 163.0f;
+            TC_LOG_INFO("playerbots", "BotLife {}: map 961 sets the party down on the floor of the Hoptallus room: the platform at {:.0f} {:.0f} {:.0f} has no path to {} ({})",
+                bot->GetName(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), best->entry, islandHops);
+            if (Group* group = bot->GetGroup())
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                    if (Player* member = ref->GetSource())
+                        if (member->GetMap() == map && member->IsAlive())
+                            QueueTeleport(member, map->GetId(), fx + frand(-2.0f, 2.0f), fy + frand(-2.0f, 2.0f), fz + 0.5f, 0.0f);
+            t.hasDest = false;
+            t.path.clear();
+            Count(BLC_UNSTUCK);
+            return true;
+        }
+    }
     if (!t.hasDest || t.destMap != map->GetId() || std::fabs(t.destX - tx) > 5.0f || std::fabs(t.destY - ty) > 5.0f)
     {
         if (LeaderRouteBlocked(bot, t, tx, ty, tz, now))   // (door-held)
@@ -3020,9 +3205,24 @@ bool BotLifeMgr::GossipApproachTimedOut(Player* bot, BotLifeInfo& t, uint32 key,
         return false;
     TC_LOG_INFO("playerbots", "BotLife {}: map {} gives up walking to event {} at {:.0f} {:.0f} {:.0f}", bot->GetName(), bot->GetMapId(), name,
         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-    t.gossipUsed.insert(key);
     t.gossipApproachKey = 0;
     t.nextGossipTry = now + 5000;
+    // BotLife (event-object retry): a scripted object (key bit 31) that could not be reached in time is not used up - the
+    // Shrine of the Soulflayer (Sunken Temple) gave up once while the lead waited for the player, was never tried again and
+    // the Avatar of Hakkar stayed sealed. Three tries per object, with a pause between them; then it counts as given up.
+    if ((key & 0xC0000000u) == 0x80000000u)
+    {
+        uint32 const tryKey = (key & 0x1FFFFFFFu) | 0x20000000u;
+        uint32& tries = t.gossipEmpty[tryKey];
+        if (++tries < 3)
+        {
+            t.nextGossipTry = now + 20000;
+            if (bot->isMoving())
+                bot->StopMoving();
+            return true;
+        }
+    }
+    t.gossipUsed.insert(key);
     if (bot->isMoving())
         bot->StopMoving();
     return true;

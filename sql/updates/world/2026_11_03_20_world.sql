@@ -1,0 +1,5 @@
+-- Halls of Stone (map 599): the Tribunal of Ages set (controller 28234, Marnak/Kaddrak/Abedneum faces, Dark Matter 28235) spawned in heroic only (spawnMask 4) and the normal chest 190586 stood in heroic next to the heroic chest 193996; normal mode had no tribunal faces and no chest. Both modes get the set (6), the normal chest is normal only (2).
+-- Source: ref_cpp (Cataclysm Preservation DB) creature 28234/28235/30897-30899 spawnMask 3 (normal+heroic) and gameobject 190586 spawnMask 1 / 193996 spawnMask 2; our 4/4 equals ref_alex (heroic-only import). Mask bits here: normal = 2, heroic = 4.
+-- Rollback: UPDATE `creature` SET `spawnMask` = 4 WHERE `map` = 599 AND `guid` IN (123405,123406,123407,123408,123409,123410,123411,123412,123473); UPDATE `gameobject` SET `spawnMask` = 4 WHERE `guid` = 37577 AND `id` = 190586;
+UPDATE `creature` SET `spawnMask` = 6 WHERE `map` = 599 AND `spawnMask` = 4 AND `guid` IN (123405,123406,123407,123408,123409,123410,123411,123412,123473);
+UPDATE `gameobject` SET `spawnMask` = 2 WHERE `guid` = 37577 AND `id` = 190586 AND `spawnMask` = 4;

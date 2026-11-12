@@ -11,6 +11,7 @@
 #include <sstream>
 #include "ThreadOwnerCheck.h"
 #include "Chat.h"
+#include "Config.h"
 
 #include "CellImpl.h"
 #include "DatabaseEnv.h"
@@ -832,3 +833,230 @@ std::string BotLifeMgr::WalkStatus()
     return out.str();
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// (botcost) per-bot cost log and watchdog
+//
+// Map::Update times every bot on the map (session packets + Player::Update with the bot AI, and the cells around the bot, i.e.
+// the creatures that fight it; cells shared with another bot are paid by the one visited first) and calls CostSample on the map
+// thread. At the end of the map tick CostMapEnd gets the tick length: a tick over BotLife.CostLog.TickMs logs the top offenders
+// (at most once per BotLife.CostLog.IntervalSeconds per map), and the watchdog follows the moving average of each bot.
+
+namespace
+{
+struct BotCostEntry
+{
+    uint32 playerUs = 0;
+    uint32 cellsUs = 0;
+};
+
+// one map tick runs on one thread from Map::Update to CostMapEnd
+thread_local std::unordered_map<ObjectGuid, BotCostEntry> t_botCost;
+
+void BotCostSink(Player* bot, unsigned int playerUs, unsigned int cellsUs)
+{
+    BotCostEntry& e = t_botCost[bot->GetGUID()];
+    e.playerUs += playerUs;
+    e.cellsUs += cellsUs;
+}
+
+void BotCostMapEnd(Map* map, unsigned int tickMs)
+{
+    sBotLife->CostMapEnd(map, tickMs);
+}
+}
+
+void BotLifeMgr::LoadCostConfig()
+{
+    _costLog = sConfigMgr->GetBoolDefault("BotLife.CostLog.Enable", true);
+    _costTickMs = uint32(std::max(1, sConfigMgr->GetIntDefault("BotLife.CostLog.TickMs", 100)));
+    _costIntervalMs = uint32(std::max(1, sConfigMgr->GetIntDefault("BotLife.CostLog.IntervalSeconds", 30))) * IN_MILLISECONDS;
+    _costTop = uint32(std::min(20, std::max(1, sConfigMgr->GetIntDefault("BotLife.CostLog.Top", 3))));
+    _costWatchdog = sConfigMgr->GetBoolDefault("BotLife.CostWatchdog.Enable", true);
+    _costBotUs = uint32(std::max(1, sConfigMgr->GetIntDefault("BotLife.CostWatchdog.BotMs", 20))) * 1000;
+    _costActionMs = uint32(std::max(10, sConfigMgr->GetIntDefault("BotLife.CostWatchdog.Seconds", 60))) * IN_MILLISECONDS;
+    _dieLoop = sConfigMgr->GetBoolDefault("BotLife.DieLoop.Enable", true);
+    _dieLoopRadius = float(std::max(50, sConfigMgr->GetIntDefault("BotLife.DieLoop.AvoidRadius", 300)));
+    _toolBackoffMs = uint32(std::max(1, sConfigMgr->GetIntDefault("BotLife.ToolBackoffMinutes", 20))) * MINUTE * IN_MILLISECONDS;
+    bool const on = _enabled && (_costLog || _costWatchdog);
+    TTSetBotCostHooks(on ? &BotCostSink : nullptr, on ? &BotCostMapEnd : nullptr);
+}
+
+void BotLifeMgr::CostMapEnd(Map* map, uint32 tickMs)
+{
+    std::unordered_map<ObjectGuid, BotCostEntry> entries;
+    entries.swap(t_botCost);   // always empty again for the next map on this thread
+    if (entries.empty() || !_loaded)
+        return;
+
+    uint32 const now = getMSTime();
+    struct Row
+    {
+        Player* bot;
+        uint32 totalUs;
+        BotCostEntry e;
+    };
+    std::vector<Row> rows;
+    rows.reserve(entries.size());
+    uint64 sumUs = 0;
+    for (auto const& kv : entries)
+    {
+        Player* bot = ObjectAccessor::GetPlayer(map, kv.first);
+        if (!bot || !bot->IsInWorld())
+            continue;
+        uint32 const total = kv.second.playerUs + kv.second.cellsUs;
+        sumUs += total;
+        rows.push_back({ bot, total, kv.second });
+    }
+
+    // the watchdog: moving average per bot (a quarter of the new tick), over the limit for _costActionMs in a row
+    if (_costWatchdog)
+        for (Row const& r : rows)
+        {
+            PlayerbotAI* ai = GET_PLAYERBOT_AI(r.bot);
+            if (!ai)
+                continue;
+            BotLifeInfo& t = ai->life;
+            if (!t.costSampleAt || now - t.costSampleAt > 10000)
+            {
+                t.costEmaUs = r.totalUs;   // first sample, or the bot was idle-skipped for a while
+                t.costOverSince = 0;
+            }
+            else
+                t.costEmaUs = uint32((uint64(t.costEmaUs) * 3 + r.totalUs) / 4);
+            t.costSampleAt = now;
+            if (t.costEmaUs >= _costBotUs)
+            {
+                if (!t.costOverSince)
+                {
+                    t.costOverSince = now;
+                    if (t.costStage && now - t.costStageAt > 15 * MINUTE * IN_MILLISECONDS)
+                        t.costStage = 0;   // a long time ago: counts as a first offence again
+                }
+                else if (now - t.costOverSince >= _costActionMs)
+                    CostWatchdogAct(map, r.bot, ai, r.totalUs, now);
+            }
+            else if (t.costEmaUs < _costBotUs / 2)
+                t.costOverSince = 0;
+        }
+
+    if (!_costLog || tickMs < _costTickMs)
+        return;
+    {
+        std::lock_guard<std::mutex> guard(_costLock);
+        uint32& last = _costReported[map];
+        if (last && now - last < _costIntervalMs)
+            return;
+        last = now;
+    }
+    std::sort(rows.begin(), rows.end(), [](Row const& a, Row const& b) { return a.totalUs > b.totalUs; });
+    std::ostringstream out;
+    out << "BOTCOST map " << map->GetId() << " tick " << tickMs << " ms, " << rows.size() << " bots measured " << (sumUs / 1000) << " ms:";
+    uint32 listed = 0;
+    for (Row const& r : rows)
+    {
+        if (listed++ >= _costTop)
+            break;
+        Player* bot = r.bot;
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+        out << "\n  #" << bot->GetGUID().GetCounter() << ' ' << bot->GetName() << " lvl " << uint32(bot->GetLevel())
+            << " map " << bot->GetMapId() << " zone " << bot->GetZoneId() << " area " << bot->GetAreaId()
+            << " pos " << int32(bot->GetPositionX()) << ' ' << int32(bot->GetPositionY()) << ' ' << int32(bot->GetPositionZ())
+            << " combat " << (bot->IsInCombat() ? 1 : 0) << " attackers " << bot->getAttackers().size()
+            << " dead " << (bot->IsAlive() ? 0 : 1) << " ghost " << (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? 1 : 0)
+            << " state " << (ai ? uint32(ai->life.state) : 0) << " cost " << (r.totalUs / 1000) << '.' << ((r.totalUs / 100) % 10)
+            << " ms (ai " << (r.e.playerUs / 1000) << '.' << ((r.e.playerUs / 100) % 10) << " + cells " << (r.e.cellsUs / 1000) << '.'
+            << ((r.e.cellsUs / 100) % 10) << ") ema " << (ai ? ai->life.costEmaUs / 1000 : 0) << " ms";
+    }
+    TC_LOG_INFO("playerbots", "{}", out.str());
+}
+
+// the bot cost more than the limit for _costActionMs: first pull it out of the fight and send it elsewhere, if that does not
+// help (or it comes back within 15 minutes) have it logged out through the rotation
+void BotLifeMgr::CostWatchdogAct(Map* map, Player* bot, PlayerbotAI* ai, uint32 costUs, uint32 now)
+{
+    BotLifeInfo& t = ai->life;
+    if (!sRandomPlayerbotMgr->IsRandomBot(bot) || ai->HasRealPlayerMaster() || IsWalker(bot) || bot->GetGroup() || bot->InBattleground()
+        || map->Instanceable())
+    {
+        t.costOverSince = now;   // dungeons, battlegrounds, parties, walkers and real players' bots are only logged, not touched
+        TC_LOG_INFO("playerbots", "BOTCOST watchdog: {} (lvl {}) costs {} ms per tick for over {} s on map {}, left alone (party/instance/walker)",
+            bot->GetName(), uint32(bot->GetLevel()), costUs / 1000, _costActionMs / 1000, map->GetId());
+        return;
+    }
+    std::ostringstream attackers;
+    attackers << bot->getAttackers().size() << " attackers";
+    if (!t.costStage)
+    {
+        t.costStage = 1;
+        t.costStageAt = now;
+        t.costOverSince = now;   // gets another _costActionMs to recover before the logout
+        uint32 listed = 0;
+        for (Unit* attacker : bot->getAttackers())
+        {
+            if (!attacker)
+                continue;
+            t.avoidCreature[attacker->GetEntry()] = now + 30 * MINUTE * IN_MILLISECONDS;
+            if (listed++ < 4)
+                attackers << ' ' << attacker->GetEntry();
+        }
+        t.dieLoopMap = bot->GetMapId();
+        t.dieLoopX = bot->GetPositionX();
+        t.dieLoopY = bot->GetPositionY();
+        t.dieLoopUntil = now + 30 * MINUTE * IN_MILLISECONDS;
+        t.costRelocate = true;
+        t.questId = 0;
+        QueueCombatStop(bot);
+        QueueReset(bot);
+        TC_LOG_INFO("playerbots", "BOTCOST watchdog: {} (lvl {}, {}) costs {} ms per tick for over {} s on map {} zone {} ({}, combat {}, dead {}): stop attack, reset, leave this place",
+            bot->GetName(), uint32(bot->GetLevel()), bot->GetGUID().GetCounter(), costUs / 1000, _costActionMs / 1000, map->GetId(),
+            bot->GetZoneId(), attackers.str(), bot->IsInCombat() ? 1 : 0, bot->IsAlive() ? 0 : 1);
+        return;
+    }
+    t.costStage = 2;
+    t.costStageAt = now;
+    t.costOverSince = now;
+    t.costRelocate = false;
+    ScheduleCostLogout(uint32(bot->GetGUID().GetCounter()));
+    TC_LOG_INFO("playerbots", "BOTCOST watchdog: {} (lvl {}, {}) still costs {} ms per tick on map {} zone {} ({}): logout scheduled",
+        bot->GetName(), uint32(bot->GetLevel()), bot->GetGUID().GetCounter(), costUs / 1000, map->GetId(), bot->GetZoneId(), attackers.str());
+}
+
+void BotLifeMgr::ScheduleCostLogout(uint32 guidLow)
+{
+    std::lock_guard<std::mutex> guard(_costLogoutLock);
+    if (_costLogout.insert(guidLow).second)
+        _costLogoutCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool BotLifeMgr::TakeCostLogout(Player* bot)
+{
+    if (!_costLogoutCount.load(std::memory_order_relaxed) || bot->GetGroup())
+        return false;
+    std::lock_guard<std::mutex> guard(_costLogoutLock);
+    if (!_costLogout.erase(uint32(bot->GetGUID().GetCounter())))
+        return false;
+    _costLogoutCount.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+}
+
+// (botcost) a profession tool (pick, knife, hammer...) goes to the bags: with no room Player::StoreNewItemInBestSlots logged
+// "Can't equip or store initial item" for every try (8 lines/s on prod, 167k lines per day, 2901/7005/5956/10498/6219...).
+// Check silently first and, with no room, leave the bot alone for BotLife.ToolBackoffMinutes.
+bool BotLifeMgr::GiveProfessionTool(Player* bot, uint32 item)
+{
+    PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+    uint32 const now = getMSTime();
+    if (ai && ai->life.nextToolTry && int32(now - ai->life.nextToolTry) < 0)
+        return false;
+    uint16 equipDest = 0;
+    ItemPosCountVec storeDest;
+    if (bot->CanEquipNewItem(NULL_SLOT, equipDest, item, false) != EQUIP_ERR_OK
+        && bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, storeDest, item, 1) != EQUIP_ERR_OK)
+    {
+        if (ai)
+            ai->life.nextToolTry = now + _toolBackoffMs;
+        return false;
+    }
+    return bot->StoreNewItemInBestSlots(item, 1);
+}

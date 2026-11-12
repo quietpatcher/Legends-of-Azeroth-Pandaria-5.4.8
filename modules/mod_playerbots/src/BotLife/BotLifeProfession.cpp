@@ -474,9 +474,9 @@ void BotLifeMgr::EnsureProfessions(Player* bot)
             learned = true;
         }
         if (prof.tool && !bot->HasItemCount(prof.tool, 1, false))
-            bot->StoreNewItemInBestSlots(prof.tool, 1);
+            GiveProfessionTool(bot, prof.tool);
         if (prof.skill == SKILL_ENGINEERING && !bot->HasItemCount(EngineeringExtraTool, 1, false))
-            bot->StoreNewItemInBestSlots(EngineeringExtraTool, 1);
+            GiveProfessionTool(bot, EngineeringExtraTool);
         if (learned)
             Count(BLC_PROFESSION_SET);
         // crafting: the trainer recipes up to the skill

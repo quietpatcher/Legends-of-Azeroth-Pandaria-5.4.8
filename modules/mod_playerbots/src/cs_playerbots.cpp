@@ -320,6 +320,42 @@ public:
                 handler->SendSysMessage(line.c_str());
             return true;
         }
+        if (args && !strncmp(args, "taxi", 4))   // (to-do 219) flight paths of the bots
+        {
+            char sub[16] = {0}, name[64] = {0};
+            float x = 0.0f, y = 0.0f, z = 0.0f;
+            int const n = sscanf(args + 4, "%15s %63s %f %f %f", sub, name, &x, &y, &z);
+            std::string result;
+            if (n >= 1 && !strcmp(sub, "status"))
+                result = sBotLife->TaxiStatus();
+            else if (n == 2 && !strcmp(sub, "nodes"))
+                result = sBotLife->TaxiNodes(name);
+            else if (n == 5 && !strcmp(sub, "go"))
+                result = sBotLife->TaxiTest(name, x, y, z);
+            else
+                result = "usage: .botlife taxi status | nodes <bot> | go <bot> <x> <y> <z> (a point on the bot's map, at least BotLife.TaxiMinDistance away)";
+            std::istringstream lines(result);
+            for (std::string line; std::getline(lines, line);)
+                handler->SendSysMessage(line.c_str());
+            return true;
+        }
+        if (args && !strncmp(args, "ferry", 5))   // bots on boats and zeppelins
+        {
+            char sub[16] = {0}, name[64] = {0};
+            uint32 map = 0;
+            int const n = sscanf(args + 5, "%15s %63s %u", sub, name, &map);
+            std::string result;
+            if (n >= 1 && !strcmp(sub, "status"))
+                result = sBotLife->FerryStatus();
+            else if (n == 3 && !strcmp(sub, "go"))
+                result = sBotLife->FerryTest(name, map);
+            else
+                result = "usage: .botlife ferry status | go <bot> <destination map id> (the bot must stand near a dock of a transport that stops on that map)";
+            std::istringstream lines(result);
+            for (std::string line; std::getline(lines, line);)
+                handler->SendSysMessage(line.c_str());
+            return true;
+        }
         if (args && !strncmp(args, "qt ", 3))   // quest script test with a bot (dev realm)
         {
             char sub[16] = {}, name[64] = {};

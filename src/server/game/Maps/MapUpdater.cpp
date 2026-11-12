@@ -50,6 +50,21 @@ unsigned int TTMapUpdateTime(unsigned int mapId, bool peak)
     return peak ? tt_mapPeak[mapId].exchange(0, std::memory_order_relaxed) : tt_mapAverage[mapId].load(std::memory_order_relaxed) / 16;
 }
 
+namespace
+{
+    std::atomic<TTBotCostSinkFn> tt_botCostSink{nullptr};
+    std::atomic<TTBotCostMapEndFn> tt_botCostMapEnd{nullptr};
+}
+
+void TTSetBotCostHooks(TTBotCostSinkFn sink, TTBotCostMapEndFn mapEnd)
+{
+    tt_botCostMapEnd.store(mapEnd, std::memory_order_relaxed);
+    tt_botCostSink.store(sink, std::memory_order_release);
+}
+
+TTBotCostSinkFn TTBotCostSink() { return tt_botCostSink.load(std::memory_order_acquire); }
+TTBotCostMapEndFn TTBotCostMapEnd() { return tt_botCostMapEnd.load(std::memory_order_relaxed); }
+
 class MapUpdateRequest
 {
     private:

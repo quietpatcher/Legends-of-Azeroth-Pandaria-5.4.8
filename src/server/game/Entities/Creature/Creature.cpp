@@ -464,7 +464,9 @@ bool Creature::UpdateEntry(uint32 Entry, uint32 team, const CreatureData* data)
     if (!GetCreatureAddon())
         SetSheath(SHEATH_STATE_MELEE);
 
-    SelectLevel(GetCreatureTemplate());
+    // An entry change of a unit in view must not re-roll its level (the client plays the level-up effect when a known
+    // unit comes back with another level); m_rolledLevel is clamped into the new template range by SelectLevel.
+    SelectLevel(GetCreatureTemplate(), m_rolledLevel);
     SetFaction(cInfo->faction);
 
     uint32 npcflag, unit_flags, dynamicflags;
@@ -487,6 +489,10 @@ bool Creature::UpdateEntry(uint32 Entry, uint32 team, const CreatureData* data)
     SetUInt32Value(OBJECT_FIELD_DYNAMIC_FLAGS, dynamicflags);
 
     RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IN_COMBAT);
+
+    // Only ever added here, not cleared: transport passengers also get this state from their transport
+    if (cInfo->flags_extra & CREATURE_FLAG_EXTRA_IGNORE_PATHFINDING)
+        AddUnitState(UNIT_STATE_IGNORE_PATHFINDING);
 
     SetMeleeDamageSchool(SpellSchools(cInfo->dmgschool));
     CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(GetLevel(), cInfo->unit_class);
@@ -546,6 +552,10 @@ bool Creature::UpdateEntry(uint32 Entry, uint32 team, const CreatureData* data)
         //ApplySpellImmune(0, IMMUNITY_ID, 49560, true); // not needed, grip not pull boss (TODO: fix 1 spell 66017)
         ApplySpellImmune(0, IMMUNITY_ID, 61391, true);
     }
+
+    // creature_template_movement.Rooted / creature_movement_override.Rooted (AC Creature.cpp:698)
+    if (IsRootedByMovementTemplate())
+        SetControlled(true, UNIT_STATE_ROOT);
 
     UpdateMovementFlags();
 
@@ -876,9 +886,10 @@ bool Creature::Create(uint32 guidlow, Map* map, uint32 phaseMask, uint32 Entry, 
 
     if (data && data->phaseGroup)
     {
-        std::vector<uint32> const* phasesInGroup = sDBCManager.GetPhasesForGroup(data->phaseGroup);
-        for (uint32 phaseId : *phasesInGroup)
-            SetPhased(phaseId, false, true);
+        // (npc-add-phasegroup) an unknown group (fresh .npc add spawn data, or a group missing in PhaseGroup.dbc) has no phase list
+        if (std::vector<uint32> const* phasesInGroup = sDBCManager.GetPhasesForGroup(data->phaseGroup))
+            for (uint32 phaseId : *phasesInGroup)
+                SetPhased(phaseId, false, true);
     }
 
     CreatureTemplate const* cinfo = sObjectMgr->GetCreatureTemplate(Entry);
@@ -1260,6 +1271,7 @@ void Creature::SelectLevel(const CreatureTemplate* cinfo, uint8 forcedLevel /*= 
     uint8 level = minlevel == maxlevel ? minlevel : urand(minlevel, maxlevel);
     if (forcedLevel)   // a script asks for a level, kept within the range of the creature
         level = std::max(minlevel, std::min(maxlevel, forcedLevel));
+    m_rolledLevel = level;
     SetLevel(level);
     if (GetEntry() == 61716 || GetEntry() == 58998)
         TC_LOG_INFO("playerbots", "LEVELDIAG {} ({}) map {} difficulty {}: level {}", GetName(), GetEntry(), GetMapId(), uint32(GetMap()->GetDifficulty()), uint32(level));
@@ -1763,6 +1775,9 @@ void Creature::setDeathState(DeathState s)
         SetUInt32Value(UNIT_FIELD_NPC_FLAGS, cinfo->npcflag);
         SetUInt32Value(UNIT_FIELD_NPC_FLAGS + 1, cinfo->npcflag2);
         ClearUnitState(uint32(UNIT_STATE_ALL_STATE & ~UNIT_STATE_IGNORE_PATHFINDING));
+        // the wipe above drops the DB root set in UpdateEntry (the root movement flag stays): put it back
+        if (IsRootedByMovementTemplate())
+            SetControlled(true, UNIT_STATE_ROOT);
         SetMeleeDamageSchool(SpellSchools(cinfo->dmgschool));
         LoadCreaturesAddon(true);
         ApplyInstanceAuraIfNeeded();

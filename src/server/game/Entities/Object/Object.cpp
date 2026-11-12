@@ -2362,6 +2362,11 @@ bool WorldObject::CanNeverSee(WorldObject const* obj) const
     if (GetMap() != obj->GetMap() || !InSamePhase(obj))
         return true;
 
+    // the passengers of a moving transport with a phase rule (its crew, its riders) are seen together with it only
+    if (Transport const* transport = obj->GetTransport())
+        if (transport != GetTransport() && transport->HasPhaseRule() && !transport->CanBeSeenByPhase(this))
+            return true;
+
     if (obj->m_explicitSeerGuid == GetGUID())
         return false;
 
@@ -3622,6 +3627,7 @@ void WorldObject::UpdateAreaAndZonePhase()
             bool up = false;
             uint32 phaseGroup = uint32((*itr)->GetMiscValueB());
             std::vector<uint32> const* phasesInGroup = sDBCManager.GetPhasesForGroup(phaseGroup);
+            if (phasesInGroup)   // (npc-add-phasegroup) unknown group: no phase list
             for (uint32 phaseId : *phasesInGroup)
                 up = SetPhased(phaseId, false, true);
             if (!updateNeeded && up)

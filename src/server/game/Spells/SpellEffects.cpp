@@ -1104,12 +1104,21 @@ void Spell::EffectTriggerRitualOfSummoning(SpellEffIndex effIndex)
     m_caster->CastSpell((Unit*)NULL, spellInfo, false);
 }
 
+// A creature rooted by creature_template_movement / creature_movement_override is not pulled or jumped by spell
+// effects, as knockback skips a rooted target: MotionMaster::Update does not update the jump generator under root, so it
+// would stay on top for the whole fight.
+static bool IsRootedByMovementTemplate(Unit const* unit)
+{
+    Creature const* creature = unit->ToCreature();
+    return creature && creature->IsRootedByMovementTemplate();
+}
+
 void Spell::EffectJump(SpellEffIndex effIndex)
 {
     if (effectHandleMode != SPELL_EFFECT_HANDLE_LAUNCH_TARGET)
         return;
 
-    if (m_caster->IsInFlight())
+    if (m_caster->IsInFlight() || IsRootedByMovementTemplate(m_caster))
         return;
 
     if (!unitTarget)
@@ -1128,7 +1137,7 @@ void Spell::EffectJumpDest(SpellEffIndex effIndex)
     if (effectHandleMode != SPELL_EFFECT_HANDLE_LAUNCH)
         return;
 
-    if (m_caster->IsInFlight())
+    if (m_caster->IsInFlight() || IsRootedByMovementTemplate(m_caster))
         return;
 
     if (!m_targets.HasDst())
@@ -4850,8 +4859,16 @@ void Spell::EffectActivateObject(SpellEffIndex effIndex)
     if (!gameObjTarget)
         return;
 
-    ScriptInfo activateCommand;
-    activateCommand.command = SCRIPT_COMMAND_ACTIVATE_OBJECT;
+    // Map::ScriptCommandStart keeps a pointer to the record until the command runs. When this spell is cast from inside
+    // Map::ScriptsProcess (script lock held) that is after this function returns, so a stack record was read dead. Use one
+    // zero-initialised record for the whole run.
+    static ScriptInfo const activateCommand = []
+    {
+        ScriptInfo info{};
+        info.type = SCRIPTS_SPELL;
+        info.command = SCRIPT_COMMAND_ACTIVATE_OBJECT;
+        return info;
+    }();
 
     // int32 unk = m_spellInfo->Effects[effIndex].MiscValue; // This is set for EffectActivateObject spells; needs research
 
@@ -5676,7 +5693,7 @@ void Spell::EffectPullTowards(SpellEffIndex effIndex)
     if (effectHandleMode != SPELL_EFFECT_HANDLE_HIT_TARGET)
         return;
 
-    if (!unitTarget)
+    if (!unitTarget || IsRootedByMovementTemplate(unitTarget))
         return;
 
     float speedZ = (float)(m_spellInfo->Effects[effIndex].CalcValue() / 10);

@@ -306,6 +306,7 @@ class boss_hoptallus : public CreatureScript
             boss_hoptallusAI(Creature* creature) : BossAI(creature, DATA_HOPTALLUS) { }
 
             bool introStarted;
+            static constexpr uint32 MAX_LIVING_SUMMONS = 24; // (hop-cap) 3 screech waves
             uint32 hoplingWaves;
             uint32 hopperWaves;
 
@@ -382,6 +383,11 @@ class boss_hoptallus : public CreatureScript
                     return false;
                 }
 
+                // (hop-cap) hard cap on living summons during the fight; retail pace is 7 per screech and the group kills them,
+                // the cap only stops runaway growth (stuck group, leaving players)
+                if (instance->GetBossState(DATA_HOPTALLUS) == IN_PROGRESS && summons.size() >= MAX_LIVING_SUMMONS)
+                    return false;
+
                 if (Creature* creature = me->SummonCreature(hoplings[n], hoplingSpawns[n], TEMPSUMMON_CORPSE_TIMED_DESPAWN, Milliseconds(urand(2000, 5000))))
                 {
                     creature->AddAura(SPELL_HOPPER_ANIM_REPLACEMENT, creature);
@@ -412,6 +418,11 @@ class boss_hoptallus : public CreatureScript
 
                     return false;
                 }
+
+                // (hop-cap) hard cap on living summons during the fight; retail pace is 7 per screech and the group kills them,
+                // the cap only stops runaway growth (stuck group, leaving players)
+                if (instance->GetBossState(DATA_HOPTALLUS) == IN_PROGRESS && summons.size() >= MAX_LIVING_SUMMONS)
+                    return false;
 
                 if (Creature* creature = me->SummonCreature(hoppers[urand(0, 1)], hopperSpawns[n], TEMPSUMMON_CORPSE_TIMED_DESPAWN, Milliseconds(urand(4000, 8000))))
                 {
@@ -504,6 +515,19 @@ class boss_hoptallus : public CreatureScript
 
                 if (me->HasAura(SPELL_FURLWIND) || me->HasAura(SPELL_CARROT_BREATH) || me->HasUnitState(UNIT_STATE_CASTING))
                     return;
+
+                // (hop-cap) in the fight with no victim or nobody left in the instance: evade (despawns all summons) instead of
+                // screeching and summoning for nobody. Pre-event (SPECIAL) has no victim by design, so only IN_PROGRESS.
+                if (instance && instance->GetBossState(DATA_HOPTALLUS) == IN_PROGRESS)
+                {
+                    if (me->IsInCombat() && me->GetMap()->GetPlayers().isEmpty())
+                    {
+                        EnterEvadeMode();
+                        return;
+                    }
+                    if (!UpdateVictim())
+                        return;
+                }
 
                 events.Update(diff);
 
@@ -599,7 +623,7 @@ class npc_hammer_bopper : public CreatureScript
                 switch (pointId)
                 {
                     case EVENT_JUMP:
-                        if (instance && (instance->GetBossState(DATA_HOPTALLUS) != SPECIAL || instance->GetBossState(DATA_HOPTALLUS) != IN_PROGRESS))
+                        if (instance && (instance->GetBossState(DATA_HOPTALLUS) != SPECIAL && instance->GetBossState(DATA_HOPTALLUS) != IN_PROGRESS))
                         {
                             InitPathForHopplings(me, me->GetGUID());
                             events.ScheduleEvent(EVENT_MOVE, me->GetSplineDuration());
@@ -701,7 +725,7 @@ class npc_explosive_hopper : public CreatureScript
                 switch (pointId)
                 {
                     case EVENT_JUMP:
-                        if (instance && (instance->GetBossState(DATA_HOPTALLUS) != SPECIAL || instance->GetBossState(DATA_HOPTALLUS) != IN_PROGRESS))
+                        if (instance && (instance->GetBossState(DATA_HOPTALLUS) != SPECIAL && instance->GetBossState(DATA_HOPTALLUS) != IN_PROGRESS))
                         {
                             InitPathForHopplings(me, me->GetGUID());
                             cosmeticEvents.ScheduleEvent(EVENT_MOVE, me->GetSplineDuration());
@@ -932,7 +956,7 @@ class npc_sb_hopling : public CreatureScript
                 switch (pointId)
                 {
                     case EVENT_JUMP:
-                        if (instance && (instance->GetBossState(DATA_HOPTALLUS) != SPECIAL || instance->GetBossState(DATA_HOPTALLUS) != IN_PROGRESS))
+                        if (instance && (instance->GetBossState(DATA_HOPTALLUS) != SPECIAL && instance->GetBossState(DATA_HOPTALLUS) != IN_PROGRESS))
                             Move();
                         break;
                     case EVENT_JUMP + 1:
