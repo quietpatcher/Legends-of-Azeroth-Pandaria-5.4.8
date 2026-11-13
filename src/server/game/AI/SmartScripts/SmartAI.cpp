@@ -125,7 +125,13 @@ void SmartAI::StartPath(bool run/* = false*/, uint32 pathId/* = 0*/, bool repeat
     // No in-combat refusal: the path starts in or out of combat. Refusing dropped every "On Just Summoned - Start WP" of
     // summons that aggro on spawn (e.g. Angershade/Gharsul 8488, Kalecgos 36689, Civilian Recruit 25220).
     if (HasEscortState(SMART_ESCORT_ESCORTING))
+    {
+        // Switching paths: end the running path WITHOUT restarting it. StopPath -> EndPath restarts the old path while
+        // mCanRepeatPath is set, which sets SMART_ESCORT_ESCORTING again and makes LoadPath below refuse the new path, so
+        // a repeating path could never be replaced (Blastranaar wind rider, to-do 468). The flag of the new path is set below.
+        mCanRepeatPath = false;
         StopPath();
+    }
  
     if (pathId){
         if (!LoadPath(pathId))

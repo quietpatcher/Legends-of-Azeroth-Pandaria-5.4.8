@@ -575,7 +575,8 @@ enum SMART_ACTION
     SMART_ACTION_SPELL_VISUAL_KIT                   = 206,
     SMART_ACTION_CAST_RANDOM_SPELL                  = 207,
     SMART_ACTION_SET_INGAME_PHASE_ID                = 208,    // phaseid, apply
-    SMART_ACTION_END_project                        = 209
+    SMART_ACTION_SET_SPEED_RATE                     = 209,    // UnitMoveType, rate in percent of the base speed (200 = 2.0); 0 = recompute from auras and template
+    SMART_ACTION_END_project                        = 210
 };
 
 struct SmartAction
@@ -1118,6 +1119,12 @@ struct SmartAction
             uint32 id;
             uint32 apply;
         } ingamePhaseId;
+
+        struct
+        {
+            uint32 type;
+            uint32 rate;
+        } speedRate;
 
         //! Note for any new future actions
         //! All parameters must have type uint32

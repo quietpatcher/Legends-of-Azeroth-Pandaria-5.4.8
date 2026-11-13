@@ -1,0 +1,13 @@
+-- To-do 434 (The Warchief Cometh, Forsaken High Command): three Fallen Human corpses stood twice on exactly the same spot, so
+-- Agatha's Raise Forsaken raised two overlapping Forsaken Troopers there ("duplicate spawns", reporter note 01-11).
+-- Removed: the second row of each exact pair (same x/y/z/o); kept the row whose entry matches the sniff-based reference.
+--   (1369.71, 1040.19): kept 187526 (44592, as ref_cpp/ref_sf), removed 186947 (44593)
+--   (1372.58, 1038.07): kept 186827 (44592, as ref_cpp/ref_sf), removed 187534 (44593)
+--   (1376.00, 1029.61): kept 187007 (44592), removed 187528 (44593)
+-- Source: ref_cpp and ref_sf creature (ids 44592/44593 at the High Command: 11 spawns, no two on one spot); ours had 15 rows on 12 spots.
+-- No creature_addon, pool, formation, event or script row refers to these guids.
+-- Rollback:
+--   INSERT INTO `creature` (`guid`, `id`, `map`, `zoneId`, `areaId`, `spawnMask`, `phaseMask`, `phaseId`, `phaseGroup`, `modelid`, `equipment_id`, `position_x`, `position_y`, `position_z`, `orientation`, `spawntimesecs`, `spawntimesecs_max`, `wander_distance`, `currentwaypoint`, `curhealth`, `curmana`, `MovementType`, `npcflag`, `npcflag2`, `unit_flags`, `unit_flags2`, `dynamicflags`, `ScriptName`, `walk_mode`, `VerifiedBuild`) VALUES (186947,44593,0,130,5369,1,1,0,0,33984,0,1369.71,1040.19,51.0212,5.58505,300,0,0,0,273,0,0,0,0,0,0,0,'',0,0);
+--   INSERT INTO `creature` (`guid`, `id`, `map`, `zoneId`, `areaId`, `spawnMask`, `phaseMask`, `phaseId`, `phaseGroup`, `modelid`, `equipment_id`, `position_x`, `position_y`, `position_z`, `orientation`, `spawntimesecs`, `spawntimesecs_max`, `wander_distance`, `currentwaypoint`, `curhealth`, `curmana`, `MovementType`, `npcflag`, `npcflag2`, `unit_flags`, `unit_flags2`, `dynamicflags`, `ScriptName`, `walk_mode`, `VerifiedBuild`) VALUES (187528,44593,0,130,5369,1,1,0,0,33983,0,1376,1029.61,50.9374,0.890118,300,0,0,0,273,0,0,0,0,0,0,0,'',0,0);
+--   INSERT INTO `creature` (`guid`, `id`, `map`, `zoneId`, `areaId`, `spawnMask`, `phaseMask`, `phaseId`, `phaseGroup`, `modelid`, `equipment_id`, `position_x`, `position_y`, `position_z`, `orientation`, `spawntimesecs`, `spawntimesecs_max`, `wander_distance`, `currentwaypoint`, `curhealth`, `curmana`, `MovementType`, `npcflag`, `npcflag2`, `unit_flags`, `unit_flags2`, `dynamicflags`, `ScriptName`, `walk_mode`, `VerifiedBuild`) VALUES (187534,44593,0,130,5369,1,1,0,0,33984,0,1372.58,1038.07,50.9666,0.890118,300,0,0,0,273,0,0,0,0,0,0,0,'',0,0);
+DELETE FROM creature WHERE guid IN (186947,187534,187528) AND id=44593;

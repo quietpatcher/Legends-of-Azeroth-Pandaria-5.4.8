@@ -2580,6 +2580,27 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             delete targets;
             break;
         }
+        case SMART_ACTION_SET_SPEED_RATE:
+        {
+            ObjectList* targets = GetTargets(e, unit);
+            if (!targets)
+                break;
+
+            UnitMoveType const moveType = UnitMoveType(e.action.speedRate.type);
+            for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+            {
+                if (Unit* target = (*itr)->ToUnit())
+                {
+                    if (e.action.speedRate.rate)
+                        target->SetSpeed(moveType, float(e.action.speedRate.rate) / 100.0f, true);
+                    else
+                        target->UpdateSpeed(moveType, true);
+                }
+            }
+
+            delete targets;
+            break;
+        }
         default:
             TC_LOG_ERROR("sql.sql", "SmartScript::ProcessAction: Entry {} SourceType {}, Event {}, Unhandled Action type {}", e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType());
             break;

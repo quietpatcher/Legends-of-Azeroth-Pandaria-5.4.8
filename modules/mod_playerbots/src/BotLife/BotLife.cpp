@@ -40,6 +40,7 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-ar
 #include "ObjectMgr.h"
 #include "PathGenerator.h"
 #include "Player.h"
+#include "SpellAuraEffects.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -1132,14 +1133,31 @@ void BotLifeMgr::LoadCaches()
                 // the Wandering Isle) - whether the bot can attack shows on the spot.
                 if (fight && (!ct || (ct->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC))))
                     continue;
-                std::set<uint32> credits;
+                std::set<uint32> credits, selfAuras;
                 Row const* row = &start.second;
                 for (uint8 depth = 0; row && depth < 10; ++depth)
                 {
                     rowCredits(rowCredits, *row, credits, 0, nullptr, nullptr);
+                    // a spell hit that makes the creature put an aura on itself (action 11, target self)
+                    if (event == 8 && row->action == 11 && row->tt == 1 && row->a[0])
+                        selfAuras.insert(row->a[0]);
                     auto next = row->link ? sc.second.find(row->link) : sc.second.end();
                     row = next != sc.second.end() && next->second.event == 61 ? &next->second : nullptr;
                 }
+                // ... and the same creature gives the credit once it has that aura (event 23): the spell is the way to it
+                for (uint32 aura : selfAuras)
+                    for (auto const& other : sc.second)
+                    {
+                        if (other.second.event != 23 || other.second.param != aura)
+                            continue;
+                        Row const* auraRow = &other.second;
+                        for (uint8 depth = 0; auraRow && depth < 10; ++depth)
+                        {
+                            rowCredits(rowCredits, *auraRow, credits, 0, nullptr, nullptr);
+                            auto next = auraRow->link ? sc.second.find(auraRow->link) : sc.second.end();
+                            auraRow = next != sc.second.end() && next->second.event == 61 ? &next->second : nullptr;
+                        }
+                    }
                 uint32 const spell = event == 8 ? start.second.param : 0;
                 for (uint32 credit : credits)
                 {
@@ -6639,7 +6657,7 @@ bool BotLifeMgr::EngageQuestCreature(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 auto credit = _creditSources.find(obj.ObjectID);
                 if (credit != _creditSources.end())
                     for (BotLifeCreditSource const& src : credit->second)
-                        if (src.fight || (src.spell && (learned || bot->HasSpell(src.spell))))
+                        if (src.fight || (src.spell && (learned || KnowsQuestSpell(bot, src.spell))))
                             entries.push_back(src.creature);
                 // batch 11j: the creatures that feed a helper standing here
                 auto qu = _questUse.find(quest->GetQuestId());
@@ -6770,7 +6788,7 @@ bool BotLifeMgr::EngageQuestCreature(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             if (credit == _creditSources.end())
                 continue;
             for (BotLifeCreditSource const& src : credit->second)
-                if (src.creature == target->GetEntry() && src.spell && bot->HasSpell(src.spell))
+                if (src.creature == target->GetEntry() && src.spell && KnowsQuestSpell(bot, src.spell))
                 {
                     questSpell = src.spell;
                     break;
@@ -6798,7 +6816,7 @@ bool BotLifeMgr::EngageQuestCreature(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             if (credit == _creditSources.end())
                 continue;
             for (BotLifeCreditSource const& src : credit->second)
-                if (src.creature == target->GetEntry() && src.spell && bot->HasSpell(src.spell))
+                if (src.creature == target->GetEntry() && src.spell && KnowsQuestSpell(bot, src.spell))
                     if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(src.spell))
                         if (spellInfo->GetMaxRange(false) < 10.0f)
                             ranged = false;
@@ -7049,6 +7067,21 @@ void BotLifeMgr::QuestEventSpots(uint32 questId, std::vector<uint32>& creatures,
                 objects.push_back(go);
 }
 
+// A spell the bot can cast for a quest: one it knows, or one on the action bar of an aura that overrides the bar (the
+// buttons of a quest outfit). The core hands those out as temporary spells while the aura is worn; the aura itself is
+// checked as well so the answer does not depend on the order in which the two are applied.
+bool BotLifeMgr::KnowsQuestSpell(Player* bot, uint32 spell) const
+{
+    if (bot->HasSpell(spell))
+        return true;
+    for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_OVERRIDE_SPELLS))
+        if (OverrideSpellDataEntry const* data = sOverrideSpellDataStore.LookupEntry(uint32(effect->GetMiscValue())))
+            for (uint8 i = 0; i < MAX_OVERRIDE_SPELL; ++i)
+                if (data->spellId[i] == spell)
+                    return true;
+    return false;
+}
+
 // batch 11t: the creatures that drop the tool for a credit - none while the bot has the spell itself or
 // a tool for it in its bags
 void BotLifeMgr::AddToolDropSpots(Player* bot, uint32 credit, std::vector<uint32>& creatures) const
@@ -7061,7 +7094,7 @@ void BotLifeMgr::AddToolDropSpots(Player* bot, uint32 credit, std::vector<uint32
     {
         if (!src.spell || src.fight)
             continue;
-        if (bot->HasSpell(src.spell))
+        if (KnowsQuestSpell(bot, src.spell))
             return;
         auto tools = _spellTools.find(src.spell);
         if (tools == _spellTools.end())
@@ -7556,7 +7589,7 @@ bool BotLifeMgr::InteractQuestCreature(PlayerbotAI* botAI, BotLifeInfo& t, uint3
             {
                 if (!spellInfo)
                     continue;
-                if (!bot->HasSpell(src.spell))
+                if (!KnowsQuestSpell(bot, src.spell))
                 {
                     item = itemWithSpell(src.spell);
                     if (!item)

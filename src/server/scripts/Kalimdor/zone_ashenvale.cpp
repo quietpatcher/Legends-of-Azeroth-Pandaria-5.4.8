@@ -521,6 +521,48 @@ class spell_ashenvale_gift_of_the_earth : public SpellScript
     }
 };
 
+// Blastranaar! (quest 13947): 'Return to Base!' (65481) is the third button of the Furious Wind Rider's vehicle bar (dummy effect, target caster).
+// The rider hands the request to its SmartAI as action 1 (SMART_EVENT_ACTION_DONE), which then runs the return flight; this does not depend on the
+// spellhit event of the creature.
+enum BlastranaarReturn
+{
+    NPC_FURIOUS_WIND_RIDER      = 34433,
+    ACTION_BLASTRANAAR_RETURN   = 1
+};
+
+class spell_ashenvale_blastranaar_return_to_base : public SpellScript
+{
+    PrepareSpellScript(spell_ashenvale_blastranaar_return_to_base);
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Unit* caster = GetCaster();
+        if (!caster)
+            return;
+
+        Creature* rider = caster->ToCreature();
+        if (!rider)
+            if (Unit* base = caster->GetVehicleBase())
+                rider = base->ToCreature();
+
+        if (!rider || rider->GetEntry() != NPC_FURIOUS_WIND_RIDER)
+            return;
+
+        if (!rider->IsAIEnabled)
+        {
+            TC_LOG_ERROR("scripts", "Blastranaar: Furious Wind Rider {} has no active AI, Return to Base! ignored", rider->GetGUID().GetCounter());
+            return;
+        }
+
+        rider->AI()->DoAction(ACTION_BLASTRANAAR_RETURN);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_ashenvale_blastranaar_return_to_base::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
 void AddSC_ashenvale()
 {
     new npc_torek();
@@ -528,4 +570,5 @@ void AddSC_ashenvale()
     new npc_muglash();
     new go_naga_brazier();
     new spell_script<spell_ashenvale_gift_of_the_earth>("spell_ashenvale_gift_of_the_earth");
+    new spell_script<spell_ashenvale_blastranaar_return_to_base>("spell_ashenvale_blastranaar_return_to_base");
 }

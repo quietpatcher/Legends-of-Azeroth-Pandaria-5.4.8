@@ -875,6 +875,7 @@ private:
     void AddEquipChests(Player* bot, uint32 credit, std::vector<uint32>& objects) const;   // batch 11m
     std::unordered_map<uint32, std::vector<uint32>> _spellTools;         // spell of a credit -> items that cast it on use (batch 11t)
     void AddToolDropSpots(Player* bot, uint32 credit, std::vector<uint32>& creatures) const;   // batch 11t
+    bool KnowsQuestSpell(Player* bot, uint32 spell) const;   // known, or on the bar of an override-spells aura
     bool EquipQuestItem(Player* bot, BotLifeInfo& t, uint32 now);                      // batch 11m
     std::unordered_map<uint32, std::vector<uint32>> _approachCredits;   // credit -> creatures whose script gives it to whoever comes near
     std::unordered_map<uint32, std::vector<BotLifeSpawn>> _questTriggers;  // quest -> area triggers that give its explore credit

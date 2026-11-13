@@ -1225,6 +1225,13 @@ bool SmartAIMgr::IsEventValid(SmartScriptHolder& e)
         case SMART_ACTION_SPELL_VISUAL_KIT:
         case SMART_ACTION_SET_INGAME_PHASE_ID:
             break;
+        case SMART_ACTION_SET_SPEED_RATE:
+            if (e.action.speedRate.type >= MAX_MOVE_TYPE)
+            {
+                TC_LOG_ERROR("sql.sql", "SmartAIMgr: Entry {} SourceType {} Event {} Action {} uses invalid move type {}, skipped.", e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.action.speedRate.type);
+                return false;
+            }
+            break;
         default:
             TC_LOG_ERROR("sql.sql", "SmartAIMgr: Not handled action_type({}), event_type({}), Entry {} SourceType {} Event {}, skipped.", e.GetActionType(), e.GetEventType(), e.entryOrGuid, e.GetScriptType(), e.event_id);
             return false;

@@ -1018,7 +1018,7 @@ enum DeathstalkerRaneYorick
 // 44882 - Deathstalker Rane Yorick
 struct npc_silverpine_deathstalker_rane_yorick : public ScriptedAI
 {
-    npc_silverpine_deathstalker_rane_yorick(Creature* creature) : ScriptedAI(creature), _playerArrived(false), _playerSkipped(false) { }
+    npc_silverpine_deathstalker_rane_yorick(Creature* creature) : ScriptedAI(creature), _path(0), _playerArrived(false), _playerSkipped(false) { }
 
     void JustAppeared() override
     {
@@ -1045,7 +1045,7 @@ struct npc_silverpine_deathstalker_rane_yorick : public ScriptedAI
         // Safety net: if he still got into combat, resume the walk to the armoire instead of standing still
         me->CombatStop(true);
 
-        if (!_playerArrived && !_playerSkipped && me->GetWaypointPath() == PATH_YORICK_UP)
+        if (!_playerArrived && !_playerSkipped && _path == PATH_YORICK_UP)
             me->GetMotionMaster()->MovePath(PATH_YORICK_UP, false);
     }
 
@@ -1054,7 +1054,9 @@ struct npc_silverpine_deathstalker_rane_yorick : public ScriptedAI
         if (type != WAYPOINT_MOTION_TYPE)
             return;
 
-        uint32 pathId = me->GetWaypointPath();
+        // Not me->GetWaypointPath(): that is only the path of the creature_template_addon and is 0 for a summon, so the walk to the
+        // armoire never ended in the hide line (436, 12-11 client test); the path is remembered here instead
+        uint32 pathId = _path;
 
         if (pathId == PATH_YORICK_UP && id == WAYPOINT_CLOSE_TO_ARMOIRE)
             _events.ScheduleEvent(EVENT_WAIT_FOR_PLAYER_EXSANGUINATE, 1s);
@@ -1136,6 +1138,7 @@ struct npc_silverpine_deathstalker_rane_yorick : public ScriptedAI
                 }
 
                 case EVENT_START_QUEST_EXSANGUINATE + 1:
+                    _path = PATH_YORICK_UP;
                     me->GetMotionMaster()->MovePath(PATH_YORICK_UP, false);
                     break;
 
@@ -1167,6 +1170,7 @@ struct npc_silverpine_deathstalker_rane_yorick : public ScriptedAI
                 }
 
                 case EVENT_RANE_HIDE:
+                    _path = PATH_YORICK_HIDE;
                     me->GetMotionMaster()->MovePath(PATH_YORICK_HIDE, false);
                     break;
 
@@ -1237,6 +1241,7 @@ private:
     EventMap _events;
     ObjectGuid _armoireGUID;
     ObjectGuid _bloodfangGUID;
+    uint32 _path;
     bool _playerArrived;
     bool _playerSkipped;
 };
@@ -1292,20 +1297,22 @@ enum WaitingToExsanguinate
 // 44893 - Armoire
 struct npc_silverpine_armoire : public VehicleAI
 {
-    npc_silverpine_armoire(Creature* creature) : VehicleAI(creature), _sceneStarted(false), _passengerLeft(false) { }
+    npc_silverpine_armoire(Creature* creature) : VehicleAI(creature), _homeOrientation(creature->GetOrientation()),
+        _sceneStarted(false), _passengerLeft(false) { }
 
     // Unit::ExitVehicle(Position const*) ignores its argument in this core and Vehicle::RemovePassenger overwrites any exit position
     // with the vehicle base, so a leaving player stood inside the Armoire model with the camera stuck (436). This hook is the one place
     // that decides the exit position for every exit path (scene end, no-scene eject, stepping out): 2 yd in front of the Armoire, facing it.
     void GetPassengerExitPosition(Unit* /*passenger*/, int8 /*seatId*/, Position& pos) override
     {
-        Position exitPos = me->GetNearPosition(2.0f, 0.0f);
+        // The scene turns the Armoire towards the speakers (ShowSceneShot), so the exit goes by the orientation it was summoned with.
+        Position exitPos = me->GetNearPosition(2.0f, Position::NormalizeOrientation(_homeOrientation - me->GetOrientation()));
 
         // GetNearPosition already snaps to the floor; never accept a big jump in height (no fall, no clipping through the floor).
         if (std::fabs(exitPos.GetPositionZ() - me->GetPositionZ()) > 3.0f)
             exitPos.m_positionZ = me->GetPositionZ();
 
-        exitPos.SetOrientation(Position::NormalizeOrientation(me->GetOrientation() + float(M_PI)));
+        exitPos.SetOrientation(Position::NormalizeOrientation(_homeOrientation + float(M_PI)));
         pos = exitPos;
     }
 
@@ -1359,6 +1366,9 @@ struct npc_silverpine_armoire : public VehicleAI
         {
             _passengerLeft = true;
             _events.Reset();
+
+            if (Player* leaving = passenger ? passenger->ToPlayer() : nullptr)
+                ClearSceneView(leaving);
 
             // The camera dummy auras sit on the player (cast with the summoner as target) and no script removes them.
             if (passenger)
@@ -1469,6 +1479,10 @@ struct npc_silverpine_armoire : public VehicleAI
 
                             bloodfang->SetFacingToObject(crowley);
 
+                            // Crowley speaks first: open on him, not on whatever the armoire happens to face (436)
+                            if (Unit* summoner = tempSummon->GetSummoner())
+                                ShowSceneShot(summoner, _crowleyGUID);
+
                             _events.ScheduleEvent(EVENT_TALK_SCENE_EXSANGUINATE, 2s);
                         }
                     }
@@ -1495,7 +1509,7 @@ struct npc_silverpine_armoire : public VehicleAI
                     if (Unit* summoner = tempSummon->GetSummoner())
                     {
                         TC_LOG_INFO("scripts", "Armoire scene: camera on Bloodfang (event {})", eventId);
-                        summoner->CastSpell(summoner, SPELL_ARMOIRE_CAMERA_ON_BLOODFANG, true);
+                        ShowSceneShot(summoner, _bloodfangGUID);
 
                         _events.ScheduleEvent(EVENT_TALK_SCENE_EXSANGUINATE + 1, 2s + 500ms);
                     }
@@ -1533,7 +1547,7 @@ struct npc_silverpine_armoire : public VehicleAI
                     if (Unit* summoner = tempSummon->GetSummoner())
                     {
                         TC_LOG_INFO("scripts", "Armoire scene: camera on Crowley (event {})", eventId);
-                        summoner->CastSpell(summoner, SPELL_ARMOIRE_CAMERA_ON_CROWLEY, true);
+                        ShowSceneShot(summoner, _crowleyGUID);
 
                         _events.ScheduleEvent(EVENT_TALK_SCENE_EXSANGUINATE + 3, 2s + 500ms);
                     }
@@ -1597,7 +1611,7 @@ struct npc_silverpine_armoire : public VehicleAI
                     if (Unit* summoner = tempSummon->GetSummoner())
                     {
                         TC_LOG_INFO("scripts", "Armoire scene: camera on Bloodfang (event {})", eventId);
-                        summoner->CastSpell(summoner, SPELL_ARMOIRE_CAMERA_ON_BLOODFANG, true);
+                        ShowSceneShot(summoner, _bloodfangGUID);
 
                         _events.ScheduleEvent(EVENT_TALK_SCENE_EXSANGUINATE + 7, 2s + 500ms);
                     }
@@ -1665,7 +1679,7 @@ struct npc_silverpine_armoire : public VehicleAI
                     if (Unit* summoner = tempSummon->GetSummoner())
                     {
                         TC_LOG_INFO("scripts", "Armoire scene: camera on Crowley (event {})", eventId);
-                        summoner->CastSpell(summoner, SPELL_ARMOIRE_CAMERA_ON_CROWLEY, true);
+                        ShowSceneShot(summoner, _crowleyGUID);
 
                         _events.ScheduleEvent(EVENT_TALK_SCENE_EXSANGUINATE + 11, 3s);
                     }
@@ -1692,7 +1706,7 @@ struct npc_silverpine_armoire : public VehicleAI
                     if (Unit* summoner = tempSummon->GetSummoner())
                     {
                         TC_LOG_INFO("scripts", "Armoire scene: camera on Bloodfang (event {})", eventId);
-                        summoner->CastSpell(summoner, SPELL_ARMOIRE_CAMERA_ON_BLOODFANG, true);
+                        ShowSceneShot(summoner, _bloodfangGUID);
 
                         _events.ScheduleEvent(EVENT_TALK_SCENE_EXSANGUINATE + 12, 2s + 500ms);
                     }
@@ -1929,7 +1943,7 @@ struct npc_silverpine_armoire : public VehicleAI
                     if (Unit* summoner = tempSummon->GetSummoner())
                     {
                         TC_LOG_INFO("scripts", "Armoire scene: camera on Crowley (event {})", eventId);
-                        summoner->CastSpell(summoner, SPELL_ARMOIRE_CAMERA_ON_CROWLEY, true);
+                        ShowSceneShot(summoner, _crowleyGUID);
 
                         if (Creature* bloodfang = ObjectAccessor::GetCreature(*me, _bloodfangGUID))
                         {
@@ -1969,6 +1983,9 @@ struct npc_silverpine_armoire : public VehicleAI
 
                         summoner->RemoveAura(SPELL_HIDE_IN_ARMOIRE);
 
+                        if (Player* viewer = summoner->ToPlayer())
+                            ClearSceneView(viewer);
+
                         // Camera dummy auras (83763/83764) have no script and would keep the client on the Armoire camera (436).
                         summoner->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_CROWLEY);
                         summoner->RemoveAurasDueToSpell(SPELL_ARMOIRE_CAMERA_ON_BLOODFANG);
@@ -1985,10 +2002,38 @@ struct npc_silverpine_armoire : public VehicleAI
     }
 
 private:
+    // The shots of the scene are set by this script and no longer by the Armoire Camera auras (83763/83764). Those are timed auras
+    // (2 s and 5 s, SpellDuration 39 and 28) on a spell that hits every unit near the player; the Bloodfang one never gave the
+    // player a view of him, so every Ivar line fell back on the view from inside the armoire door (436, retest 12-11).
+    // The view is bound to the speaker himself, who is an object the client already has (a personal summon of this player). An
+    // invisible stalker summoned at the moment of the wissel did not work: it is not at the client yet, and the core does not check
+    // that, so the client ignored the new viewpoint and kept the old one (retest 12-11 16:40).
+    void ShowSceneShot(Unit* summoner, ObjectGuid speakerGUID)
+    {
+        Player* player = summoner->ToPlayer();
+        Creature* speaker = ObjectAccessor::GetCreature(*me, speakerGUID);
+        if (!player || !speaker)
+            return;
+
+        ClearSceneView(player);
+        player->SetViewpoint(speaker, true);
+        TC_LOG_INFO("scripts", "Armoire scene: view bound to {} (entry {}) atClient={} pos={:.1f} {:.1f} {:.1f}", speaker->GetGUID().ToString(),
+            speaker->GetEntry(), player->HaveAtClient(speaker) ? 1 : 0, speaker->GetPositionX(), speaker->GetPositionY(), speaker->GetPositionZ());
+    }
+
+    // Back to the view from the armoire
+    void ClearSceneView(Player* player)
+    {
+        if (ObjectGuid viewGUID = player->GetGuidValue(PLAYER_FIELD_FARSIGHT_OBJECT))
+            if (WorldObject* view = ObjectAccessor::GetWorldObject(*player, viewGUID))
+                player->SetViewpoint(view, false);
+    }
+
     EventMap _events;
     ObjectGuid _yorickGUID;
     ObjectGuid _crowleyGUID;
     ObjectGuid _bloodfangGUID;
+    float _homeOrientation;
     bool _sceneStarted;
     bool _passengerLeft;
 };

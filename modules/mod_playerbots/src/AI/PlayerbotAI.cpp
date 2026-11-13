@@ -2007,6 +2007,14 @@ void PlayerbotAI::SpellInterrupted(uint32 spellid)
 
 void PlayerbotAI::InterruptSpell()
 {
+    // Diagnostic (to-do 252): which cast or channel gets broken off (the caller is named by the log line before it)
+    Spell* running = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!running)
+        running = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    if (running)
+        TC_LOG_DEBUG("playerbots", "{} InterruptSpell: {} ({}) moving {}", bot->GetName(),
+            running->GetSpellInfo()->Id, running->GetSpellInfo()->SpellName, bot->isMoving());
+
     for (uint8 type = CURRENT_MELEE_SPELL; type <= CURRENT_CHANNELED_SPELL; type++)
     {
         Spell* spell = bot->GetCurrentSpell((CurrentSpellTypes)type);
@@ -2514,7 +2522,14 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     // the spell is left alone for a second so the engine picks something else. Facing was fixed just above.
     {
         Spell* test = new Spell(bot, spellInfo, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
-        test->m_targets.SetUnitTarget(target);
+        // A ground-targeted spell (Hurricane, Blizzard) is cast below with a destination only, no unit target. CheckCast
+        // then takes the destination branch of CheckRange (no combat reach of the target) and checks line of sight to
+        // the destination point. Checking with a unit target let such a cast pass here and fail in prepare, without a
+        // cooldown, on every tick (to-do 252).
+        if (!(spellInfo->Targets & TARGET_FLAG_ITEM) && (spellInfo->Targets & TARGET_FLAG_DEST_LOCATION))
+            test->m_targets.SetDst(*target);
+        else
+            test->m_targets.SetUnitTarget(target);
         SpellCastResult strict = test->CheckCast(true);
         delete test;
         if (strict != SPELL_CAST_OK && strict != SPELL_FAILED_NOT_INFRONT && strict != SPELL_FAILED_UNIT_NOT_INFRONT)
@@ -2608,6 +2623,14 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     sBotLife->CountCast(spellId);
     if (spellInfo->CalcCastTime(bot->GetLevel()) || spellInfo->IsChanneled())
         sBotLife->Count(BLC_CAST_TIMED);
+
+    // Diagnostic (to-do 252): a cast-time or channeled spell that is prepared again every tick leaves no current spell
+    // behind. The Spell object is not touched here (an instant cast may already be finished), only the bot's state.
+    if (spellInfo->CalcCastTime(bot->GetLevel()) || spellInfo->IsChanneled())
+        TC_LOG_DEBUG("playerbots", "{} prepared {} ({}): generic {} channeled {} moving {} combat {} target {}",
+            bot->GetName(), spellId, spellInfo->SpellName, bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr,
+            bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) != nullptr, bot->isMoving(), bot->IsInCombat(),
+            target->GetName());
     
     _aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().Set(spellId, target->GetGUID(), time(nullptr));
     _aiObjectContext->GetValue<PositionMap&>("position")->Get()["random"].Reset();

@@ -2171,6 +2171,22 @@ float const AgathaChaseDistance     = 1.5f;
 // 44951 - Agatha
 Position const NoEscapeStartPos = { 981.782f, 670.953f, 74.898f, 3.1887f };
 
+// The two doors of the keep's main hall: area trigger 6230 (south) and 6231 (north), boxes of 1.98 x 6.92 yd with the long side along
+// the door. Both start the meeting (446: only the south one was scripted, so the scene never started for the north door).
+Position const NoEscapeDoorPos[2] =
+{
+    { 984.373f, 670.884f, 77.87f },
+    { 983.007f, 707.627f, 77.915f }
+};
+
+static bool IsAtNoEscapeDoor(Player const* player)
+{
+    for (Position const& door : NoEscapeDoorPos)
+        if (player->GetExactDist2d(door.GetPositionX(), door.GetPositionY()) <= 3.5f && std::fabs(player->GetPositionZ() - door.GetPositionZ()) <= 4.0f)
+            return true;
+    return false;
+}
+
 // The player's guardian while Bond of the Val'kyr lasts: follows and helps the player, heals them, raises the Hillsbrad Refugees they
 // kill (Rise, Forsaken), and in Fenris Keep leads the player into the meeting of the human leaders, then flies them back to
 // Forsaken High Command (No Escape)
@@ -2278,9 +2294,9 @@ struct npc_silverpine_agatha_fenris_isle : public ScriptedAI
             return;
         }
 
-        // Backup for the area trigger, which fires only once on entering: start the scene when the player stands on the threshold
+        // Backup for the area triggers, which fire only once on entering: start the scene when the player stands on either threshold
         if (!_sceneStarted && !_fleeing && !player->GetVehicle() && player->GetQuestStatus(QUEST_NO_ESCAPE) == QUEST_STATUS_INCOMPLETE
-            && player->GetExactDist2d(984.37f, 670.88f) <= 3.5f && std::fabs(player->GetPositionZ() - 77.87f) <= 4.0f)
+            && IsAtNoEscapeDoor(player))
         {
             player->NearTeleportTo(NoEscapeStartPos.GetPositionX(), NoEscapeStartPos.GetPositionY(), NoEscapeStartPos.GetPositionZ(),
                 NoEscapeStartPos.GetOrientation(), true);
@@ -2749,6 +2765,9 @@ public:
 
 Position const CameraFrontyardPos = { 980.7f, 689.14f, 76.9f };
 
+// The table the leaders stand around: where Summon Magistrate Henry puts him (spell_target_position 84059)
+Position const FenrisTablePos = { 1000.67f, 689.76f, 76.1922f };
+
 enum FenrisKeepCamera
 {
     NPC_CROWLEY_FENRIS                          = 44989,
@@ -2854,7 +2873,12 @@ struct npc_silverpine_fenris_keep_camera : public VehicleAI
     void MovementInform(uint32 type, uint32 pointId) override
     {
         if (type == POINT_MOTION_TYPE && pointId == POINT_CAMERA_FRONTYARD)
+        {
+            // The camera is summoned at the player (the door) and flies here facing the way it flew; the view of the player in its seat
+            // follows the camera's facing, so turn it to the table before the player is seated for the meeting (446)
+            me->SetFacingTo(me->GetAngle(FenrisTablePos.GetPositionX(), FenrisTablePos.GetPositionY()));
             _events.ScheduleEvent(EVENT_SCENE_FENRIS_CHANGE_SEAT, 500ms);
+        }
     }
 
     void UpdateAI(uint32 diff) override
@@ -3030,7 +3054,8 @@ struct npc_silverpine_fenris_keep_actor : public ScriptedAI
 
     void IsSummonedBy(Unit* /*summoner*/) override
     {
-        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+        // Not attackable either: a group member of the player sees these personal summons, and they are hostile by faction (446)
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NON_ATTACKABLE);
         me->SetReactState(REACT_PASSIVE);
 
         // The humans face the keep's hall, where Crowley and Bloodfang stand

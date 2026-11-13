@@ -290,6 +290,10 @@ struct npc_trigger_scorched_flame : public ScriptedAI
 
     void JustDied(Unit* /*killer*/) override { }
 
+    // the patch never aggroes and never chases
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
     void IsSummonedBy(Unit* summoner) override
     {
         // the template is level 90 and the damage of 114464 scales with the level of this
@@ -297,6 +301,14 @@ struct npc_trigger_scorched_flame : public ScriptedAI
         // Wowhead MoP Classic spell 114464). The fire field takes the level of the Korloff that drops it.
         if (summoner)
             me->SetLevel(summoner->GetLevel());
+        // On retail the fire trail is a stationary patch that stays where it was dropped. The template carries no trigger flags
+        // (unit_flags 0, hostile faction), so the patch used to pick a victim and chase it: the fire followed the players around,
+        // overlapping patches stacked on one target and fleeing out of the fire was impossible. Keep it a passive, unattackable,
+        // unselectable, rooted trigger; the damage aura and the despawn below are untouched.
+        me->SetReactState(REACT_PASSIVE);
+        me->SetUnitFlag(UnitFlags(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_DISABLE_MOVE));
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MoveIdle();
         me->CastSpell(me, SPELL_TRIGGER_SCORCHED_EARTH, false);
         me->DespawnOrUnsummon(30000);
         trig = false;

@@ -138,6 +138,8 @@ bool MovementAction::ChaseTo(WorldObject* obj, float distance, float angle)
 
     if (bot->IsNonMeleeSpellCasted(true))
     {
+        // Diagnostic (to-do 252): a movement action breaks off a running cast
+        TC_LOG_DEBUG("playerbots", "{} MovementAction::ChaseTo stops a cast", bot->GetName());
         bot->CastStop();
         botAI->InterruptSpell();
     }
@@ -634,6 +636,8 @@ bool MovementAction::Follow(Unit* target, float distance, float angle)
 
     if (bot->IsNonMeleeSpellCasted(true))
     {
+        // Diagnostic (to-do 252): a movement action breaks off a running cast
+        TC_LOG_DEBUG("playerbots", "{} MovementAction::Follow stops a cast", bot->GetName());
         bot->CastStop();
         botAI->InterruptSpell();
     }
@@ -1706,6 +1710,7 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
     // from one patch at a time lands in the next one. Collect every damage-zone trigger within 15 yards live (the cached trigger
     // list is a second old) and walk to the reachable spot with the largest clearance from all of them.
     std::vector<std::pair<Position, float>> hazards;   // centre, radius + 2 yd margin
+    bool const tankHolds = PlayerBotSpec::IsTank(bot) && bot->IsInCombat();
     Unit* worst = nullptr;
     float worstRadius = 0.0f;
     std::list<Unit*> nearUnits;
@@ -1736,7 +1741,11 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                     if (!radius || radius > sPlayerbotAIConfig->maxAoeAvoidRadius)
                         continue;
                     hazards.push_back({ unit->GetPosition(), radius + 2.0f });
-                    if (bot->GetExactDist2d(unit) < radius + 2.0f && (!worst || radius > worstRadius))
+                    // (hold-tank, to-do 448) the tank only leaves a patch it really stands in: every step of the tank makes the boss
+                    // walk after him and a walking Brother Korloff lays four new patches a second, so a tank that keeps stepping away
+                    // from the margin of the old ones builds the minefield itself; a tank that stands still keeps the boss standing
+                    float const trigger = tankHolds ? radius + 0.5f : radius + 2.0f;
+                    if (bot->GetExactDist2d(unit) < trigger && (!worst || radius > worstRadius))
                     {
                         worst = unit;
                         worstRadius = radius;
@@ -1757,7 +1766,7 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
         // candidates by score; the path is only calculated for the best ones until one is reachable
         std::vector<std::pair<float, Position>> candidates;
         for (int a = 0; a < 16; ++a)
-            for (float d : { 5.0f, 8.0f, 11.0f })
+            for (float d : { 5.0f, 8.0f, 11.0f, 14.0f })
             {
                 float const ang = a * float(M_PI) / 8.0f;
                 float x = bot->GetPositionX() + std::cos(ang) * d, y = bot->GetPositionY() + std::sin(ang) * d, z = bot->GetPositionZ();
@@ -1771,6 +1780,22 @@ bool AvoidAoeAction::AvoidUnitWithDamageAura()
                 if (clearance <= 0.0f)
                     continue;
                 float score = std::min(clearance, 6.0f) - 0.05f * d;
+                // (trail-crossing, to-do 448) the walk to the spot must not lead over the trail: a patch costs a bot a tenth of its health
+                // a second (two or three overlapping ones a quarter or more), so a clear spot behind the trail is worse than a nearer one
+                // on this side; and a spot next to many patches is where the boss walks over again
+                int crossed = 0, nearby = 0;
+                for (auto const& h : hazards)
+                {
+                    float const core = h.second - 2.0f;   // the radius of the patch itself
+                    float const hx = h.first.GetPositionX() - bot->GetPositionX(), hy = h.first.GetPositionY() - bot->GetPositionY();
+                    float const ux = x - bot->GetPositionX(), uy = y - bot->GetPositionY();
+                    float const t = std::clamp((hx * ux + hy * uy) / (ux * ux + uy * uy), 0.0f, 1.0f);
+                    if (std::hypot(hx - ux * t, hy - uy * t) < core + 0.5f)
+                        ++crossed;
+                    if (p.GetExactDist2d(&h.first) < 6.0f)
+                        ++nearby;
+                }
+                score -= 0.6f * std::min(crossed, 6) + 0.1f * std::min(nearby, 10);
                 if (target && target->IsInWorld())
                     score -= 0.3f * std::max(0.0f, p.GetExactDist2d(target) - target->GetCombatReach() - reach);
                 candidates.push_back({ score, p });
