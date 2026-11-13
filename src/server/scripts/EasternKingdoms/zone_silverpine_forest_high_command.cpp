@@ -1264,6 +1264,7 @@ enum WaitingToExsanguinate
     EVENT_ACTION_SCENE_EXSANGUINATE         = 27,
     EVENT_SWITCH_SCENE_CAMERA               = 33,
     EVENT_FINISH_SCENE_EXSANGUINATE         = 40,
+    EVENT_APPLY_SCENE_VIEW                  = 50,
     EVENT_EJECT_NO_SCENE                    = 90,
 
     TALK_YORICK_EXSANGUINATE_DEATH           = 2,
@@ -1437,6 +1438,11 @@ struct npc_silverpine_armoire : public VehicleAI
 
             switch (eventId)
             {
+                case EVENT_APPLY_SCENE_VIEW:
+                    if (Unit* summoner = tempSummon->GetSummoner())
+                        if (Player* viewer = summoner->ToPlayer())
+                            ApplySceneView(viewer);
+                    break;
                 case EVENT_EJECT_NO_SCENE:
                     if (Unit* summoner = tempSummon->GetSummoner())
                         summoner->ExitVehicle();
@@ -2002,20 +2008,31 @@ struct npc_silverpine_armoire : public VehicleAI
     }
 
 private:
-    // The shots of the scene are set by this script and no longer by the Armoire Camera auras (83763/83764). Those are timed auras
-    // (2 s and 5 s, SpellDuration 39 and 28) on a spell that hits every unit near the player; the Bloodfang one never gave the
-    // player a view of him, so every Ivar line fell back on the view from inside the armoire door (436, retest 12-11).
-    // The view is bound to the speaker himself, who is an object the client already has (a personal summon of this player). An
-    // invisible stalker summoned at the moment of the wissel did not work: it is not at the client yet, and the core does not check
-    // that, so the client ignored the new viewpoint and kept the old one (retest 12-11 16:40).
+    // The shots of the scene are set by this script and no longer by the Armoire Camera auras (83763/83764; timed 2 s / 5 s and the
+    // Bloodfang one never landed). The view is bound to the speaker himself, an object the client already has.
+    // Changing straight from one viewpoint to the next is not followed by the client: the viewpoint is only the farsight guid in the
+    // player's update fields, so clearing and setting within one tick reaches the client as one change and the first view stays. That
+    // matches every test: the first bind (from nothing) always showed Crowley, the straight switches to Ivar (aura, stalker, Bloodfang
+    // himself, all atClient=1 in the log) never changed the picture, and a view that was cleared 400 ms earlier did follow (the Crowley
+    // shots after the dark phase of the 15:20 retest). So the old view is cleared now and the speaker is bound 400 ms later (436).
     void ShowSceneShot(Unit* summoner, ObjectGuid speakerGUID)
     {
         Player* player = summoner->ToPlayer();
-        Creature* speaker = ObjectAccessor::GetCreature(*me, speakerGUID);
-        if (!player || !speaker)
+        if (!player)
             return;
 
+        bool const hadView = player->GetGuidValue(PLAYER_FIELD_FARSIGHT_OBJECT) != ObjectGuid::Empty;
         ClearSceneView(player);
+        _pendingShotGUID = speakerGUID;
+        _events.ScheduleEvent(EVENT_APPLY_SCENE_VIEW, hadView ? 400ms : 10ms);
+    }
+
+    void ApplySceneView(Player* player)
+    {
+        Creature* speaker = ObjectAccessor::GetCreature(*me, _pendingShotGUID);
+        if (!speaker)
+            return;
+
         player->SetViewpoint(speaker, true);
         TC_LOG_INFO("scripts", "Armoire scene: view bound to {} (entry {}) atClient={} pos={:.1f} {:.1f} {:.1f}", speaker->GetGUID().ToString(),
             speaker->GetEntry(), player->HaveAtClient(speaker) ? 1 : 0, speaker->GetPositionX(), speaker->GetPositionY(), speaker->GetPositionZ());
@@ -2033,6 +2050,7 @@ private:
     ObjectGuid _yorickGUID;
     ObjectGuid _crowleyGUID;
     ObjectGuid _bloodfangGUID;
+    ObjectGuid _pendingShotGUID;
     float _homeOrientation;
     bool _sceneStarted;
     bool _passengerLeft;

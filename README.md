@@ -3,6 +3,11 @@
 This is a fork of [Legends of Azeroth Pandaria 5.4.8](https://github.com/Legends-of-Azeroth/Legends-of-Azeroth-Pandaria-5.4.8),
 an open-source server emulator for World of Warcraft: Mists of Pandaria (5.4.8, build 18414).
 
+> **Built on the work of others.** The playerbots side of this fork draws on, and builds on,
+> [1LineAtaTime/LoA-Pandaria-Playerbots](https://github.com/1LineAtaTime/LoA-Pandaria-Playerbots): a full playerbots module
+> for the same core, with group play, dungeon strategies and battleground tactics. If you are looking for a playerbots core
+> for Mists of Pandaria, start there. This fork adds quest, dungeon and bot fixes on top; it is not a replacement for it.
+
 The fork follows upstream and adds work that is not upstream yet:
 
 - **BotLife**, a life cycle for random player bots: they quest, level, run dungeons and raids, trade and join guilds on their own;
@@ -13,6 +18,9 @@ The fork follows upstream and adds work that is not upstream yet:
 Small, generic fixes are sent upstream as pull requests. Everything else is kept on the `custom` branch of this repository.
 
 > **Work in progress.** The code is tested with automated bots and by a small group of players. Expect rough edges.
+
+Found a bug or have a question? Open an [issue](https://github.com/quietpatcher/Legends-of-Azeroth-Pandaria-5.4.8/issues).
+Please include the quest, creature or dungeon and what you expected to happen.
 
 ## At a glance
 

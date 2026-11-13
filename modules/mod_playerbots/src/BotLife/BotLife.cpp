@@ -17,6 +17,7 @@
 #include "Creature.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
+#include "DB2Stores.h"
 #include "LFGMgr.h"
 void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-area) BotLifeDungeon.cpp
 #include "LastSpellCastValue.h"
@@ -63,6 +64,7 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-ar
 #include <mutex>
 #include <cmath>
 #include <set>
+#include <tuple>
 #include <unordered_set>
 #include <sstream>
 #include "ScriptedGossip.h"
@@ -200,6 +202,10 @@ void BotLifeMgr::LoadConfig()
     _roleRespecsPerHour = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.RoleRespecsPerHour", 80)));
     _gearRefillsPerHour = uint32(std::max(0, sConfigMgr->GetIntDefault("BotLife.GearRefillsPerHour", 150)));
     _maxLevelFactoryItemLevel = uint32(std::max(0, sConfigMgr->GetIntDefault("AiPlayerbot.MaxLevelFactoryItemLevel", 440)));
+    // to-do 265: at max level a bot above that item level may still respec when no armor becomes useless
+    _roleRespecMaxLevelSameStat = sConfigMgr->GetIntDefault("BotLife.RoleRespecMaxLevelSameStat", 1) != 0;
+    // to-do 265: a main hand far behind the level band is replaced like armor
+    _weaponBandCheck = sConfigMgr->GetIntDefault("BotLife.WeaponBandCheck", 1) != 0;
 }
 
 // to-do 265: hourly cap handed out per minute: perHour / 60 (rounded up, at least 1) in every minute slice.
@@ -8451,6 +8457,107 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
         if (countFree() && OpenLootContainers(bot, 6))
             EquipBagUpgrades(bot);
     }
+    // to-do 265: still too full after everything above. Quest-class items nobody in the log needs, and items
+    // without a sell price, pile up for good: they are never sold, and a bot with 40 of 40 slots refuses every quest drop and reward.
+    // Do what a player does: delete them, left-over quest items first, and stop as soon as minFree is reached.
+    if (freeSlots < minFree && bot->IsInWorld() && !bot->IsInCombat())
+    {
+        // everything the quest log still needs: source item, item objectives (also complete ones, for the turn-in), item drops
+        std::set<uint32> logNeeds;
+        for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            if (Quest const* quest = sObjectMgr->GetQuestTemplate(bot->GetQuestSlotQuestId(slot)))
+            {
+                if (quest->GetSrcItemId())
+                    logNeeds.insert(quest->GetSrcItemId());
+                for (QuestObjective const& obj : quest->GetObjectives())
+                    if (obj.Type == QUEST_OBJECTIVE_ITEM && obj.ObjectID)
+                        logNeeds.insert(obj.ObjectID);
+                for (uint32 itemId : quest->ItemDrop)
+                    if (itemId)
+                        logNeeds.insert(itemId);
+            }
+        // items a vendor takes as (part of) the payment for something (honor/token vendors)
+        static std::set<uint32> const vendorTokens = []
+        {
+            std::set<uint32> tokens;
+            for (uint32 i = 0; i < sItemExtendedCostStore.GetNumRows(); ++i)
+                if (ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(i))
+                    for (uint32 j = 0; j < MAX_ITEM_EXT_COST_ITEMS; ++j)
+                        if (cost->RequiredItem[j])
+                            tokens.insert(cost->RequiredItem[j]);
+            return tokens;
+        }();
+        // a locked box the bot cannot open: no lock skill at all, or too little of it
+        auto cannotOpen = [bot](ItemTemplate const* proto)
+        {
+            if (!(proto->Flags & ITEM_FLAG_HAS_LOOT) || !proto->LockID)
+                return false;
+            LockEntry const* lock = sLockStore.LookupEntry(proto->LockID);
+            if (!lock)
+                return false;
+            for (uint32 i = 0; i < MAX_LOCK_CASE; ++i)
+                if (lock->Type[i] == LOCK_KEY_SKILL && bot->GetSkillValue(SkillByLockType(LockType(lock->Index[i]))) >= lock->Skill[i])
+                    return false;
+            return true;
+        };
+        // what is never deleted
+        auto protectedItem = [&](Item* item, ItemTemplate const* proto)
+        {
+            if (!proto || item->ToBag() || proto->StartQuest || proto->ItemId == 6948 || logNeeds.count(proto->ItemId)
+                || proto->Class == ITEM_CLASS_KEY || proto->Class == ITEM_CLASS_CONTAINER || proto->Quality > ITEM_QUALITY_UNCOMMON
+                || proto->TotemCategory || vendorTokens.count(proto->ItemId) || bot->HasQuestForItem(proto->ItemId))
+                return true;
+            if (proto->Class == ITEM_CLASS_MISCELLANEOUS && (proto->SubClass == ITEM_SUBCLASS_JUNK_MOUNT || proto->SubClass == ITEM_SUBCLASS_JUNK_PET))
+                return true;
+            if ((proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON)
+                && (item->IsSoulBound() || proto->Bonding == BIND_ON_ACQUIRE || proto->Bonding == BIND_QUEST))
+                return true;
+            if (proto->Flags & ITEM_FLAG_HAS_LOOT)   // a loot container is opened elsewhere (only an unopenable lockbox is vendored below)
+                return !cannotOpen(proto);
+            // a usable item (potion, scroll, quest tool with an on-use spell) stays: a quest tool is not always listed as a quest objective
+                for (auto const& spell : proto->Spells)
+                    if (spell.SpellId && spell.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                        return true;
+            return false;
+        };
+        uint32 dropped = 0;
+        std::string names;
+        // 0: left-over quest items, 1: lockboxes the bot cannot open (vendored), 2: other items without a sell price
+        for (uint32 stage = 0; stage < 3 && freeSlots < minFree; ++stage)
+        {
+            std::vector<std::tuple<uint8, uint8, Item*>> all;
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    all.emplace_back(uint8(INVENTORY_SLOT_BAG_0), slot, item);
+            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+                if (Bag* bag = bot->GetBagByPos(bagSlot))
+                    for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                        if (Item* item = bag->GetItemByPos(uint8(slot)))
+                            all.emplace_back(bagSlot, uint8(slot), item);
+            for (auto const& [bagSlot, slot, item] : all)
+            {
+                if (freeSlots >= minFree)
+                    break;
+                ItemTemplate const* proto = item->GetTemplate();
+                if (protectedItem(item, proto))
+                    continue;
+                bool const lockbox = (proto->Flags & ITEM_FLAG_HAS_LOOT) != 0;   // not protected here means it cannot be opened
+                bool const quest = proto->Class == ITEM_CLASS_QUEST;
+                if (stage == 0 ? !quest : stage == 1 ? !(lockbox && proto->SellPrice) : (quest || lockbox || proto->SellPrice))
+                    continue;
+                if (dropped < 3)
+                    names += (dropped ? ", " : "") + proto->Name1;
+                if (stage == 1)
+                    money += uint64(proto->SellPrice) * item->GetCount();
+                bot->DestroyItem(bagSlot, slot, true);
+                ++freeSlots;
+                ++dropped;
+            }
+        }
+        if (dropped)
+            TC_LOG_INFO("playerbots", "BotLife {}: bags full, dropped {} items that nothing needs ({}{})", bot->GetName(), dropped, names,
+                dropped > 3 ? ", ..." : "");
+    }
     if (money)
     {
         Count(BLC_BAG_SELL);
@@ -8723,7 +8830,7 @@ namespace
                 if (proto.Duration || proto.Bonding == BIND_QUEST || proto.StartQuest || !proto.ItemLevel || proto.RequiredLevel > 90)
                     continue;
                 std::string const& name = proto.Name1;
-                if (name.find("Monster") != std::string::npos || name.find("Test") != std::string::npos || name.find("OLD") != std::string::npos
+                if (name.find("Monster") != std::string::npos || name.find("Test") != std::string::npos || name.find("TEST") != std::string::npos || name.find("OLD") != std::string::npos
                     || name.find("[") != std::string::npos || name.find("Deprecated") != std::string::npos || name.find("NPC") != std::string::npos)
                     continue;
                 list.push_back({ proto.ItemId, proto.RequiredLevel, proto.ItemLevel });
@@ -9576,6 +9683,19 @@ void BotLifeMgr::EnsureBags(Player* bot)
     }
 }
 
+// to-do 265: the same thresholds as the armor rule in EnsureGear; the item level a worn main hand must reach.
+// 0 = no check (below level 20). At max level the item level cap is unlimited, so band 89 is used.
+static uint32 WeaponBandMinItemLevel(uint32 level)
+{
+    if (level < 20)
+        return 0;
+    if (level >= sPlayerbotAIConfig->randomBotMaxLevel)
+        return uint32(0.7f * RandomItemManager::MaxItemLevelForLevel(89));
+    if (level >= 86)
+        return RandomItemManager::MaxItemLevelForLevel(level) - 60;
+    return uint32(0.7f * RandomItemManager::MaxItemLevelForLevel(std::max<uint32>((level / 10) * 10, 20)));
+}
+
 bool BotLifeMgr::EnsureWeapon(Player* bot)
 {
     auto isRanged = [](ItemTemplate const* proto)
@@ -9588,6 +9708,8 @@ bool BotLifeMgr::EnsureWeapon(Player* bot)
     // the block unusable; castdiag 26-9 found prot warriors with polearms)
     uint32 spec = bot->GetSpecialization();
     bool tank = spec == Specializations::SPEC_WARRIOR_PROTECTION || spec == Specializations::SPEC_PALADIN_PROTECTION;
+    // to-do 265: blood and unholy death knights fight with a two-hander (blood has no shield, dual wield is frost's)
+    bool const twoHandSpec = spec == Specializations::SPEC_DEATH_KNIGHT_BLOOD || spec == Specializations::SPEC_DEATH_KNIGHT_UNHOLY;
     // assassination / subtlety: Mutilate, Backstab and Dispatch need a dagger
     bool daggerSpec = spec == Specializations::SPEC_ROGUE_ASSASSINATION || spec == Specializations::SPEC_ROGUE_SUBTLETY;
     bool changed = false;
@@ -9596,16 +9718,41 @@ bool BotLifeMgr::EnsureWeapon(Player* bot)
 
     Item* current = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
     bool replace = false;
+    bool bandReplace = false;   // to-do 265: replaced because it is far behind the level band
+    uint32 oldItemLevel = 0;
+    uint32 oldSellPrice = 0;
+    bool bandSlotTaken = false;   // to-do 265: the refill slot is taken once per call
+    float oldScore = 0.0f;        // to-do 265: the worn weapon's value for this bot, random stats included
+    uint32 oldInvType = 0;
+    std::string oldName;
     if (current)
     {
         ItemTemplate const* cur = current->GetTemplate();
+        oldItemLevel = cur->ItemLevel;
+        oldName = cur->Name1;
+        oldSellPrice = cur->SellPrice;
+        oldInvType = cur->InventoryType;
+        oldScore = ItemGearScore(bot, current);
         // hunters shoot: a melee weapon in their (MoP: only) weapon slot leaves every shot unusable
         if ((hunter && !isRanged(cur)) || (tank && cur->InventoryType == INVTYPE_2HWEAPON)
+            || (twoHandSpec && cur->InventoryType != INVTYPE_2HWEAPON)
+            // to-do 265: a profession tool (Skinning Knife, item level 4) or the starter weapon is no weapon at 20+
+            || (level > 20 && cur->ItemLevel < 10)
             || (daggerSpec && cur->SubClass != ITEM_SUBCLASS_WEAPON_DAGGER))
         {
             // swap instead of destroying the equipped weapon (mass DestroyItem at login preceded the crash in
-            // Map::Update's update list on 26-9 23:21); the old weapon goes to the bags and is sold later
+            // Map::Update's update list on 26-9 23:21); the old weapon goes to the bags and is sold later. The one exception is
+            // a band replacement with full bags (below): a single weapon, rate-limited by the gear refill cap, on the bot's own
+            // map thread, never a mass destroy at login.
             replace = true;
+            current = nullptr;
+        }
+        // to-do 265: a main hand far behind the level band (a starter two-hander of item level 70 on a level 90
+        // bot) is replaced as well; a candidate must be better than the worn one, so a bot never swaps between two weak weapons
+        else if (_weaponBandCheck && cur->Quality != ITEM_QUALITY_HEIRLOOM && cur->ItemLevel < WeaponBandMinItemLevel(level))
+        {
+            replace = true;
+            bandReplace = true;
             current = nullptr;
         }
     }
@@ -9625,19 +9772,72 @@ bool BotLifeMgr::EnsureWeapon(Player* bot)
                     continue;
                 if (tank && proto->InventoryType == INVTYPE_2HWEAPON)
                     continue;
-                if (pass == 0 && (!sRandomItemMgr->FitsBot(bot, proto) || (daggerSpec && proto->SubClass != ITEM_SUBCLASS_WEAPON_DAGGER)))
+                if (twoHandSpec && proto->InventoryType != INVTYPE_2HWEAPON)
+                    continue;
+                if (bandReplace && proto->ItemLevel <= oldItemLevel)
+                    continue;
+                if (bandReplace)
+                {
+                    // to-do 265: same kind (a two-hander only for a two-hander, a one-hander for a one-hander;
+                    // ranged weapons are covered by isRanged above), the bot's own primary stat on the template (random-suffix
+                    // items carry none there) and better by the bot's own measure with the worn item's real stats, with the
+                    // margin BetterGear uses; otherwise the bag upgrade swaps the old weapon back at the next check
+                    auto oneHand = [](uint32 t) { return t == INVTYPE_WEAPON || t == INVTYPE_WEAPONMAINHAND; };
+                    if (!hunter && ((oldInvType == INVTYPE_2HWEAPON) != (proto->InventoryType == INVTYPE_2HWEAPON)
+                        || (oneHand(oldInvType) && !oneHand(proto->InventoryType))))
+                        continue;
+                    uint32 const primary = RandomItemManager::PrimaryStat(bot);
+                    bool hasPrimary = false;
+                    for (uint8 j = 0; j < MAX_ITEM_PROTO_STATS; ++j)
+                        if (proto->ItemStat[j].ItemStatType == primary && proto->ItemStat[j].ItemStatValue > 0)
+                            hasPrimary = true;
+                    if (!hasPrimary)
+                        continue;
+                    if (!(GearScore(bot, proto) > oldScore * 1.02f + 0.5f))
+                        continue;
+                }
+                // to-do 265: at max level the same item level cap as the factory (MaxLevelFactoryItemLevel);
+                // this list is sorted by item level and held an item level 483 one-hander
+                if (_maxLevelFactoryItemLevel && level >= sPlayerbotAIConfig->randomBotMaxLevel && proto->ItemLevel > _maxLevelFactoryItemLevel)
+                    continue;
+                // (13-11, to-do 265) a band replacement only takes a weapon that fits the spec: better the old weapon than a wrong one
+                if ((pass == 0 || bandReplace) && (!sRandomItemMgr->FitsBot(bot, proto) || (daggerSpec && proto->SubClass != ITEM_SUBCLASS_WEAPON_DAGGER)))
                     continue;
                 uint16 dest;
                 if (bot->CanEquipNewItem(EQUIPMENT_SLOT_MAINHAND, dest, c.entry, replace) != EQUIP_ERR_OK)
                     continue;
                 Item* item = nullptr;
+                // to-do 265: a band replacement counts against the shared gear refill cap; the weapon is known to
+                // be behind and a candidate that can be equipped exists. Cap taken: nothing is replaced now, MaintenanceTick looks
+                // again in a minute.
+                if (bandReplace && !bandSlotTaken)
+                {
+                    if (!TakeSlot(_gearSliceStart, _gearInSlice, _gearRefillsPerHour))
+                    {
+                        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+                            botAI->life.gearBandChecked = 255;
+                        break;
+                    }
+                    bandSlotTaken = true;
+                }
                 if (!replace)
                     item = bot->EquipNewItem(dest, c.entry, true);
                 else
                 {
                     ItemPosCountVec bagDest;
                     if (bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, bagDest, c.entry, 1) != EQUIP_ERR_OK)
-                        break;   // bags full: keep the old weapon for now
+                    {
+                        if (!bandReplace)
+                            break;   // bags full: keep the old weapon for now
+                        // to-do 265: nearly all bots walk around with full bags, so a band replacement would never
+                        // happen. CanEquipNewItem (swap = true) above already passed, so the new weapon fits the slot; the old one
+                        // is vendor trash anyway: pay its sell price, destroy it and equip the new one.
+                        bot->ModifyMoney(int64(oldSellPrice));
+                        bot->DestroyItem(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND, true);
+                        item = bot->EquipNewItem(dest, c.entry, true);
+                    }
+                    else
+                    {
                     Item* stored = bot->StoreNewItem(bagDest, c.entry, true);
                     uint16 eqDest;
                     if (stored && bot->CanEquipItem(EQUIPMENT_SLOT_MAINHAND, eqDest, stored, true) == EQUIP_ERR_OK)
@@ -9645,13 +9845,17 @@ bool BotLifeMgr::EnsureWeapon(Player* bot)
                         bot->SwapItem(stored->GetPos(), eqDest);
                         item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
                     }
+                    }
                 }
                 if (item)
                 {
                     bot->AutoUnequipOffhandIfNeed();
                     current = item;
                     changed = true;
-                    if (_debug)
+                    if (bandReplace)
+                        TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): weapon {} (ilvl {}) replaces {} (ilvl {}, behind the level band)",
+                            bot->GetName(), level, proto->Name1, proto->ItemLevel, oldName, oldItemLevel);
+                    else if (_debug)
                         TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): weapon {} ({})", bot->GetName(), level, proto->Name1, c.entry);
                 }
                 break;
@@ -10190,31 +10394,11 @@ bool BotLifeMgr::RoleRespec(PlayerbotAI* botAI)
     // shortage (never leave a role that is under its target: no oscillation)
     if (share[current] <= roleTarget[current] + tol && !(current == 2 && share[2] > roleTarget[2]))
         return false;
-    // the missing role (share more than RoleTolerance points under its target) the class can play, the biggest gap first
-    dbc::TalentTabs const tabs = dbc::GetClassSpecializations(bot->GetClass());
-    uint32 const tabCount = bot->GetClass() == CLASS_DRUID ? 4 : 3;
-    int32 want = -1;
-    float gap = 0.0f;
-    for (uint32 i = 0; i < tabCount && i < tabs.size(); ++i)
-    {
-        if (!tabs[i])
-            continue;
-        uint8 const role = RoleOfSpec(tabs[i]);
-        float const g = roleTarget[role] - share[role];
-        if (role != current && g > tol && g > gap)
-        {
-            gap = g;
-            want = role;
-        }
-    }
-    // 265: a strongly skewed band (gap > 8) converges twice as fast
-    if (want < 0 || urand(0, 99) >= (gap > 8.0f ? 60u : 30u))
-        return false;
-    // at max level a bot only respecs while it still wears the fresh-90 baseline (average armor item
-    // level at or below MaxLevelFactoryItemLevel): gear earned in dungeons and raids is never made useless by a role change,
-    // and the baseline for the new role costs nothing the bot had earned
+    // at max level a bot above the item level cap may only respec within its own primary stat
+    // (no armor becomes useless; owner decision 12-11: even the playfield between dps, tanks and healers), see below
     uint32 const level = bot->GetLevel();
     bool const maxLevel = level >= sPlayerbotAIConfig->randomBotMaxLevel;
+    bool aboveCap = false;
     if (maxLevel && _maxLevelFactoryItemLevel)
     {
         static uint8 const armorSlots[] = { EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_SHOULDERS, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WAIST,
@@ -10226,9 +10410,44 @@ bool BotLifeMgr::RoleRespec(PlayerbotAI* botAI)
                 sum += item->GetTemplate()->ItemLevel;
                 ++worn;
             }
-        if (worn && sum / worn > _maxLevelFactoryItemLevel)
-            return false;
+        aboveCap = worn && sum / worn > _maxLevelFactoryItemLevel;
     }
+    // at max level a bot only respecs while it still wears the fresh-90 baseline (average armor item
+    // level at or below MaxLevelFactoryItemLevel): gear earned in dungeons and raids is never made useless by a role change,
+    // and the baseline for the new role costs nothing the bot had earned. Exception (13-11): a role whose spec has the same
+    // primary stat as the current one
+    if (aboveCap && !_roleRespecMaxLevelSameStat)
+        return false;
+    uint32 const currentStat = RandomItemManager::PrimaryStatForSpec(bot->GetClass(), uint32(bot->GetSpecialization()));
+    // the missing role (share more than RoleTolerance points under its target) the class can play, the biggest gap first
+    dbc::TalentTabs const tabs = dbc::GetClassSpecializations(bot->GetClass());
+    uint32 const tabCount = bot->GetClass() == CLASS_DRUID ? 4 : 3;
+    int32 want = -1;
+    float gap = 0.0f;
+    // above the cap a role only counts when every spec the class has for it keeps the primary
+    // stat: the spec within the role is drawn afterwards, and a restoration shaman must not come out as enhancement
+    bool statBlocked[3] = {};
+    if (aboveCap)
+        for (uint32 i = 0; i < tabCount && i < tabs.size(); ++i)
+            if (tabs[i] && RandomItemManager::PrimaryStatForSpec(bot->GetClass(), uint32(tabs[i])) != currentStat)
+                statBlocked[RoleOfSpec(tabs[i])] = true;
+    for (uint32 i = 0; i < tabCount && i < tabs.size(); ++i)
+    {
+        if (!tabs[i])
+            continue;
+        uint8 const role = RoleOfSpec(tabs[i]);
+        float const g = roleTarget[role] - share[role];
+        if (statBlocked[role])
+            continue;
+        if (role != current && g > tol && g > gap)
+        {
+            gap = g;
+            want = role;
+        }
+    }
+    // 265: a strongly skewed band (gap > 8) converges twice as fast
+    if (want < 0 || urand(0, 99) >= (gap > 8.0f ? 60u : 30u))
+        return false;
     // BotLife.RoleRespecsPerHour respecs per hour for all bots together, handed out per minute (6 an hour converged too slowly:
     // ~50 h for the prod skew)
     if (!TakeSlot(_respecSliceStart, _respecInSlice, _roleRespecsPerHour))
@@ -10243,14 +10462,26 @@ bool BotLifeMgr::RoleRespec(PlayerbotAI* botAI)
     // with natural progression - the owner's wish is the right gear for the right spec. Counts against the gear refill cap;
     // when the cap is taken the bot keeps what it has and the next ten-level check (MaintenanceTick) looks again.
     if (TakeSlot(_gearSliceStart, _gearInSlice, _gearRefillsPerHour))
+    {
+        // to-do 265: InitEquipment(true) keeps a worn weapon that has the right primary stat and a high enough
+        // item level, whatever its type: a protection warrior/paladin would keep a two-hander and no shield, an arms warrior
+        // the one-hander and shield of its tank days. Main hand and off hand that do not fit the new spec (weapon type per
+        // spec, shield rules, primary stat) are removed first so the factory refills them (at max level capped at
+        // MaxLevelFactoryItemLevel); EnsureWeapon fills what is still empty (a tank gets a one-hander and a shield).
+        for (uint8 slot : { EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND })
+            if (Item* worn = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (!sRandomItemMgr->FitsBot(bot, worn->GetTemplate()))
+                    bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
         factory.InitEquipment(true);
+        EnsureWeapon(bot);
+    }
     else
         botAI->life.gearBandChecked = 255;
     Count(BLC_ROLE_RESPEC);
     // (to-do 265) always logged, also without BotLife.Debug: a respec is rare (BotLife.RoleRespecsPerHour) and the one proof the
     // role balance works
-    TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): role respec {} -> {} (spec now {})", bot->GetName(), uint32(bot->GetLevel()),
-        uint32(current), want, uint32(bot->GetSpecialization()));
+    TC_LOG_INFO("playerbots", "BotLife {} (lvl {}): role respec {} -> {} (spec now {}){}", bot->GetName(), uint32(bot->GetLevel()),
+        uint32(current), want, uint32(bot->GetSpecialization()), aboveCap ? " [max-level same-stat]" : "");
     return true;
 }
 

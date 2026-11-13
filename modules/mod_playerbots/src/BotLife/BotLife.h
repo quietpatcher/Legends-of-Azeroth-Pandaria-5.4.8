@@ -822,6 +822,8 @@ private:
     uint32 _roleRespecsPerHour = 80;          // BotLife.RoleRespecsPerHour (all bots together)
     uint32 _gearRefillsPerHour = 150;         // BotLife.GearRefillsPerHour (all bots together)
     uint32 _maxLevelFactoryItemLevel = 440;   // AiPlayerbot.MaxLevelFactoryItemLevel: the factory never exceeds this at max level
+    bool _roleRespecMaxLevelSameStat = true;  // BotLife.RoleRespecMaxLevelSameStat: above the item level cap a max level bot may respec within its primary stat
+    bool _weaponBandCheck = true;  // BotLife.WeaponBandCheck: a main hand far behind the level band is replaced like armor
     uint32 _raidMinutes = 75;
     uint32 _maxQuests = 3;
     uint32 _questTimeout = 25 * 60 * 1000;

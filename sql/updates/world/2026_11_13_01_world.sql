@@ -1,0 +1,13 @@
+-- To-do 436 (quest 27045 Waiting to Exsanguinate, Silverpine): the armoire scene only showed Lord Darius Crowley; Packleader Ivar
+-- Bloodfang stood just outside the picture during his own lines.
+-- Cause: while the player sits in the armoire vehicle (44893) the client shows a fixed seat camera. Its direction follows the
+--   orientation the vehicle is summoned with (spell 83756, target position), about that orientation plus 270 degrees; it does not
+--   follow the player camera, the player facing or a server viewpoint bind. With orientation 0 the view pointed at Crowley only.
+-- Change: orientation 0 -> 5.699 (view direction 236.5 degrees, the middle between Crowley at bearing 255 and Bloodfang at
+--   bearing 218 seen from the armoire): Crowley is on the left and Bloodfang on the right of the picture for the whole scene.
+-- Source: own client test on the test realm 13-11-2026 (two runs with the player turned 170 degrees gave the same picture;
+--   orientation 4.128 showed the wall, 5.699 shows both speakers); positions of the armoire and both speakers from our world DB.
+--   No retail value for this orientation is known.
+-- Rollback:
+--   UPDATE `spell_target_position` SET `target_orientation`=0 WHERE `id`=83756 AND `effIndex`=0;
+UPDATE `spell_target_position` SET `target_orientation`=5.699 WHERE `id`=83756 AND `effIndex`=0;

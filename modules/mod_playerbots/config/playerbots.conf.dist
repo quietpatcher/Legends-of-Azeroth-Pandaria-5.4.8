@@ -1737,6 +1737,18 @@ BotLife.RoleTargetTank = 20
 BotLife.RoleTargetHealer = 20
 BotLife.RoleTolerance = 5
 BotLife.RoleRespecsPerHour = 80
+# 1 = a max level bot that wears gear above MaxLevelFactoryItemLevel (so it may not respec under the rule above) may still
+# switch to a role whose spec uses the SAME primary stat as its current one (arms/fury/retribution -> protection, frost/
+# unholy -> blood, feral -> guardian, windwalker -> brewmaster, shadow/discipline <-> holy, elemental <-> restoration, ...):
+# no armor becomes useless. A change of primary stat stays tied to the item level rule. Weapons and shield that do not fit
+# the new spec are replaced by factory items. 0 = the old behaviour (no respec above the item level cap).
+BotLife.RoleRespecMaxLevelSameStat = 1
+
+# 1 = the main hand weapon is checked against the level band like armor: from level 20 a weapon whose item level is far below
+# the band (level 20..85: under 0.7 x the item level of the decade floor, 86..89: 60 under the cap, max level: under 0.7 x
+# the cap of level 89) is replaced by a better weapon that fits the spec (a death knight no longer keeps the starter
+# two-hander up to level 90). Heirlooms are never replaced; without a better candidate the old weapon stays. 0 = off.
+BotLife.WeaponBandCheck = 1
 
 # Gear check every ten levels: when a bot enters a new level band (20, 30, ... 80, also at login and after a relevel) its
 # nine armor pieces are compared with 0.7 x the item level of the band (86-89: level item level - 60). A bot that is behind

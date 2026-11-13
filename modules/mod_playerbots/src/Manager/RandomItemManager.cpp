@@ -384,6 +384,20 @@ bool RandomItemManager::ShouldEquipWeaponForSpec(Classes playerclass, Specializa
             }
             break;
         }
+        case CLASS_DEATH_KNIGHT:
+        {
+            // to-do 265: death knights had no entry here (empty sets: no weapon fitted any spec, so a respec
+            // destroyed the main hand and EnsureWeapon handed out the first one-hander it found). Blood and unholy fight with a
+            // two-hander (blood cannot use a shield); frost takes either a two-hander or two one-handers.
+            mh_weapons = { ITEM_SUBCLASS_WEAPON_SWORD2, ITEM_SUBCLASS_WEAPON_AXE2, ITEM_SUBCLASS_WEAPON_MACE2,
+                          ITEM_SUBCLASS_WEAPON_POLEARM };
+            if (spec == Specializations::SPEC_DEATH_KNIGHT_FROST)
+            {
+                mh_weapons.insert({ ITEM_SUBCLASS_WEAPON_SWORD, ITEM_SUBCLASS_WEAPON_AXE, ITEM_SUBCLASS_WEAPON_MACE });
+                oh_weapons = { ITEM_SUBCLASS_WEAPON_SWORD, ITEM_SUBCLASS_WEAPON_AXE, ITEM_SUBCLASS_WEAPON_MACE };
+            }
+            break;
+        }
         case CLASS_HUNTER:
         {
             mh_weapons = { ITEM_SUBCLASS_WEAPON_BOW, ITEM_SUBCLASS_WEAPON_CROSSBOW, ITEM_SUBCLASS_WEAPON_GUN };
@@ -837,8 +851,13 @@ uint32 RandomItemManager::FindBestItemForLevelAndEquip(Player* bot, InventoryTyp
 // MoP primary stat of the bot's spec
 uint32 RandomItemManager::PrimaryStat(Player* bot)
 {
-    uint32 spec = bot->GetSpecialization();
-    switch (bot->GetClass())
+    return PrimaryStatForSpec(bot->GetClass(), uint32(bot->GetSpecialization()));
+}
+
+// to-do 265: also for a spec the bot does not have (yet), for the role respec
+uint32 RandomItemManager::PrimaryStatForSpec(uint8 playerClass, uint32 spec)
+{
+    switch (playerClass)
     {
         case CLASS_WARRIOR:
         case CLASS_DEATH_KNIGHT:

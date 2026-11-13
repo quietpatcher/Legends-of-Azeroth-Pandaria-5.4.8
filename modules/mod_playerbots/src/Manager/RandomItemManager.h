@@ -41,6 +41,7 @@ public:
     bool CanEquipSubArmor(Player* bot, ItemTemplate const* proto);
     // MoP rules shared with BotLife (bag upgrades, quest rewards, auction buys)
     static uint32 PrimaryStat(Player* bot);                              // ITEM_MOD_STRENGTH / AGILITY / INTELLECT
+    static uint32 PrimaryStatForSpec(uint8 playerClass, uint32 spec);    // the same for a given class + specialization
     static bool HasWrongPrimaryStat(Player* bot, ItemTemplate const* proto);
     bool FitsBot(Player* bot, ItemTemplate const* proto);               // armor type + primary stat (+ weapon type)
     // the highest item level a character of this level can sensibly wear. Thousands of items have no

@@ -1025,5 +1025,5 @@ were extracted from old commits):
 * DeltaTho and leelf00: upstream pull requests (starting zones, world and script fixes) that this fork builds on
 * The AzerothCore project and the authors of mod-playerbots, the base of modules/mod_playerbots
 * ingussuveiks-dev: core and dungeon fixes taken from their fork (listed in the sync commit messages)
-* 1LineAtaTime: a fork with a broad playerbots module for the same upstream. Comparing the two taught us a lot, and their release notes credit our pull requests
+* 1LineAtaTime: LoA-Pandaria-Playerbots, a full playerbots module for the same upstream (https://github.com/1LineAtaTime/LoA-Pandaria-Playerbots). This fork draws on it and builds on it, and their release notes credit our pull requests
 * Everyone who played on the test and public realms and reported what they found
