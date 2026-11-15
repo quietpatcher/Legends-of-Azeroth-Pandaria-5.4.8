@@ -267,7 +267,7 @@ namespace
         for (uint32 slot = 0; slot < maxSlot; ++slot)
         {
             LootItem* item = loot->LootItemInSlot(slot, bot);
-            if (!item || item->is_looted)
+            if (!item || item->is_looted || !BotMayTakeLoot(bot, loot, item))
                 continue;
             bot->StoreLootItem(uint8(slot), loot);
         }

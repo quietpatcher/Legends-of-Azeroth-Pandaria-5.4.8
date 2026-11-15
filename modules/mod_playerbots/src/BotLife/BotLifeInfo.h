@@ -66,6 +66,17 @@ struct BotLifeInfo
     float fightVictimHp = 0.0f;
     float fightBotHp = 0.0f;
     uint32 fightSince = 0;
+    uint32 fightSeen = 0;            // last time the open-world check saw this bot with a victim
+    // the creature of the last fight dropped as fruitless, until when it is remembered (ms), what the bot did about it
+    // since (0 nothing yet, 1 walking out of its reach, 2 walked away once), the point it walks to and the deadline (ms)
+    // of the running stage
+    ObjectGuid droppedFoe;
+    uint32 droppedFoeUntil = 0;
+    uint8 droppedFoeStage = 0;
+    float droppedFoeX = 0.0f;
+    float droppedFoeY = 0.0f;
+    float droppedFoeZ = 0.0f;
+    uint32 droppedFoeDeadline = 0;
 
     // pending cross-thread actions. World-thread formation code must NOT mutate another bot directly
     // (TeleportTo/CombatStop/Reset interrupt spells + touch combat state while the bot runs on its own map thread ->

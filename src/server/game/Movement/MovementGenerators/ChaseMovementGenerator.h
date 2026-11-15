@@ -48,6 +48,8 @@ class ChaseMovementGenerator : public MovementGenerator, public AbstractFollower
 
         void unitSpeedChanged() override { _lastTargetPosition.reset(); }
 
+        bool HasSameParameters(Unit const* target, ChaseRange const& range, ChaseAngle const& angle) const;
+
     private:
         static constexpr uint32 RANGE_CHECK_INTERVAL = 100; // time (ms) until we attempt to recalculate
 

@@ -1,0 +1,12 @@
+-- To-do 421 (Andorhal, Western Plaguelands): a level 54-55 Soulless Ghoul (1794) stands in the middle of the level 34-40
+-- battle for Andorhal and kills players of the level the zone is made for.
+-- Cause: spawn 15154 is a leftover from before Cataclysm. The creature left the game with the new Andorhal; our world
+--   database kept the old spawn (it is the only spawn of 1794).
+-- Change: remove spawn 15154. The template stays.
+-- Source: the Cataclysm Preservation world database (built from sniffs) and the SkyFire 5.4.8 world database have no spawn
+--   of 1794; Wowhead lists creature 1794 with "The location of this NPC is unknown". Checked 14-11-2026.
+-- Rollback:
+--   DELETE FROM `creature` WHERE `guid`=15154;
+--   INSERT INTO `creature` (`guid`,`id`,`map`,`zoneId`,`areaId`,`spawnMask`,`phaseMask`,`phaseId`,`phaseGroup`,`modelid`,`equipment_id`,`position_x`,`position_y`,`position_z`,`orientation`,`spawntimesecs`,`spawntimesecs_max`,`wander_distance`,`currentwaypoint`,`curhealth`,`curmana`,`MovementType`,`npcflag`,`npcflag2`,`unit_flags`,`unit_flags2`,`dynamicflags`,`ScriptName`,`walk_mode`,`VerifiedBuild`) VALUES
+--   (15154,1794,0,28,193,1,1,0,0,0,0,1257.01,-1489,59.677,4.818,600,0,0,0,2634,2041,0,0,0,0,0,0,"",0,0);
+DELETE FROM `creature` WHERE `guid`=15154 AND `id`=1794;

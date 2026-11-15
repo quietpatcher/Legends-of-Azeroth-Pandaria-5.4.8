@@ -76,6 +76,14 @@ ChaseMovementGenerator::ChaseMovementGenerator(Unit *target, Optional<ChaseRange
 }
 ChaseMovementGenerator::~ChaseMovementGenerator() = default;
 
+bool ChaseMovementGenerator::HasSameParameters(Unit const* target, ChaseRange const& range, ChaseAngle const& angle) const
+{
+    return GetTarget() == target && _range && _angle
+        && _range->MinRange == range.MinRange && _range->MinTolerance == range.MinTolerance
+        && _range->MaxTolerance == range.MaxTolerance && _range->MaxRange == range.MaxRange
+        && _angle->RelativeAngle == angle.RelativeAngle && _angle->Tolerance == angle.Tolerance;
+}
+
 bool ChaseMovementGenerator::Initialize(Unit* /*owner*/)
 {
     RemoveFlag(MOVEMENTGENERATOR_FLAG_INITIALIZATION_PENDING | MOVEMENTGENERATOR_FLAG_DEACTIVATED);

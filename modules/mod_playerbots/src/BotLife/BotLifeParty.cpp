@@ -5,6 +5,8 @@
  */
 
 #include "BotLife.h"
+#include "CharacterCache.h"
+#include "PlayerbotAIConfig.h"
 
 #include "Creature.h"
 #include "DatabaseEnv.h"
@@ -246,10 +248,11 @@ void BotLifeMgr::DisbandOrphanGroups()
         {
             Player* member = ObjectAccessor::FindConnectedPlayer(slot.guid);
             PlayerbotAI* memberAI = member ? GET_PLAYERBOT_AI(member) : nullptr;
-            // offline members: only random bots are allowed to be dropped (a real player's group stays)
+            // offline members: only random bots are allowed to be dropped (a real player's group stays). The account decides:
+            // a bot that has left the current rotation is still a bot, and its old group kept the online members idle for good.
             if (!member)
             {
-                if (!sRandomPlayerbotMgr->IsRandomBot(slot.guid.GetCounter()))
+                if (!sPlayerbotAIConfig->IsInRandomAccountList(sCharacterCache->GetCharacterAccountIdByGuid(slot.guid)))
                     real = true;
                 continue;
             }
@@ -1018,6 +1021,8 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     }
     if (bot->IsInCombat())
     {
+        if (DropFruitlessFight(bot, t, now))
+            return true;
         Dismount(bot);
         CombatPotion(bot, t, now);
         if (CombatSelfHeal(bot, t, now))
@@ -1041,7 +1046,8 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     if (now >= t.nextBagCheck)
     {
         t.nextBagCheck = now + urand(45000, 75000);
-        ManageBags(bot);
+        AcceptFromStarterItem(bot, t, now);
+        ManageBags(bot, 4, true, &t);
     }
 
     if (_rest && DoRest(bot, t, now))

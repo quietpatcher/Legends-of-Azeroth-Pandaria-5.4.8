@@ -39,6 +39,11 @@ class Player;
 class PlayerbotAI;
 class Quest;
 class Transport;
+struct Loot;
+struct LootItem;
+
+// what a player could take out of this loot: conditions, smart loot, quest status, and the chance of a world drop
+bool BotMayTakeLoot(Player* bot, Loot* loot, LootItem* item);
 class Unit;
 class WorldObject;
 struct QuestObjective;
@@ -594,7 +599,9 @@ private:
     // loot / bags / rest
     bool DoLoot(Player* bot, BotLifeInfo& t, uint32 now, float maxDist = 40.0f, uint32 maxTime = 20000);   // (batch 11g: reach / time)
     void LootCorpse(Player* bot, Creature* creature, bool area = true);   // (batch 11g: area loot as in MoP)
-    void ManageBags(Player* bot, uint32 minFree = 4, bool sellMaterials = true);
+    void ManageBags(Player* bot, uint32 minFree = 4, bool sellMaterials = true, BotLifeInfo const* t = nullptr);   // t: the skip list keeps a starter unprotected
+    bool StarterNever(Player* bot, Quest const* quest);
+    bool AcceptFromStarterItem(Player* bot, BotLifeInfo& t, uint32 now);   // accepts the quest of a starter item in the bags, one per call
     uint32 OpenLootContainers(Player* bot, uint32 max);
     bool BagsFullOfMaterials(Player* bot) const;
     bool DoRest(Player* bot, BotLifeInfo& t, uint32 now);
@@ -624,6 +631,8 @@ private:
     void SkipDungeonTarget(Player* bot, BotLifeInfo& t, char const* reason);
     uint32 OpenDoorsNear(Player* bot, float range);
     bool DungeonTargetValid(Player* bot, BotLifeInfo const& t, BotLifeInstanceSpawn const& s, uint32 diffBit, Creature*& creature) const;
+    bool DropFruitlessFight(Player* bot, BotLifeInfo& t, uint32 now);   // map thread
+    bool LeaveDroppedFight(Player* bot, BotLifeInfo& t, uint32 now);    // map thread
     bool PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now);   // map thread
     bool PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now);
     void PartyShareQuest(Player* leader, Quest const* quest, Creature* npc);

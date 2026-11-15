@@ -598,14 +598,23 @@ void WorldSession::LogoutPlayer(bool save)
     {
         //sScriptMgr->OnBeforePlayerLogout(_player);
 
-        if (uint64 lguid = _player->GetLootGUID())
-            DoLootReleaseAll();
+        // During process exit a player can still be attached to a session after the maps were destroyed.
+        // Such a player has no map, so every call that needs a map is skipped; the character is still saved.
+        bool const hasMap = _player->FindMap() != nullptr;
+
+        if (hasMap)
+            if (uint64 lguid = _player->GetLootGUID())
+                DoLootReleaseAll();
 
         sScriptMgr->OnPlayerbotLogout(_player);
 
         ///- If the player just died before logging out, make him appear as a ghost
         //FIXME: logout must be delayed in case lost connection with client in time of combat
-        if (_player->GetDeathTimer())
+        if (!hasMap)
+        {
+            // no map: death, combat and graveyard handling needs a map and cannot run
+        }
+        else if (_player->GetDeathTimer())
         {
             _player->GetThreatManager().RemoveMeFromThreatLists();
             _player->BuildPlayerRepop();
@@ -662,14 +671,16 @@ void WorldSession::LogoutPlayer(bool save)
         }
 
         //drop a flag if player is carrying it
-        if (Battleground* bg = _player->GetBattleground())
-            bg->EventPlayerLoggedOut(_player);
+        if (hasMap)
+            if (Battleground* bg = _player->GetBattleground())
+                bg->EventPlayerLoggedOut(_player);
 
         ///- Teleport to home if the player is in an invalid instance
-        if (!_player->m_InstanceValid && !_player->IsGameMaster())
+        if (hasMap && !_player->m_InstanceValid && !_player->IsGameMaster())
             _player->TeleportTo(_player->m_homebindMapId, _player->m_homebindX, _player->m_homebindY, _player->m_homebindZ, _player->GetOrientation());
 
-        sOutdoorPvPMgr->HandlePlayerLeaveZone(_player, _player->GetZoneId());
+        if (hasMap)
+            sOutdoorPvPMgr->HandlePlayerLeaveZone(_player, _player->GetZoneId());
 
         for (int i=0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
         {

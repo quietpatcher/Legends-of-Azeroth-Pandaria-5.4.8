@@ -6741,11 +6741,18 @@ SpellCastResult Spell::CheckCast(bool strict)
                     m_preGeneratedPath->SetPathLengthLimit(range);
 
                     bool result = m_preGeneratedPath->CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), false);
+                    // A creature that is not player controlled may charge along the straight line the generator falls back to
+                    // when the navigation mesh has no polygon at its position (under water, caves without mesh data). The
+                    // line of sight check above already passed, and the abuse these path checks guard against (players)
+                    // does not apply to creature scripts.
+                    bool const creatureCaster = unitCaster->GetTypeId() == TYPEID_UNIT && !unitCaster->IsControlledByPlayer();
+                    bool const meshHole = creatureCaster && m_preGeneratedPath->GetPathType() == PATHFIND_NOPATH;
+
                     if (m_preGeneratedPath->GetPathType() & PATHFIND_SHORT)
                         return SPELL_FAILED_NOPATH;
-                    else if (!result || m_preGeneratedPath->GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+                    else if (!meshHole && (!result || m_preGeneratedPath->GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
                         return SPELL_FAILED_NOPATH;
-                    else if (m_preGeneratedPath->IsInvalidDestinationZ(target)) // Check position z, if not in a straight line
+                    else if (!creatureCaster && m_preGeneratedPath->IsInvalidDestinationZ(target)) // Check position z, if not in a straight line
                         return SPELL_FAILED_NOPATH;
 
                     m_preGeneratedPath->ShortenPathUntilDist(PositionToVector3(target), objSize); // move back

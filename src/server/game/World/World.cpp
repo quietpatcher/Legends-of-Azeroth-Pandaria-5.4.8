@@ -160,19 +160,8 @@ World::World()
 /// World destructor
 World::~World()
 {
-    ///- Empty the kicked session set
-    while (!m_sessions.empty())
-    {
-        // not remove from queue, prevent loading new sessions
-        delete m_sessions.begin()->second;
-        m_sessions.erase(m_sessions.begin());
-    }
-
-    while (!_offlineSessions.empty())
-    {
-        delete _offlineSessions.begin()->second;
-        _offlineSessions.erase(_offlineSessions.begin());
-    }
+    ///- Normally empty: Main deletes all sessions through DeleteAllSessions() while the databases are still open
+    DeleteAllSessions();
 
     CliCommandHolder* command = NULL;
     while (cliCmdQueue.next(command))
@@ -181,7 +170,6 @@ World::~World()
     VMAP::VMapFactory::clear();
     MMAP::MMapFactory::clear();
 
-    /// @todo free addSessQueue
 
     for (auto&& setting : m_devToolSettings)
         delete setting.second.second;
@@ -3381,6 +3369,41 @@ void World::SendServerMessage(ServerMessageType type, const char *text, Player* 
         player->GetSession()->SendPacket(&data);
     else
         SendGlobalMessage(&data);
+}
+
+/// Log out every session that still has a character while the maps still exist, so the character is saved the normal way
+void World::LogoutAllSessions()
+{
+    for (SessionMap::const_iterator itr = m_sessions.begin(); itr != m_sessions.end(); ++itr)
+        if (itr->second && itr->second->GetPlayer())
+            itr->second->LogoutPlayer(true);
+
+    for (SessionMap::const_iterator itr = _offlineSessions.begin(); itr != _offlineSessions.end(); ++itr)
+        if (itr->second && itr->second->GetPlayer())
+            itr->second->LogoutPlayer(true);
+}
+
+/// Delete every session this class owns (active, offline and not yet added ones).
+/// Must run while the databases are still open, because a session destructor writes to the login database.
+/// Bot sessions are owned by the playerbot manager and are not in these containers.
+void World::DeleteAllSessions()
+{
+    WorldSession* queued = nullptr;
+    while (addSessQueue.next(queued))
+        delete queued;
+
+    while (!m_sessions.empty())
+    {
+        // not remove from queue, prevent loading new sessions
+        delete m_sessions.begin()->second;
+        m_sessions.erase(m_sessions.begin());
+    }
+
+    while (!_offlineSessions.empty())
+    {
+        delete _offlineSessions.begin()->second;
+        _offlineSessions.erase(_offlineSessions.begin());
+    }
 }
 
 void World::UpdateSessions(uint32 diff)

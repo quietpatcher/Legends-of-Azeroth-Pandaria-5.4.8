@@ -720,6 +720,10 @@ struct npc_darnell : public ScriptedAI
         m_method = TirisfalGlades::DARNELL_METHOD_00;
         m_player = nullptr; // nooit ongeinitialiseerd/dangling
         m_playerGUID = ObjectGuid::Empty;
+        m_arrived = false;
+        m_pointId = 0;
+        m_counter = TirisfalGlades::COUNTER_0;
+        m_path = TirisfalGlades::DARNELL_PATH_00;
 
         if (Unit* npc = me->GetCharmerOrOwner())
         {
@@ -732,14 +736,17 @@ struct npc_darnell : public ScriptedAI
                     m_method = TirisfalGlades::DARNELL_METHOD_01;
                     m_phase = TirisfalGlades::DARNELL_PHASE_01;
                     m_timer = 1 * TimeConstants::IN_MILLISECONDS;
-                    m_counter = TirisfalGlades::COUNTER_0;
-                    m_path = TirisfalGlades::DARNELL_PATH_00;
                     m_FoundGround = false;
                     m_ItemsFound = false;
                     m_OldPosition = m_player->GetPositionAlternate();
                     m_player_pos = m_player->GetPositionAlternate();
                     m_player_area = m_player->GetAreaId();
-                    Talk(TirisfalGlades::DARNELL_TEXT_01, m_player);
+                    // The summon spell evades him once right after the spawn, which runs Reset a second time: greet only once
+                    if (!m_greeted)
+                    {
+                        m_greeted = true;
+                        Talk(TirisfalGlades::DARNELL_TEXT_01, m_player);
+                    }
                 }
             }
         }
@@ -750,27 +757,15 @@ struct npc_darnell : public ScriptedAI
         if (!CheckPlayerValid())
             return;
 
-        if (type == MovementGeneratorType::POINT_MOTION_TYPE)
+        // Only the point he was last sent to counts as arrived
+        if (type == MovementGeneratorType::POINT_MOTION_TYPE && id == m_pointId)
             m_arrived = true;
     }
 
-    void MoveInLineOfSight(Unit* who) override
-    {
-        // the player (bot) may have logged out -> m_player dangles; look it up again by GUID
-        if (!m_playerGUID || who->GetGUID() != m_playerGUID)
-            return;
-        m_player = who->ToPlayer();
-        if (!m_player)
-            return;
-
-        m_player_pos = who->GetPositionAlternate();
-        m_player_area = who->GetAreaId();
-
-        if (m_method == TirisfalGlades::DARNELL_METHOD_01 && me->GetMotionMaster()->GetCurrentMovementGeneratorType() != MovementGeneratorType::FOLLOW_MOTION_TYPE)
-            if (m_arrived)
-                if (me->GetDistance(m_player) < 4.0f)
-                    me->GetMotionMaster()->MoveFollow(m_player, 0.0f, 0.0f);
-    }
+    // He leads the player and waits for him at each point; he must not switch to following the player when the player catches
+    // up with him there (that made him trail the player around instead of going on), and he does not go for anything that comes
+    // into sight on the way.
+    void MoveInLineOfSight(Unit* /*who*/) override { }
 
     void UpdateAI(const uint32 diff) override
     {
@@ -793,92 +788,84 @@ struct npc_darnell : public ScriptedAI
             return;
         }
 
+        uint8 step = TirisfalGlades::DARNELL_PATH_00;
         switch (GetPlaceDescription())
         {
             case PlaceDescription::Outsite:
-                InviteToFollow();
+                step = TirisfalGlades::DARNELL_PATH_01;
                 break;
             case PlaceDescription::Entrance:
-                InviteToFollowDeeper1();
+                step = TirisfalGlades::DARNELL_PATH_02;
                 break;
             case PlaceDescription::Stairs_1:
-                InviteToFollowDeeper2();
+                step = TirisfalGlades::DARNELL_PATH_03;
                 break;
             case PlaceDescription::Stairs_2:
-                InviteToFollowToGround();
+                step = TirisfalGlades::DARNELL_PATH_04;
                 break;
             case PlaceDescription::Ground:
                 SearchOnGround();
-                break;
+                return;
+            default:
+                return;
         }
-    }
 
-    void InviteToFollow()
-    {
+        // The player's place alone does not move him on: the crypt entrance where he waits first and the top of the stairs
+        // still lie in the Deathknell Graves area, so a player who follows him there never counts as inside. Once he waits at a
+        // point and the player has caught up with him, he goes on to the next one.
+        if (m_arrived && m_path >= TirisfalGlades::DARNELL_PATH_01 && m_path < TirisfalGlades::DARNELL_PATH_04 && me->GetExactDist(m_player) < DARNELL_CATCH_UP_DIST)
+            step = std::max<uint8>(step, m_path + 1);
+
+
+        if (step > m_path)
+        {
+            LeadTo(step);
+            return;
+        }
+
+        // Waiting for the player: repeat the call every 10 seconds while he stands still
         m_counter++;
 
         if (GetMovedPlayerDistance() > 1.0f)
             m_counter = TirisfalGlades::COUNTER_0;
 
         if (m_counter >= TirisfalGlades::COUNTER_10)
+            LeadTo(m_path);
+    }
+
+    void LeadTo(uint8 step)
+    {
+        static Position const points[] =
         {
+            { 1665.368896f, 1662.722656f, 141.850983f }, // crypt entrance
+            { 1642.761963f, 1662.547729f, 132.477753f }, // top of the stairs
+            { 1642.498779f, 1677.809937f, 126.932129f }, // stairs
+            { 1656.714478f, 1678.538330f, 120.718788f }, // hall
+        };
+
+        if (step < TirisfalGlades::DARNELL_PATH_01 || step > TirisfalGlades::DARNELL_PATH_04)
+            return;
+
+        if (step == TirisfalGlades::DARNELL_PATH_01)
             Talk(TirisfalGlades::DARNELL_TEXT_02, m_player);
-            me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_01, 1665.368896f, 1662.722656f, 141.850983f);
-            m_path = TirisfalGlades::DARNELL_PATH_01;
-            m_arrived = false;
-            m_counter = TirisfalGlades::COUNTER_0;
-        }
+        else
+            Talk(TirisfalGlades::DARNELL_TEXT_03);
+
+        // Move point ids 1-4 are the steps 1-4. From the entrance on the points lie on one straight flight of stairs after the
+        // other. The path finder finds no way down the first flight (an incomplete path out of the crypt, around it and then a
+        // drop through the ground), so inside the crypt he walks the flights straight.
+        if (step != m_path || !m_arrived)
+            MoveToPoint(step, points[step - 1], step == TirisfalGlades::DARNELL_PATH_01);
+
+        m_path = step;
+        m_counter = TirisfalGlades::COUNTER_0;
     }
 
-    void InviteToFollowDeeper1()
+    void MoveToPoint(uint32 id, Position const& pos, bool generatePath = true)
     {
-        m_counter++;
-
-        if (GetMovedPlayerDistance() > 1.0f)
-            m_counter = TirisfalGlades::COUNTER_0;
-
-        if (m_counter >= TirisfalGlades::COUNTER_10)
-        {
-            Talk(TirisfalGlades::DARNELL_TEXT_03);
-            me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_02, 1642.761963f, 1662.547729f, 132.477753f);
-            m_path = TirisfalGlades::DARNELL_PATH_02;
-            m_arrived = false;
-            m_counter = TirisfalGlades::COUNTER_0;
-        }
-    }
-
-    void InviteToFollowDeeper2()
-    {
-        m_counter++;
-
-        if (GetMovedPlayerDistance() > 1.0f)
-            m_counter = TirisfalGlades::COUNTER_0;
-
-        if (m_counter >= TirisfalGlades::COUNTER_10)
-        {
-            Talk(TirisfalGlades::DARNELL_TEXT_03);
-            me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_03, 1642.498779f, 1677.809937f, 126.932129f);
-            m_path = TirisfalGlades::DARNELL_PATH_03;
-            m_arrived = false;
-            m_counter = TirisfalGlades::COUNTER_0;
-        }
-    }
-
-    void InviteToFollowToGround()
-    {
-        m_counter++;
-
-        if (GetMovedPlayerDistance() > 1.0f)
-            m_counter = TirisfalGlades::COUNTER_0;
-
-        if (m_counter >= TirisfalGlades::COUNTER_10)
-        {
-            Talk(TirisfalGlades::DARNELL_TEXT_03);
-            me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_04, 1656.714478f, 1678.538330f, 120.718788f);
-            m_path = TirisfalGlades::DARNELL_PATH_04;
-            m_arrived = false;
-            m_counter = TirisfalGlades::COUNTER_0;
-        }
+        m_pointId = id;
+        m_arrived = false;
+        me->GetMotionMaster()->MovePoint(id, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), generatePath);
     }
 
     void SearchOnGround()
@@ -920,8 +907,7 @@ struct npc_darnell : public ScriptedAI
     {
         if (m_path != TirisfalGlades::DARNELL_PATH_08)
         {
-            me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_08, 1664.128052f, 1679.201294f, 120.530205f);
-            m_arrived = false;
+            MoveToPoint(TirisfalGlades::DARNELL_MOVE_POINT_08, { 1664.128052f, 1679.201294f, 120.530205f });
             m_path = TirisfalGlades::DARNELL_PATH_08;
         }
         else if (m_arrived == false) { }
@@ -938,23 +924,19 @@ struct npc_darnell : public ScriptedAI
             switch (urand(TirisfalGlades::DARNELL_MOVE_EVENT_01, TirisfalGlades::DARNELL_MOVE_EVENT_04))
             {
                 case TirisfalGlades::DARNELL_MOVE_EVENT_01:
-                    me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_04, 1663.849609f, 1694.495239f, 120.719284f);
-                    m_arrived = false;
+                    MoveToPoint(TirisfalGlades::DARNELL_MOVE_POINT_04, { 1663.849609f, 1694.495239f, 120.719284f });
                     m_path = TirisfalGlades::DARNELL_PATH_04;
                     break;
                 case TirisfalGlades::DARNELL_MOVE_EVENT_02:
-                    me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_05, 1672.939331f, 1668.029541f, 120.719307f);
-                    m_arrived = false;
+                    MoveToPoint(TirisfalGlades::DARNELL_MOVE_POINT_05, { 1672.939331f, 1668.029541f, 120.719307f });
                     m_path = TirisfalGlades::DARNELL_PATH_05;
                     break;
                 case TirisfalGlades::DARNELL_MOVE_EVENT_03:
-                    me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_06, 1656.963379f, 1667.456299f, 120.719093f);
-                    m_arrived = false;
+                    MoveToPoint(TirisfalGlades::DARNELL_MOVE_POINT_06, { 1656.963379f, 1667.456299f, 120.719093f });
                     m_path = TirisfalGlades::DARNELL_PATH_06;
                     break;
                 case TirisfalGlades::DARNELL_MOVE_EVENT_04:
-                    me->GetMotionMaster()->MovePoint(TirisfalGlades::DARNELL_MOVE_POINT_07, 1656.098999f, 1688.312866f, 120.719093f);
-                    m_arrived = false;
+                    MoveToPoint(TirisfalGlades::DARNELL_MOVE_POINT_07, { 1656.098999f, 1688.312866f, 120.719093f });
                     m_path = TirisfalGlades::DARNELL_PATH_07;
                     break;
             }
@@ -993,6 +975,9 @@ struct npc_darnell : public ScriptedAI
             return false;
         }
 
+        // Where the player is comes from the player on every tick
+        m_player_pos = m_player->GetPositionAlternate();
+        m_player_area = m_player->GetAreaId();
         return true;
     }
 
@@ -1031,19 +1016,23 @@ struct npc_darnell : public ScriptedAI
     }
 
 private:
-    bool m_arrived;
-    uint32 m_counter;
+    static constexpr float DARNELL_CATCH_UP_DIST = 6.0f;
+
+    bool m_arrived = false;
+    bool m_greeted = false;
+    uint32 m_pointId = 0;
+    uint32 m_counter = 0;
     Position m_OldPosition;
     Position m_player_pos;
-    uint32 m_player_area;
-    uint8 m_path;
-    uint8 m_method;
-    uint32 m_timer;
-    uint32 m_phase;
-    Player* m_player;
+    uint32 m_player_area = 0;
+    uint8 m_path = 0;
+    uint8 m_method = 0;
+    uint32 m_timer = 0;
+    uint32 m_phase = 0;
+    Player* m_player = nullptr;
     ObjectGuid m_playerGUID;
-    bool m_FoundGround;
-    bool m_ItemsFound;
+    bool m_FoundGround = false;
+    bool m_ItemsFound = false;
 };
 
 class npc_marshal_redpath : public CreatureScript

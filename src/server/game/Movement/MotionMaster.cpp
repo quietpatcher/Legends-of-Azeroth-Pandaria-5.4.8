@@ -37,6 +37,8 @@
 #include "MoveSplineInit.h"
 #include "PathGenerator.h"
 #include "ObjectAccessor.h"
+#include "Player.h"
+#include "WorldSession.h"
 #include <cassert>
 #include <algorithm>
 #include <cmath>
@@ -623,6 +625,16 @@ void MotionMaster::MoveChase(Unit* target, float dist, float angle)
 
     if (_owner->GetTypeId() == TYPEID_PLAYER)
     {
+        // A bot AI asks for the same chase over and over. A fresh generator forgets the last target position and
+        // restarts the spline each time, so keep the running one when target, range and angle are unchanged.
+        Player const* player = _owner->ToPlayer();
+        if (player->GetSession() && player->GetSession()->IsBot() && GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        {
+            ChaseMovementGenerator const* current = dynamic_cast<ChaseMovementGenerator const*>(GetCurrentMovementGenerator());
+            if (current && current->HasSameParameters(target, ChaseRange(dist), ChaseAngle(angle)))
+                return;
+        }
+
         TC_LOG_DEBUG("misc", "Player (GUID: {}) chase to {} (GUID: {})",
             _owner->GetGUID().GetCounter(),
             target->GetTypeId() == TYPEID_PLAYER ? "player" : "creature",

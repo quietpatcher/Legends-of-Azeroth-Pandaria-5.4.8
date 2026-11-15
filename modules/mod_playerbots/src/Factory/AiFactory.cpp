@@ -395,9 +395,11 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         engine->addStrategy("behind", false);
     if (PlayerBotSpec::IsHeal(player, true))
     {
-        //if (sPlayerbotAIConfig->autoSaveMana)
-            //engine->addStrategy("save mana", false);
-        //engine->addStrategy("healer dps", false);
+        if (sPlayerbotAIConfig->autoSaveMana)
+            engine->addStrategy("save mana", false);
+        // the damage spells of a healer spec, used only while nobody needs healing: without it a healer on its own
+        // stood next to a monster for a minute and never hurt it
+        engine->addStrategy("healer dps", false);
     }
 
     if (facade->IsRealPlayer() || sRandomPlayerbotMgr->IsRandomBot(player))

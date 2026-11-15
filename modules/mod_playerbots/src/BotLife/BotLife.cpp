@@ -69,6 +69,51 @@ void BotLifeSetLfgGroupWing(Group const* group, uint32 dungeonId);   // (wing-ar
 #include <sstream>
 #include "ScriptedGossip.h"
 
+// The bot walks the loot slots itself instead of reading a loot window, so it has to apply what the window hides for a
+// player: conditions, smart loot (recipe without skill rank or already known), team, and quest items nobody needs.
+bool BotMayTakeLoot(Player* bot, Loot* loot, LootItem* item)
+{
+    if (!item->AllowedForPlayer(bot, loot->GetSource()))
+        return false;
+    if (!item->is_world_drop || item->type != LOOT_ITEM_TYPE_ITEM)
+        return true;
+    if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item->itemid))
+        if (!(proto->Flags & ITEM_PROTO_FLAG_SMART_LOOT) && proto->RequiredSkill
+            && (bot->GetSkillValue(proto->RequiredSkill) < proto->RequiredSkillRank || bot->HasSpell(proto->Spells[1].SpellId)))
+            return false;
+    // the recipes and the treasure the player view hides by hand
+    if ((item->itemid == 100910 && bot->HasSpell(139176)) || (item->itemid == 100864 && bot->HasSpell(142976))
+        || (item->itemid == 100863 && bot->HasSpell(143011)) || (item->itemid == 100865 && bot->HasSpell(143255)))
+        return false;
+    if (item->itemid == 87391 && !bot->HasAura(130653) && !bot->HasAura(135855) && !bot->HasAura(105699))
+        return false;
+    // A world drop sits in items[] at 100 %; a player's loot view rolls its chance per player. Do the same here, with a
+    // roll that is a fixed function of (bot, corpse, item): a bot that comes back to the same corpse gets the same answer
+    // instead of a new chance each visit. World drops only exist on creatures.
+    Object* source = loot->GetSource();
+    if (!source || source->GetTypeId() != TYPEID_UNIT)
+        return false;
+    Creature* creature = source->ToCreature();
+    auto const* worldDrop = sLootMgr->GetWorldDrop(creature);
+    if (!worldDrop)
+        return false;
+    auto itr = worldDrop->find(item->itemid);
+    if (itr == worldDrop->end())
+        return false;
+    float chance = itr->second.GetChance(creature->GetLevel());
+    if (creature->isElite())
+        AddPct(chance, 20.0f);
+    uint64 h = bot->GetGUID().GetCounter() * 0x9E3779B97F4A7C15ULL;
+    h ^= (creature->GetGUID().GetCounter() + 0x7F4A7C15ULL) * 0xC2B2AE3D27D4EB4FULL;
+    h ^= (uint64(item->itemid) + 0x165667B1ULL) * 0x27D4EB2F165667C5ULL;
+    // the spawn keeps its GUID over respawns; the respawn time is set at death, so each kill is a new roll
+    h ^= uint64(creature->GetRespawnTime()) * 0x94D049BB133111EBULL;
+    h ^= h >> 29;
+    h *= 0xBF58476D1CE4E5B9ULL;
+    h ^= h >> 32;
+    return float(h % 10000) < chance * 100.0f;
+}
+
 namespace
 {
     constexpr uint32 MAX_BOTLIFE_LEVEL = 93;
@@ -3006,6 +3051,10 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
         EnsureRiding(bot);
     }
 
+    // a creature whose fight was dropped as fruitless fights the bot again: out of its reach, or out of the area
+    if (LeaveDroppedFight(bot, t, now))
+        return true;
+
     if (bot->IsInCombat())
     {
         // some fights leave a bot stuck IsInCombat()==true with no victim and nothing attacking it
@@ -3027,37 +3076,9 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
         else
             t.noVictimCombatSince = 0;
 
-        // a fight that goes nowhere blocks every other order from here: a mob out of reach,
-        // one that cannot be hurt, one an NPC is already fighting. Nothing moves for a minute: drop it, leave it alone.
-        if (Unit* fightTarget = bot->GetVictim())
-        {
-            if (fightTarget->GetTypeId() == TYPEID_UNIT && !bot->GetGroup() && !bot->GetMap()->Instanceable())
-            {
-                float const victimHp = fightTarget->GetHealthPct();
-                float const botHp = bot->GetHealthPct();
-                if (fightTarget->GetGUID() != t.fightVictim || std::fabs(victimHp - t.fightVictimHp) >= 1.0f
-                    || std::fabs(botHp - t.fightBotHp) >= 1.0f)
-                {
-                    t.fightVictim = fightTarget->GetGUID();
-                    t.fightVictimHp = victimHp;
-                    t.fightBotHp = botHp;
-                    t.fightSince = now;
-                }
-                else if (now - t.fightSince > 60000)
-                {
-                    TC_LOG_INFO("playerbots", "BotLife: {} drops a fruitless fight with {} ({}) at {:.0f} yd, its health {:.0f}%, left alone for 5 minutes",
-                        bot->GetName(), fightTarget->GetName(), fightTarget->GetEntry(), bot->GetDistance(fightTarget), victimHp);
-                    t.avoidCreature[fightTarget->GetEntry()] = now + 5 * MINUTE * IN_MILLISECONDS;
-                    t.fightVictim = ObjectGuid::Empty;
-                    t.ignoreTargetsUntil = now + 30000;
-                    bot->AttackStop();
-                    bot->CombatStop(false);
-                    return true;
-                }
-            }
-        }
-        else
-            t.fightVictim = ObjectGuid::Empty;
+        // a fight that goes nowhere blocks every other order from here
+        if (DropFruitlessFight(bot, t, now))
+            return true;
 
         // a chase started by BotLife outside combat keeps running and drags casters into melee:
         // in combat the bot AI decides where to stand
@@ -3091,7 +3112,8 @@ bool BotLifeMgr::UpdateBot(PlayerbotAI* botAI, uint32 /*elapsed*/)
     if (now >= t.nextBagCheck)
     {
         t.nextBagCheck = now + urand(45000, 75000);
-        ManageBags(bot);
+        AcceptFromStarterItem(bot, t, now);
+        ManageBags(bot, 4, true, &t);
     }
 
     if (_rest && DoRest(bot, t, now))
@@ -4116,6 +4138,233 @@ bool BotLifeMgr::HasGrindTarget(PlayerbotAI* botAI)
 {
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("grind target")->Get();
     return target && target->IsAlive();
+}
+
+// A fight whose victim reaches no new lowest health for a minute is dropped. Covers bots without a group and the members
+// (leader and followers) of a bots-only open-world party; groups with a real player and instance parties are left alone.
+static bool FruitlessFightApplies(Player* bot, BotLifeInfo const& t)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return true;
+    if (t.party != BOTLIFE_PARTY_WORLD)
+        return false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        PlayerbotAI* memberAI = member ? GET_PLAYERBOT_AI(member) : nullptr;
+        if (!memberAI || memberAI->IsRealPlayer() || memberAI->HasRealPlayerMaster())
+            return false;
+    }
+    return true;
+}
+
+bool BotLifeMgr::DropFruitlessFight(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    // A fight that goes nowhere blocks every other order: a mob out of reach, one that cannot be hurt, one an NPC is already
+    // fighting. Nothing moves for a minute: drop it, leave it alone.
+    if (Unit* fightTarget = bot->GetVictim())
+    {
+        if (fightTarget->GetTypeId() == TYPEID_UNIT && FruitlessFightApplies(bot, t) && !bot->GetMap()->Instanceable())
+        {
+            float const victimHp = fightTarget->GetHealthPct();
+            float const botHp = bot->GetHealthPct();
+            uint32 const lastSeen = t.fightSeen;
+            t.fightSeen = now;
+            // only progress on the victim counts: a bot that stands out of reach loses a little health and regenerates it
+            // again, and that kept the timer running for good (37 of 452 bots stood in one fight for two hours)
+            // and only a new lowest health is progress: a monster that heals itself, or one that is healed while a tank
+            // spec scratches it, moves up and down for hours (four bots stood in such a fight from login on)
+            // another victim alone is no progress: a tank that turns from one monster to the next and back never ran out
+            // of time. The clock starts anew when there was no fight just before, or when the last victim died.
+            bool const sameVictim = fightTarget->GetGUID() == t.fightVictim;
+            bool fresh = now - lastSeen > 10000;
+            if (!sameVictim && !fresh)
+            {
+                Unit* const last = t.fightVictim.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*bot, t.fightVictim);
+                fresh = !last || !last->IsAlive();
+            }
+            if (!sameVictim || fresh)
+            {
+                t.fightVictim = fightTarget->GetGUID();
+                t.fightVictimHp = victimHp;
+                t.fightBotHp = botHp;
+                if (fresh)
+                    t.fightSince = now;
+            }
+            else if (victimHp <= t.fightVictimHp - 1.0f)
+            {
+                t.fightVictimHp = victimHp;
+                t.fightBotHp = botHp;
+                t.fightSince = now;
+            }
+            if (now - t.fightSince > 60000)
+            {
+                TC_LOG_INFO("playerbots", "BotLife: {} drops a fruitless fight with {} ({}) at {:.0f} yd, its health {:.0f}%, left alone for 5 minutes",
+                    bot->GetName(), fightTarget->GetName(), fightTarget->GetEntry(), bot->GetDistance(fightTarget), victimHp);
+                t.avoidCreature[fightTarget->GetEntry()] = now + 5 * MINUTE * IN_MILLISECONDS;
+                t.fightVictim = ObjectGuid::Empty;
+                t.ignoreTargetsUntil = now + 30000;
+                // a bot on its own remembers the creature (LeaveDroppedFight); a second drop of the same kind while
+                // the first is still remembered means that walking away did not help: no second walk
+                if (!bot->GetGroup())
+                {
+                    uint32 const until = now + 5 * MINUTE * IN_MILLISECONDS;
+                    bool const again = !t.droppedFoe.IsEmpty() && now < t.droppedFoeUntil && t.droppedFoe.GetEntry() == fightTarget->GetEntry();
+                    t.droppedFoeUntil = again ? std::max(t.droppedFoeUntil, until) : until;
+                    t.droppedFoe = fightTarget->GetGUID();
+                    t.droppedFoeStage = again ? 2 : 0;
+                    t.droppedFoeDeadline = now;
+                }
+                bot->AttackStop();
+                bot->CombatStop(false);
+                return true;
+            }
+        }
+    }
+    else
+        t.fightVictim = ObjectGuid::Empty;
+    return false;
+}
+
+// A point out of reach of a creature: 120 yd from its home (it gives up a victim at 60 yd from home, at about 100 yd
+// while that victim keeps fighting), on the side the bot stands on or to the left or right of that, with a complete
+// walkable way to it. Not into the sea, not up a cliff: false when no such point exists.
+static bool PointOutOfReach(Player* bot, Creature const* foe, float& x, float& y, float& z)
+{
+    Position const& home = foe->GetHomePosition();
+    float const away = bot->GetExactDist2d(&home) > 2.0f ? home.GetAngle(bot) : bot->GetOrientation() + float(M_PI);
+    static float const turns[] = { 0.0f, 0.8f, -0.8f, 1.6f, -1.6f };
+    for (float const turn : turns)
+    {
+        float const px = home.GetPositionX() + std::cos(away + turn) * 120.0f;
+        float const py = home.GetPositionY() + std::sin(away + turn) * 120.0f;
+        float pz = bot->GetPositionZ() + 20.0f;
+        bot->UpdateAllowedPositionZ(px, py, pz);
+        PathGenerator path(bot);
+        path.SetPathLengthLimit(200.0f);   // a longer way round takes more than the 40 seconds the walk gets
+        path.CalculatePath(px, py, pz, false);
+        uint32 const type = path.GetPathType();
+        if (!(type & PATHFIND_NORMAL) || (type & (PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH
+            | PATHFIND_SHORT | PATHFIND_FARFROMPOLY_END)))
+            continue;
+        Movement::PointsArray const& points = path.GetPath();
+        if (points.empty() || Dist2d(points.back().x, points.back().y, px, py) > 15.0f)
+            continue;
+        x = points.back().x;
+        y = points.back().y;
+        z = points.back().z;
+        return true;
+    }
+    return false;
+}
+
+// Dropping a fruitless fight ends the combat, but the creature stands where it stood: it attacks the bot again at once,
+// the bot fights back, and a minute later the same fight is dropped again (25 times an hour on one rare elite). A
+// player walks away from a monster he cannot hurt, and leaves the area when it keeps coming after him. So the first
+// time the remembered creature and the bot fight again the bot walks out of its reach, without fighting back; when
+// that does not get it away, or the creature fights it once more after the walk, the bot moves to another spot the way
+// a die loop does. Nothing happens as long as the creature leaves the bot alone, and every other monster is fought as
+// before. Only for a bot on its own in the open world (the caller made sure of the open world).
+bool BotLifeMgr::LeaveDroppedFight(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    if (t.droppedFoe.IsEmpty())
+        return false;
+    if (now >= t.droppedFoeUntil || bot->GetGroup())
+    {
+        t.droppedFoe.Clear();
+        return false;
+    }
+    if (!bot->IsAlive() || bot->IsBeingTeleported())
+        return false;
+    Creature* foe = ObjectAccessor::GetCreature(*bot, t.droppedFoe);
+    if (!foe)
+        return false;   // not on this map or not loaded: no threat, remembered in case the bot comes back
+    if (!foe->IsAlive())
+    {
+        t.droppedFoe.Clear();
+        return false;
+    }
+    bool const engaged = bot->GetVictim() == foe || foe->IsInCombatWith(bot);
+
+    if (t.droppedFoeStage == 0)
+    {
+        if (!engaged)
+            return false;
+        if (PointOutOfReach(bot, foe, t.droppedFoeX, t.droppedFoeY, t.droppedFoeZ))
+        {
+            t.droppedFoeStage = 1;
+            t.droppedFoeDeadline = now + 40000;
+            t.lastMoveOrder = 0;
+            TC_LOG_INFO("playerbots", "BotLife: {} walks out of reach of {} ({}) after a dropped fight, {:.0f} yd to go",
+                bot->GetName(), foe->GetName(), foe->GetEntry(), bot->GetExactDist2d(t.droppedFoeX, t.droppedFoeY));
+        }
+        else
+        {
+            t.droppedFoeStage = 2;   // nowhere to walk to
+            t.droppedFoeDeadline = now;
+        }
+    }
+
+    if (t.droppedFoeStage == 1)
+    {
+        // out of its reach: the creature gets ten seconds to give up. The same when it gave up on the way and something
+        // else attacks the bot: that one is fought.
+        if (bot->GetExactDist2d(t.droppedFoeX, t.droppedFoeY) < 8.0f || bot->GetExactDist2d(&foe->GetHomePosition()) > 112.0f
+            || (!engaged && bot->IsInCombat()))
+        {
+            t.droppedFoeStage = 2;
+            t.droppedFoeDeadline = now + 10000;
+            return false;
+        }
+        if (now < t.droppedFoeDeadline)
+        {
+            if (bot->IsSitState())
+                bot->SetStandState(UNIT_STAND_STATE_STAND);
+            if (bot->GetVictim())
+                bot->AttackStop();
+            if (bot->IsInCombat())
+                CombatPotion(bot, t, now);
+            // a cast runs out first; a new order when the bot stopped, and every five seconds (its speed may have changed)
+            if (!bot->HasUnitState(UNIT_STATE_CASTING) && now - t.lastMoveOrder >= 1000 && (!bot->isMoving() || now - t.lastMoveOrder >= 5000))
+            {
+                bot->GetMotionMaster()->MovePoint(0, t.droppedFoeX, t.droppedFoeY, t.droppedFoeZ, true);
+                t.lastMoveOrder = now;
+            }
+            return true;
+        }
+        // 40 seconds and not there (rooted, slowed, a way the navmesh knows and the bot cannot walk): leave at once
+        t.droppedFoeStage = 2;
+    }
+
+    if (!engaged || now < t.droppedFoeDeadline)
+        return false;
+    // one try every ten seconds: in between the bot fights back, it does not stand still under attack
+    t.droppedFoeDeadline = now + 10000;
+    if (IsWalker(bot))
+    {
+        t.droppedFoe.Clear();   // a walker stays in its area: for it the walk is all there is
+        return false;
+    }
+    // the new spot is not within the die loop radius of this one
+    t.dieLoopMap = bot->GetMapId();
+    t.dieLoopX = bot->GetPositionX();
+    t.dieLoopY = bot->GetPositionY();
+    t.dieLoopUntil = now + 30 * MINUTE * IN_MILLISECONDS;
+    std::string const foeName = foe->GetName();
+    uint32 const foeEntry = foe->GetEntry();
+    bot->AttackStop();
+    bot->CombatStop(false);
+    if (!RelocateForLevel(bot))
+        return false;
+    // remembered for half an hour: a bot that comes back and is attacked by it again leaves at once, without a new fight
+    t.droppedFoeUntil = now + 30 * MINUTE * IN_MILLISECONDS;
+    t.path.clear();
+    t.pathIdx = 0;
+    SetState(bot, t, BotLifeState::IDLE, now, 0);
+    TC_LOG_INFO("playerbots", "BotLife: {} leaves the area of {} ({}), it fought the bot again after a dropped fight",
+        bot->GetName(), foeName, foeEntry);
+    return true;
 }
 
 // grind on the way, but do not get stuck on a target the engine never attacks
@@ -6975,7 +7224,7 @@ bool BotLifeMgr::UseQuestObject(Player* bot, BotLifeInfo& t, uint32 now)
         for (uint32 slot = 0; slot < maxSlot; ++slot)
         {
             LootItem* item = loot->LootItemInSlot(slot, bot);
-            if (!item || item->is_looted)
+            if (!item || item->is_looted || !BotMayTakeLoot(bot, loot, item))
                 continue;
             bot->StoreLootItem(uint8(slot), loot);
             Count(BLC_LOOT_ITEM);
@@ -8200,7 +8449,7 @@ void BotLifeMgr::LootCorpse(Player* bot, Creature* creature, bool area)
     for (uint32 slot = 0; slot < maxSlot; ++slot)
     {
         LootItem* item = loot->LootItemInSlot(slot, bot);
-        if (!item || item->is_looted)
+        if (!item || item->is_looted || !BotMayTakeLoot(bot, loot, item))
             continue;
         uint32 itemId = item->itemid;
         uint32 before = bot->GetItemCount(itemId, false);
@@ -8281,7 +8530,92 @@ uint32 BotLifeMgr::OpenLootContainers(Player* bot, uint32 max)
     return opened;
 }
 
-void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
+bool BotLifeMgr::StarterNever(Player* bot, Quest const* quest)
+{
+    // a quest an item starts that BotLife would never take: unsupported, a bad quest, or too low for the bot for good
+    // (a level that is too high or a full log only waits). Same filter as the NPC accept, minus what depends on the place.
+    if (!GetPlan(quest).supported || (IsBadQuest(quest->GetQuestId()) && !IsWalker(bot)))
+        return true;
+    int32 const level = bot->GetLevel();
+    int32 const questLevel = quest->GetQuestLevel() > 0 ? quest->GetQuestLevel() : level;
+    return level >= quest->GetMinLevel() && questLevel <= level + 2 && !QuestLevelOk(bot, quest);
+}
+
+bool BotLifeMgr::AcceptFromStarterItem(Player* bot, BotLifeInfo& t, uint32 now)
+{
+    // A player clicks the item: the bot does the same, the item is the quest giver. At most one per check.
+    if (!bot->IsInWorld() || !bot->IsAlive() || bot->IsInCombat() || ActiveQuestCount(bot) >= _maxQuests)
+        return false;
+    {
+        Item* starter = nullptr;
+        Quest const* starterQuest = nullptr;
+        auto tryStarter = [&](Item* item)
+        {
+            if (starter || !item)
+                return;
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || !proto->StartQuest)
+                return;
+            Quest const* quest = sObjectMgr->GetQuestTemplate(proto->StartQuest);
+            if (!quest || quest->GetQuestType() == 0 || t.skipQuests.count(quest->GetQuestId()) || bot->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE)
+                return;
+            if (!QuestLevelOk(bot, quest) || !WalkAllows(bot, quest) || StarterNever(bot, quest))
+                return;
+            if (!bot->CanTakeQuest(quest, false) || !bot->CanAddQuest(quest, false) || !QuestDoable(bot, quest))
+                return;
+            starter = item;
+            starterQuest = quest;
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            tryStarter(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END && !starter; ++bagSlot)
+            if (Bag* bag = bot->GetBagByPos(bagSlot))
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    tryStarter(bag->GetItemByPos(uint8(slot)));
+        if (starter)
+        {
+            uint32 const questId = starterQuest->GetQuestId();
+            uint32 const entry = starter->GetEntry();
+            bot->AddQuestAndCheckCompletion(starterQuest, starter);   // (the item may be gone from here on)
+            if (bot->FindQuestSlot(questId) < MAX_QUEST_LOG_SIZE)
+            {
+                // as the accept handler does: the item is used up unless the quest needs it or it is its source item
+                bool destroyItem = true;
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry))
+                    if (proto->MaxCount > 0)
+                    {
+                        if (starterQuest->GetSrcItemId() == entry)
+                            destroyItem = false;
+                        for (uint8 i = 0; i < QUEST_ITEM_DROP_COUNT && destroyItem; ++i)
+                            if (starterQuest->ItemDrop[i] == entry)
+                                destroyItem = false;
+                        for (auto const& objective : starterQuest->Objectives)
+                            if (destroyItem && objective.Type == QUEST_OBJECTIVE_ITEM && objective.ObjectID == int32(entry))
+                                destroyItem = false;
+                    }
+                if (destroyItem)
+                {
+                    if (starter->GetCount() > 1)
+                    {
+                        starter->SetCount(starter->GetCount() - 1);
+                        starter->SetState(ITEM_CHANGED, bot);
+                    }
+                    else
+                        bot->DestroyItem(starter->GetBagSlot(), starter->GetSlot(), true);
+                }
+                if (starterQuest->GetSrcSpell() > 0)
+                    bot->CastSpell(bot, starterQuest->GetSrcSpell(), true);
+                Count(BLC_QUEST_ACCEPT);
+                TC_LOG_INFO("playerbots", "BotLife {}: accepted quest {} from item {}", bot->GetName(), questId, entry);
+                t.questStarted[questId] = now;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials, BotLifeInfo const* t)
 {
     // count free slots
     auto countFree = [bot]
@@ -8301,6 +8635,43 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
     {
         EquipBagUpgrades(bot);   // what came out is put on at once
         freeSlots = countFree();
+    }
+    // A recipe the bot can learn is read, as a player does on the spot. A bot never did: the loot rules offer a recipe to a
+    // character with the profession until it knows the spell, so it picked up the same pattern at every corpse.
+    if (bot->IsInWorld() && bot->IsAlive() && !bot->IsInCombat())
+    {
+        std::vector<Item*> recipes;
+        auto consider = [&recipes](Item* item)
+        {
+            if (!item)
+                return;
+            ItemTemplate const* proto = item->GetTemplate();
+            if (proto && proto->Class == ITEM_CLASS_RECIPE && proto->Spells[1].SpellId > 0
+                && proto->Spells[1].SpellTrigger == ITEM_SPELLTRIGGER_LEARN_SPELL_ID)
+                recipes.push_back(item);
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            if (Bag* bag = bot->GetBagByPos(bagSlot))
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    consider(bag->GetItemByPos(uint8(slot)));
+        uint32 learned = 0;
+        for (Item* item : recipes)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            uint32 const teaches = uint32(proto->Spells[1].SpellId);
+            if (bot->HasSpell(teaches) || !sSpellMgr->GetSpellInfo(teaches) || bot->CanUseItem(item) != EQUIP_ERR_OK)
+                continue;
+            if (_debug)
+                TC_LOG_INFO("playerbots", "BotLife {}: learned {} from {}", bot->GetName(), teaches, proto->Name1);
+            bot->LearnSpell(teaches, false);
+            uint32 count = 1;
+            bot->DestroyItemCount(item, count, true);
+            ++learned;
+        }
+        if (learned)
+            freeSlots = countFree();
     }
     if (freeSlots >= minFree)
         return;
@@ -8459,8 +8830,11 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
     }
     // to-do 265: still too full after everything above. Quest-class items nobody in the log needs, and items
     // without a sell price, pile up for good: they are never sold, and a bot with 40 of 40 slots refuses every quest drop and reward.
-    // Do what a player does: delete them, left-over quest items first, and stop as soon as minFree is reached.
-    if (freeSlots < minFree && bot->IsInWorld() && !bot->IsInCombat())
+    // Do what a player does: delete them, left-over quest items first; the rest only until minFree is reached.
+    // The bot was short of room when this check started (see the early return above). Selling a few grey items often makes just
+    // enough room again, and then this step was skipped every time: an active bot lived with two free slots and 45 stacks of an
+    // old quest drop. So the step always runs here; what it removes while there is room is limited inside the loop.
+    if (bot->IsInWorld() && !bot->IsInCombat())
     {
         // everything the quest log still needs: source item, item objectives (also complete ones, for the turn-in), item drops
         std::set<uint32> logNeeds;
@@ -8500,12 +8874,61 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
                     return false;
             return true;
         };
+        // a recipe the bot can never learn: it lacks the profession or its rank, lacks the required spell, or knows what it teaches
+        auto deadRecipe = [bot](ItemTemplate const* proto)
+        {
+            if (proto->Class != ITEM_CLASS_RECIPE)
+                return false;
+            if (proto->RequiredSkill && (!bot->HasSkill(proto->RequiredSkill) || bot->GetSkillValue(proto->RequiredSkill) < proto->RequiredSkillRank))
+                return true;
+            if (proto->RequiredSpell && !bot->HasSpell(proto->RequiredSpell))
+                return true;
+            // the usual recipe: spell 483 on use, and the spell it teaches in the second spell slot
+            if (proto->Spells[1].SpellId > 0 && proto->Spells[1].SpellTrigger == ITEM_SPELLTRIGGER_LEARN_SPELL_ID
+                && bot->HasSpell(uint32(proto->Spells[1].SpellId)))
+                return true;
+            bool teaches = false;
+            bool allKnown = true;
+            for (auto const& spell : proto->Spells)
+            {
+                if (!spell.SpellId || spell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                    continue;
+                if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(uint32(spell.SpellId)))
+                    for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                        if (spellInfo->Effects[e].Effect == SPELL_EFFECT_LEARN_SPELL && spellInfo->Effects[e].TriggerSpell)
+                        {
+                            teaches = true;
+                            if (!bot->HasSpell(spellInfo->Effects[e].TriggerSpell))
+                                allKnown = false;
+                        }
+            }
+            return teaches && allKnown;
+        };
+        // an item that starts a quest the bot cannot take any more (rewarded, already in the log, closed to its race/class, or one BotLife never takes);
+        // of several copies of a quest it can still take, one stays
+        std::unordered_map<uint32, ObjectGuid> starterKept;
+        auto deadStarter = [&](Item* item, ItemTemplate const* proto)
+        {
+            Quest const* quest = sObjectMgr->GetQuestTemplate(proto->StartQuest);
+            if (!quest || quest->IsRepeatable() || quest->IsDailyOrWeekly())
+                return false;
+            bool dead = bot->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE
+                || (bot->GetLevel() >= quest->GetMinLevel() && !bot->CanTakeQuest(quest, false))
+                || StarterNever(bot, quest) || (t && t->skipQuests.count(quest->GetQuestId()));
+            if (dead)
+                return true;
+            auto kept = starterKept.emplace(proto->ItemId, item->GetGUID()).first;
+            return kept->second != item->GetGUID();
+        };
         // what is never deleted
         auto protectedItem = [&](Item* item, ItemTemplate const* proto)
         {
-            if (!proto || item->ToBag() || proto->StartQuest || proto->ItemId == 6948 || logNeeds.count(proto->ItemId)
-                || proto->Class == ITEM_CLASS_KEY || proto->Class == ITEM_CLASS_CONTAINER || proto->Quality > ITEM_QUALITY_UNCOMMON
+            if (!proto || item->ToBag() || proto->ItemId == 6948 || logNeeds.count(proto->ItemId)
+                || proto->Class == ITEM_CLASS_KEY || proto->Class == ITEM_CLASS_CONTAINER
                 || proto->TotemCategory || vendorTokens.count(proto->ItemId) || bot->HasQuestForItem(proto->ItemId))
+                return true;
+            bool const recipe = deadRecipe(proto);
+            if ((proto->StartQuest && !deadStarter(item, proto)) || (proto->Quality > ITEM_QUALITY_UNCOMMON && !recipe))
                 return true;
             if (proto->Class == ITEM_CLASS_MISCELLANEOUS && (proto->SubClass == ITEM_SUBCLASS_JUNK_MOUNT || proto->SubClass == ITEM_SUBCLASS_JUNK_PET))
                 return true;
@@ -8515,6 +8938,8 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
             if (proto->Flags & ITEM_FLAG_HAS_LOOT)   // a loot container is opened elsewhere (only an unopenable lockbox is vendored below)
                 return !cannotOpen(proto);
             // a usable item (potion, scroll, quest tool with an on-use spell) stays: a quest tool is not always listed as a quest objective
+            // (a recipe that cannot be learned is on-use only because of the spell that teaches it)
+            if (!recipe)
                 for (auto const& spell : proto->Spells)
                     if (spell.SpellId && spell.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
                         return true;
@@ -8523,7 +8948,10 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
         uint32 dropped = 0;
         std::string names;
         // 0: left-over quest items, 1: lockboxes the bot cannot open (vendored), 2: other items without a sell price
-        for (uint32 stage = 0; stage < 3 && freeSlots < minFree; ++stage)
+        // (an unlearnable recipe and a quest item no quest in the log needs never become useful: once the cleanup runs, all of
+        // them go, not only as many as the bags are short. A new drop lands in the first free slot and was the one deleted every
+        // time, so a bot kept forty stacks of an old quest drop and lived with three free slots.)
+        for (uint32 stage = 0; stage < 3; ++stage)
         {
             std::vector<std::tuple<uint8, uint8, Item*>> all;
             for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
@@ -8536,14 +8964,16 @@ void BotLifeMgr::ManageBags(Player* bot, uint32 minFree, bool sellMaterials)
                             all.emplace_back(bagSlot, uint8(slot), item);
             for (auto const& [bagSlot, slot, item] : all)
             {
-                if (freeSlots >= minFree)
-                    break;
                 ItemTemplate const* proto = item->GetTemplate();
                 if (protectedItem(item, proto))
                     continue;
+                if (freeSlots >= minFree && stage != 0 && !(stage == 2 && proto->Class == ITEM_CLASS_RECIPE))
+                    continue;
                 bool const lockbox = (proto->Flags & ITEM_FLAG_HAS_LOOT) != 0;   // not protected here means it cannot be opened
                 bool const quest = proto->Class == ITEM_CLASS_QUEST;
-                if (stage == 0 ? !quest : stage == 1 ? !(lockbox && proto->SellPrice) : (quest || lockbox || proto->SellPrice))
+                // an unlearnable recipe or a dead quest starter with a sell price is vendored with the lockboxes
+                bool const vendorable = lockbox || proto->Class == ITEM_CLASS_RECIPE || proto->StartQuest;
+                if (stage == 0 ? !quest : stage == 1 ? !(vendorable && proto->SellPrice) : (quest || lockbox || proto->SellPrice))
                     continue;
                 if (dropped < 3)
                     names += (dropped ? ", " : "") + proto->Name1;

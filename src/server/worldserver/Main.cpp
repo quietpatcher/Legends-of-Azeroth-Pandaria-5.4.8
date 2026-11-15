@@ -283,8 +283,11 @@ extern int main(int argc, char** argv)
     {
         sWorld->KickAll();                                       // save and kick all players
         sWorld->UpdateSessions(1);                             // real players unload required UpdateSessions call
+        sWorld->LogoutAllSessions();                           // log out what is left while the maps still exist
 
         mgr->StopNetwork();
+
+        sWorld->DeleteAllSessions();                           // network threads are stopped, databases still open
 
         ///- Clean database before leaving
         ClearOnlineAccounts();

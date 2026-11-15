@@ -21327,7 +21327,7 @@ void Player::SaveToDB(bool create /*=false*/)
         stmt->setUInt16(index++, (uint16)m_ExtraFlags);
         stmt->setUInt8(index++,  m_stableSlots);
         stmt->setUInt16(index++, (uint16)m_atLoginFlags);
-        stmt->setUInt16(index++, GetZoneId());
+        stmt->setUInt16(index++, FindMap() ? GetZoneId() : m_zoneUpdateId);
         stmt->setUInt32(index++, uint32(m_deathExpireTime));
 
         ss.str("");
@@ -21456,7 +21456,7 @@ void Player::SaveToDB(bool create /*=false*/)
         stmt->setUInt16(index++, (uint16)m_ExtraFlags);
         stmt->setUInt8(index++,  m_stableSlots);
         stmt->setUInt16(index++, (uint16)m_atLoginFlags);
-        stmt->setUInt16(index++, GetZoneId());
+        stmt->setUInt16(index++, FindMap() ? GetZoneId() : m_zoneUpdateId);
         stmt->setUInt32(index++, uint32(m_deathExpireTime));
 
         ss.str("");
