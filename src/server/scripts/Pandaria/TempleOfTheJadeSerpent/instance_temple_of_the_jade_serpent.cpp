@@ -29,6 +29,12 @@ static std::vector<DoorData> const doorData =
     { GAMEOBJECT_DOOR_LIU_FLAMEHEART,       DATA_WISE_MARI,    DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
     { GAMEOBJECT_DOOR_LIU_FLAMEHEART,       DATA_LOREWALKER,   DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
     { GAMEOBJECT_DOOR_SHA_OF_DOUBT,         DATA_LIU,          DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
+    // (door-held) the two wing exits into the courtyard open together with the door of Liu Flameheart (SetBossState below:
+    // both wing bosses done); without these entries the bots forced the Fountain of Everseeing Exit open and fought Liu
+    // before Lorewalker Stonestep
+    { GAMEOBJECT_DOOR_LOREWALKER_STONSTEP,  DATA_WISE_MARI,    DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
+    { GAMEOBJECT_DOOR_WISE_MARI_EX_EXIT,    DATA_WISE_MARI,    DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
+    { GAMEOBJECT_DOOR_WISE_MARI_EX_EXIT,    DATA_LOREWALKER,   DOOR_TYPE_PASSAGE, BOUNDARY_NONE },
 };
 
 static std::vector<ScenarioBosses> const scenarioBosses =

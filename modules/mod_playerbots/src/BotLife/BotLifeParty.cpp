@@ -1069,6 +1069,39 @@ bool BotLifeMgr::PartyFollowerUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     return false;   // engine: follow + assist the leader
 }
 
+// Distance from the lead to a real player of its group along the mmap path (not as the crow flies): a player behind a wall or a
+// stair is "far" although he is close in a straight line. Cached for 2 s (a path per tick is too much); falls back to the plain
+// distance when there is no complete path (then nothing changes against the straight-line rule).
+static float RealPlayerDist(Player* bot, Player* member, BotLifeInfo& t, uint32 now)
+{
+    float const air = bot->GetExactDist(member);
+    if (air > 60.0f)
+        return air;   // far anyway, no path needed
+    if (air <= 20.0f)
+        return air;   // close by: the mmap path can detour around brambles and ledges (Razorfen Kraul 15-11: 28 yd of path with the player 10 yd away)
+    if (t.realPathGuid == member->GetGUID() && t.realPathAt && now - t.realPathAt < 2000)
+        return std::max(air, t.realPathDist);
+    float result = air;
+    PathGenerator path(bot);
+    path.CalculatePath(member->GetPositionX(), member->GetPositionY(), member->GetPositionZ(), false);
+    if (!(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+    {
+        float len = 0.0f;
+        G3D::Vector3 const* prev = nullptr;
+        for (G3D::Vector3 const& pt : path.GetPath())
+        {
+            if (prev)
+                len += (pt - *prev).length();
+            prev = &pt;
+        }
+        result = std::max(air, len);
+    }
+    t.realPathGuid = member->GetGUID();
+    t.realPathAt = now;
+    t.realPathDist = result;
+    return result;
+}
+
 bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
 {
     bool wait = false;
@@ -1081,7 +1114,11 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
     {
         bool realFar = false, farInMap = false;
         Player* farPlayer = nullptr;
-        float const enter = t.realWaitSince ? 25.0f : 40.0f;   // hysteresis; release at 25 yd: a client can only start /follow within 28 yd (CheckInteractDistance 4)
+        // DG-FOLLOW (15-11): the lead keeps within 25 yd (path distance) of the real player outside combat: it stops at > 25 yd and
+        // goes on once he is within 15 yd again (hysteresis). A client can only start /follow within 28 yd (CheckInteractDistance 4)
+        // and its follow is a straight line, so a lead further away than that is lost to him.
+        float const enter = t.realWaitSince ? 15.0f : 25.0f;
+        float farDist = 0.0f;
         for (GroupReference* ref = group->GetFirstMember(); ref && !realFar; ref = ref->next())
         {
             Player* member = ref->GetSource();
@@ -1090,29 +1127,34 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
             Map* memberMap = member->IsInWorld() ? member->FindMap() : nullptr;
             if (!memberMap || memberMap != bot->GetMap())
                 realFar = true;   // not in the instance (yet): still loading / on the way
-            else if (bot->GetExactDist(member) > enter)
+            else
             {
-                realFar = true;
-                farInMap = true;
-                farPlayer = member;
+                float const pd = RealPlayerDist(bot, member, t, now);
+                if (pd > enter)
+                {
+                    realFar = true;
+                    farInMap = true;
+                    farPlayer = member;
+                    farDist = pd;
+                }
             }
         }
         // state/dungeons_client.md  11::16: a real player who is alive, in this instance and > 40 yd
-        // away is not left behind (he cannot /follow a lead he does not see). The lead walks back to him (the group follows the
-        // lead as usual) until it is within ~15 yd, then waits as below (until 25 yd, max 5 minutes per wait). Only with a
+        // away is not left behind (he cannot /follow a lead he does not see). DG-FOLLOW (15-11): the limit is now 25 yd of path (was 40 yd).
+        // The lead walks back to him (the group follows the lead as usual) until it is within ~12 yd, then waits as below (until 15 yd). Only with a
         // walkable mmap path and when nobody of the group is in combat.
         if (!farPlayer || !farInMap)
             t.realWalkBack = false;
         else
         {
-            float const dist = bot->GetExactDist(farPlayer);
+            float const dist = farDist;
             bool inCombat = bot->IsInCombat();
             for (GroupReference* r2 = group->GetFirstMember(); r2 && !inCombat; r2 = r2->next())
                 if (Player* m2 = r2->GetSource())
                     inCombat = m2->IsInCombat();
             if (dist <= 15.0f || inCombat)
                 t.realWalkBack = false;
-            else if (t.realWalkBack || dist > 40.0f)
+            else if (t.realWalkBack || dist > 40.0f)   // 25-40 yd: the lead only holds (below); walking back at 25 yd pushed it to and fro
             {
                 if (!t.realWalkAt || now - t.realWalkAt >= 1500)
                 {
@@ -1123,7 +1165,7 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
                     else
                     {
                         if (!t.realWalkBack)
-                            TC_LOG_INFO("playerbots", "BotLife {}: walks back to the real player {} ({} yd)", bot->GetName(), farPlayer->GetName(), uint32(dist));
+                            TC_LOG_INFO("playerbots", "BotLife {}: walks back to the real player {} ({} yd by path, 40 yd limit)", bot->GetName(), farPlayer->GetName(), uint32(dist));
                         t.realWalkBack = true;
                         t.realWalkAt = now;
                         bot->GetMotionMaster()->MovePoint(0, farPlayer->GetPositionX(), farPlayer->GetPositionY(), farPlayer->GetPositionZ(), true);
@@ -1142,10 +1184,11 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
             t.realWaitGaveUp = false;
             if (t.realWaitRounds < 250)
                 ++t.realWaitRounds;
-            TC_LOG_INFO("playerbots", "BotLife {}: the real player of the dungeon finder group is still > 40 yd behind (lead moved on / next boss), waits again", bot->GetName());
+            TC_LOG_INFO("playerbots", "BotLife {}: the real player of the dungeon finder group is still > 25 yd behind (lead moved on / next boss), waits again", bot->GetName());
         }
         if (!realFar)
         {
+            t.realWaitLogAt = 0;
             if (t.realWaitSince)
                 TC_LOG_INFO("playerbots", "BotLife {}: the real player of the dungeon finder group is within reach, the lead goes on", bot->GetName());
             t.realWaitSince = 0;
@@ -1157,9 +1200,9 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
             if (!t.realWaitSince)
             {
                 t.realWaitSince = now;
-                TC_LOG_INFO("playerbots", "BotLife {}: waits for the real player of the dungeon finder group (not in the instance or > 40 yd)", bot->GetName());
+                TC_LOG_INFO("playerbots", "BotLife {}: waits for the real player of the dungeon finder group (not in the instance or > 25 yd by path)", bot->GetName());
             }
-            if (now - t.realWaitSince > 300000u)
+            if (now - t.realWaitSince > (farInMap ? 900000u : 300000u))   // DG-FOLLOW: 15 min for a player who is in the instance, 5 min while he is not there
             {
                 t.realWaitGaveUp = true;
                 t.realWaitSince = 0;
@@ -1168,10 +1211,17 @@ bool BotLifeMgr::PartyLeaderWait(Player* bot, BotLifeInfo& t, uint32 now)
                 t.realGaveZ = bot->GetPositionZ();
                 t.realGaveBosses = t.dungeonBosses;
                 TC_LOG_INFO("playerbots", "BotLife {}: waited {} for the real player, goes on without him (waits again after 60 yd / the next boss)", bot->GetName(),
-                    "5 minutes");
+                    farInMap ? "15 minutes" : "5 minutes");
             }
             else
             {
+                // DG-FOLLOW (15-11): log every 30 s so a client run shows the lead standing still for the player
+                if (!t.realWaitLogAt || now - t.realWaitLogAt >= 30000)
+                {
+                    t.realWaitLogAt = now;
+                    TC_LOG_INFO("playerbots", "BotLife {}: holds for the real player {} ({} yd by path, waits until 15 yd, {} s)", bot->GetName(),
+                        farPlayer ? farPlayer->GetName() : std::string("-"), uint32(farDist), uint32((now - t.realWaitSince) / 1000));
+                }
                 if (bot->isMoving())
                     bot->StopMoving();
                 return true;

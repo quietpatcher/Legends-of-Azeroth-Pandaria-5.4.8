@@ -1,0 +1,23 @@
+-- Spirit healers (6491): remove six surplus duplicates in Eastern Kingdoms and Kalimdor.
+-- Problem: each of the guids 371283, 371291, 371231, 371316, 371368 and 371319 stands 21 to 240 yards from the nearest
+--   graveyard (none is within 20 yards of any other graveyard), while our world already holds a second healer of its own
+--   3 to 9 yards from the graveyard at the sniffed position: 375075, 375074, 375073, 375089, 371216 and 375093. A player
+--   who releases there meets two healers, one of them standing far away in the open.
+-- Cause: the old spawns come from an older database; the correctly placed healers were added later next to the graveyards.
+-- Change: delete the six old healers. Per pair the other healer has the same map and zone, stands at the sniffed
+--   position, and the sniffs have exactly one healer at that graveyard (graveyards 1801, 1870, 4, 1856, 850, 913).
+--   The old healers have phase mask 65535 and no phase id or group; the kept ones
+--   have spawn mask 1 and the same default phase. No creature_addon, formation, linked respawn, game event, pool, waypoint, smart script or
+--   condition row refers to the six guids, and no Alliance or Horde graveyard pair explains a second healer.
+-- Source: the Cataclysm Preservation world database (built from sniffs), graveyard positions from the 5.4.8 client data
+--   (WorldSafeLocs.dbc) with their zones from game_graveyard_zone. Checked 15-11-2026.
+-- Rollback:
+--   INSERT INTO `creature` (`guid`,`id`,`map`,`zoneId`,`areaId`,`spawnMask`,`phaseMask`,`phaseId`,`phaseGroup`,`modelid`,`equipment_id`,`position_x`,`position_y`,`position_z`,`orientation`,`spawntimesecs`,`spawntimesecs_max`,`wander_distance`,`currentwaypoint`,`curhealth`,`curmana`,`MovementType`,`npcflag`,`npcflag2`,`unit_flags`,`unit_flags2`,`dynamicflags`,`ScriptName`,`walk_mode`,`VerifiedBuild`) VALUES
+--   (371231,6491,0,40,108,1,65535,0,0,0,0,-10513.3,1180.91,31.7867,3.96346,600,0,0,0,4120,0,0,0,0,0,0,0,'',0,0),
+--   (371283,6491,0,4922,5682,1,65535,0,0,0,0,-2783.43,-5748.71,342.392,2.90136,600,0,0,0,4120,0,0,0,0,0,0,0,'',0,0),
+--   (371291,6491,0,130,236,1,65535,0,0,0,0,-251.024,1521.84,77.0363,0.536741,600,0,0,0,4120,0,0,0,0,0,0,0,'',0,0),
+--   (371316,6491,1,5034,5583,1,65535,0,0,0,0,-11546.3,-2338.79,625.699,1.01699,600,0,0,0,4120,0,0,0,0,0,0,0,'',0,0),
+--   (371319,6491,1,1377,2741,1,65535,0,0,0,0,-8026.65,1602.06,13.8791,3.52035,600,0,0,0,4120,0,0,0,0,0,0,0,'',0,0),
+--   (371368,6491,1,14,4982,1,65535,0,0,0,0,1345.6,-4504.94,27.3019,3.21796,600,0,0,0,4120,0,0,0,0,0,0,0,'',0,0);
+-- (no creature_addon rows exist for these guids)
+DELETE FROM `creature` WHERE `guid` IN (371231,371283,371291,371316,371319,371368) AND `id`=6491;

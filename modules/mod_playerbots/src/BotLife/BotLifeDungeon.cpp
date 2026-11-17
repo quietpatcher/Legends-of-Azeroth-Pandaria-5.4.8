@@ -1498,10 +1498,10 @@ static bool LfgPlayerCutOff(Player* bot, Player* member, BotLifeInfo& t, uint32 
                 len += (p - *prev).length();
             prev = &p;
         }
-        if (len > 40.0f)
+        if (len > 25.0f)
         {
             cut = true;
-            why = "more than 40 yd of path";
+            why = "more than 25 yd of path";
         }
         else if (ClosedDoorOnPath(member, path, true))
         {
@@ -1511,7 +1511,7 @@ static bool LfgPlayerCutOff(Player* bot, Player* member, BotLifeInfo& t, uint32 
     }
     if (t.lfgCutGuid != member->GetGUID() || t.lfgCut != cut)
         TC_LOG_INFO("playerbots", "BotLife {}: arrival wait: the real player {} is {} ({})", bot->GetName(), member->GetName(),
-            cut ? "cut off from the lead" : "on the same path as the lead", cut ? why : "path <= 40 yd, no closed door");
+            cut ? "cut off from the lead" : "on the same path as the lead", cut ? why : "path <= 25 yd, no closed door");
     t.lfgCutGuid = member->GetGUID();
     t.lfgCutAt = now;
     t.lfgCut = cut;
@@ -1551,6 +1551,126 @@ static bool UseDoorOpener(Player* bot, BotLifeInfo& t, GameObject* door, uint32 
     return true;
 }
 
+namespace
+{
+    // (door-detour) an open door within range
+    struct OpenDoorCheck
+    {
+        WorldObject const* obj;
+        float range;
+        bool operator()(GameObject* go) const
+        {
+            return go->GetGoType() == GAMEOBJECT_TYPE_DOOR && go->GetGoState() == GO_STATE_ACTIVE && obj->IsWithinDist(go, range, false);
+        }
+    };
+
+    float PathLength(PathGenerator const& path)
+    {
+        float len = 0.0f;
+        G3D::Vector3 const* prev = nullptr;
+        for (G3D::Vector3 const& p : path.GetPath())
+        {
+            if (prev)
+                len += (p - *prev).length();
+            prev = &p;
+        }
+        return len;
+    }
+}
+
+// (door-detour) the mmap path ignores doors, so the shortest path can run through a held door while a player simply walks
+// another way (Temple of the Jade Serpent: from the pool of Wise Mari the path to Lorewalker Stonestep runs south through the
+// courtyard and the door of Liu Flameheart; a player walks back north through the crossroads into the Scrollkeeper's
+// Sanctum). An open door within 200 yards becomes a waypoint when neither the path to it nor the path from it to x/y/z runs
+// through a held door; of the six nearest open doors the one with the shortest pair of paths is taken. A waypoint that was
+// reached, or walked to for 60 seconds, is not taken again for this destination; with none left the leader waits as before.
+// A search that found nothing is repeated after 30 seconds. True while the leader walks to the waypoint.
+static bool WalkAroundHeldDoor(Player* bot, BotLifeInfo& t, GameObject* heldDoor, float x, float y, float z, uint32 now)
+{
+    uint32 const instanceId = bot->GetInstanceId();
+    if (t.doorDetourInstance != instanceId || std::fabs(t.doorDetourTX - x) > 5.0f || std::fabs(t.doorDetourTY - y) > 5.0f)
+    {
+        t.doorDetourInstance = instanceId;
+        t.doorDetourTX = x;
+        t.doorDetourTY = y;
+        t.doorDetourSpawn = 0;
+        t.doorDetourSearchAt = 0;
+        t.doorDetourTried.clear();
+    }
+    if (t.doorDetourSpawn)
+    {
+        bool const reached = bot->GetExactDist(t.doorDetourX, t.doorDetourY, t.doorDetourZ) < 4.0f;
+        if (!reached && now - t.doorDetourSince < 60000)
+        {
+            if (!bot->isMoving() || now - t.lastMoveOrder > 2000)
+            {
+                bot->GetMotionMaster()->MovePoint(0, t.doorDetourX, t.doorDetourY, t.doorDetourZ, true);
+                t.lastMoveOrder = now;
+            }
+            t.hasDest = false;
+            return true;
+        }
+        TC_LOG_INFO("playerbots", "BotLife {}: map {} detour by door spawn {} {}, the route to {:.0f} {:.0f} {:.0f} still runs through door {} (spawn {})",
+            bot->GetName(), bot->GetMapId(), t.doorDetourSpawn, reached ? "reached" : "not reached in 60 s", x, y, z, heldDoor->GetEntry(),
+            heldDoor->GetDBTableGUIDLow());
+        t.doorDetourTried.insert(t.doorDetourSpawn);
+        t.doorDetourSpawn = 0;
+        t.doorDetourSearchAt = 0;
+    }
+    if (t.doorDetourSearchAt && now - t.doorDetourSearchAt < 30000)
+        return false;
+    t.doorDetourSearchAt = now;
+
+    std::list<GameObject*> open;
+    OpenDoorCheck check{ bot, 200.0f };
+    Trinity::GameObjectListSearcher<OpenDoorCheck> searcher(bot, open, check);
+    bot->VisitNearbyGridObject(200.0f, searcher);
+    std::vector<std::pair<float, GameObject*>> candidates;
+    for (GameObject* go : open)
+    {
+        uint32 const spawn = uint32(go->GetDBTableGUIDLow());
+        if (go != heldDoor && spawn && !t.doorDetourTried.count(spawn) && bot->GetExactDist(go) > 8.0f)
+            candidates.emplace_back(bot->GetExactDist(go) + go->GetExactDist(x, y, z), go);
+    }
+    std::sort(candidates.begin(), candidates.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+    if (candidates.size() > 6)
+        candidates.resize(6);
+    GameObject* best = nullptr;
+    float bestLen = 0.0f;
+    for (auto const& candidate : candidates)
+    {
+        GameObject* via = candidate.second;
+        PathGenerator to(bot);
+        to.CalculatePath(via->GetPositionX(), via->GetPositionY(), via->GetPositionZ(), false);
+        if ((to.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) || ClosedDoorOnPath(bot, to))
+            continue;
+        PathGenerator from(via);
+        from.CalculatePath(x, y, z, false);
+        if ((from.GetPathType() & PATHFIND_NOPATH) || ClosedDoorOnPath(bot, from))
+            continue;
+        float const len = PathLength(to) + PathLength(from);
+        if (!best || len < bestLen)
+        {
+            best = via;
+            bestLen = len;
+        }
+    }
+    if (!best)
+        return false;
+    t.doorDetourSpawn = uint32(best->GetDBTableGUIDLow());
+    t.doorDetourX = best->GetPositionX();
+    t.doorDetourY = best->GetPositionY();
+    t.doorDetourZ = best->GetPositionZ();
+    t.doorDetourSince = now;
+    TC_LOG_INFO("playerbots", "BotLife {}: map {} walks around door {} (spawn {}) by the open door {} ({}, spawn {}): {:.0f} yd of path to {:.0f} {:.0f} {:.0f}",
+        bot->GetName(), bot->GetMapId(), heldDoor->GetEntry(), heldDoor->GetDBTableGUIDLow(), best->GetName(), best->GetEntry(),
+        t.doorDetourSpawn, bestLen, x, y, z);
+    bot->GetMotionMaster()->MovePoint(0, t.doorDetourX, t.doorDetourY, t.doorDetourZ, true);
+    t.lastMoveOrder = now;
+    t.hasDest = false;
+    return true;
+}
+
 // (door-held) the leader does not walk to x/y/z through a held door: it opens it the player's way, or - dropTarget, the target
 // of the target choice - gives the target up without skipping it (the target choice leaves it out while the door is shut and
 // takes the kill-gate, Deadmines: the Defias Watchers that wake the Foe Reaper), or waits (5 minutes at most)
@@ -1560,9 +1680,28 @@ static bool LeaderRouteBlocked(Player* bot, BotLifeInfo& t, float x, float y, fl
     path.CalculatePath(x, y, z, false);
     GameObject* door = ClosedDoorOnPath(bot, path);
     if (!door)
+    {
+        t.doorDetourSpawn = 0;   // (door-detour) the route is clear (from the waypoint, or the door opened)
         return false;
+    }
     if (UseDoorOpener(bot, t, door, now))
         return true;
+    if (!dropTarget && WalkAroundHeldDoor(bot, t, door, x, y, z, now))   // (door-detour)
+        return true;
+    {
+        // rate limited to once per 30 seconds per leader
+        static std::mutex s_blockLogLock;
+        static std::map<ObjectGuid, uint32> s_blockLogAt;
+        std::lock_guard<std::mutex> guard(s_blockLogLock);
+        uint32& last = s_blockLogAt[bot->GetGUID()];
+        if (!last || now - last >= 30000)
+        {
+            last = now;
+            TC_LOG_INFO("playerbots", "BotLife {}: map {} route to {:.0f} {:.0f} {:.0f} blocked by door {} (spawn {}), door {:.0f} yd away, {}, waiting {} s",
+                bot->GetName(), bot->GetMapId(), x, y, z, door->GetEntry(), door->GetDBTableGUIDLow(), bot->GetExactDist(door),
+                dropTarget ? "target given up" : "leader waits", t.doorBlockedSince ? (now - t.doorBlockedSince) / 1000 : 0);
+        }
+    }
     if (dropTarget)
     {
         if (bot->isMoving())
@@ -3036,6 +3175,10 @@ bool BotLifeMgr::VisitSealedBoss(Player* bot, BotLifeInfo& t, Map* map, uint32 d
     if (t.dungeonSealedActive > DUNGEON_SEALED_TIMEOUT)
     {
         describe("not reached in time");
+        if (t.doorBlockedSince)
+            TC_LOG_INFO("playerbots", "BotLife {}: map {} sealed boss {} given up while the route was blocked by a door: waiting {} s, leader at {:.0f} {:.0f} {:.0f}, {:.0f} yd from the boss",
+                bot->GetName(), map->GetId(), best->entry, (now - t.doorBlockedSince) / 1000, bot->GetPositionX(), bot->GetPositionY(),
+                bot->GetPositionZ(), bestDist);
         t.dungeonSealedVisited.insert(best->spawnId);
         t.dungeonSealedTarget = 0;
         return true;
@@ -3400,6 +3543,10 @@ bool BotLifeMgr::TryEventGossip(PlayerbotAI* botAI, BotLifeInfo& t, uint32 now)
                     || (used != t.gossipEmpty.end() && (used->second == usedForGood || used->second == t.dungeonBosses))
                     || (seen != t.gossipEmpty.end() && seen->second == t.dungeonBosses)
                     || OutsideWing(t.dungeonWingArea, t.dungeonWingList, key, o.area))
+                    continue;
+                // a door that its encounter keeps shut cannot be opened by clicking it: the instance script opens it once the bosses
+                // behind it are done (Temple of the Jade Serpent: the door of Liu Flameheart until both wing bosses are dead)
+                if (o.type == GAMEOBJECT_TYPE_DOOR && bot->GetInstanceScript() && bot->GetInstanceScript()->IsHeldEncounterDoor(o.entry))
                     continue;
                 float const d = bot->GetExactDist(o.x, o.y, o.z);
                 if (d <= 50.0f)

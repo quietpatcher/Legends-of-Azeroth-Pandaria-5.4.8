@@ -298,6 +298,10 @@ struct BotLifeInfo
     float realGaveX = 0.0f, realGaveY = 0.0f, realGaveZ = 0.0f;   // where the lead stood when it gave up waiting
     bool realWalkBack = false;       // the lead walks back to a real player > 40 yd behind (until 15 yd)
     uint32 realWalkAt = 0;           // last MovePoint towards him
+    uint32 realWaitLogAt = 0;        // DG-FOLLOW (15-11): last 'holds for the real player' log line (30 s)
+    ObjectGuid realPathGuid;         // DG-FOLLOW: cache of the path distance lead -> real player
+    uint32 realPathAt = 0;
+    float realPathDist = 0.0f;
     uint32 realGaveBosses = 0;       // dungeonBosses at that moment
     uint32 lfgLeadSince = 0;         // when this bot became lead of a dungeon finder group with a real player (arrival)
     bool lfgArrivalDone = false;     // the real player was within 30 yd once, or the arrival wait (5 min) ran out
@@ -321,6 +325,14 @@ struct BotLifeInfo
     uint32 rezWaitSince = 0;                       // (rez-wait) the lead waits for a dead real player to be resurrected
     uint32 nextRezOrder = 0;                       // (rez-walk) next walk/cast order of a healer to a dead real player
     uint32 doorBlockedSince = 0;                   // (door-block) every target of the lead lies behind a closed door
+    // (door-detour) the open door the lead walks to first because the path to doorDetourTX/TY runs through a held door
+    uint32 doorDetourSpawn = 0;                    // spawn id of that open door, 0 = none
+    float doorDetourX = 0.0f, doorDetourY = 0.0f, doorDetourZ = 0.0f;
+    uint32 doorDetourSince = 0;                    // start of the walk to it
+    float doorDetourTX = 0.0f, doorDetourTY = 0.0f; // the destination the detour is for
+    uint32 doorDetourInstance = 0;                 // instance id the detour state belongs to
+    uint32 doorDetourSearchAt = 0;                 // last search (also one that found nothing)
+    std::set<uint32> doorDetourTried;              // open doors already walked to for this destination
     ObjectGuid stuckAttacker;                      // (stuckattacker) attacker of a member the group could not reach: all bots go for it
     uint32 stuckAttackerUntil = 0;
     uint32 nextWalkBring = 0;                      // walker: the next try to bring it to a quest giver of its zones

@@ -1,0 +1,31 @@
+-- Mount Hyjal (map 1, zone 616): remove six surplus service NPCs that stand on top of an identical twin.
+-- Problem: at Nordrassil, the Shrine of Aviana and the Sanctuary of Malorne a player meets two copies of the same
+--   flight master, vendor or innkeeper at the same spot (0 to 0.1 yards apart), both with spawn mask 1, phase mask 1
+--   and no phase id: Elizil Wintermoth (41860 + 53783), Jalin Lakedeep (43380 + 53782), Salirn Moonbear
+--   (43378 + 53779), Ranela Featherglen (54392 + 54393), Dinorae Swiftfeather (43481 + 50084) and Nunaha Grasshoof
+--   (43495 + 50071).
+-- Cause: the sniffs put the first id of each pair in phase 194 (the normal Hyjal phase) and 53783, 53782, 53779 and
+--   54393 in phase 426, the Molten Front (Firelands Invasion) daily stage, where the phase 194 copies are absent.
+--   50084 and 50071 have no sniffed spawn at all. Our core only grants phase 194 in Hyjal (phase_area, no condition)
+--   and has no rule that grants phase 426, so the phase cannot be restored with what exists; with phase id 0 both
+--   copies show for everyone.
+-- Change: delete the six copies outside phase 194, as was already done for Limiah, Isara and Inoho in this zone.
+--   Each kept twin has the same template flags, the same vendor list (17 items for Jalin and Nunaha) and the same
+--   position. Salirn 43378 is kept because it carries the gossip flag and the menu with the inn option; 53779 has
+--   neither. No formation, linked respawn, game event, pool, waypoint, smart script or condition row refers to the
+--   six guids or their entries, and each entry has no other spawn. Two creature_addon rows (sheath state only) go too.
+-- Source: the Cataclysm Preservation world database (built from sniffs): creature PhaseId per spawn and phase_area,
+--   Wowpedia "Firelands Invasion" for the stage at the Sanctuary of Malorne. Checked 15-11-2026.
+-- Rollback:
+--   INSERT INTO `creature` (`guid`,`id`,`map`,`zoneId`,`areaId`,`spawnMask`,`phaseMask`,`phaseId`,`phaseGroup`,`modelid`,`equipment_id`,`position_x`,`position_y`,`position_z`,`orientation`,`spawntimesecs`,`spawntimesecs_max`,`wander_distance`,`currentwaypoint`,`curhealth`,`curmana`,`MovementType`,`npcflag`,`npcflag2`,`unit_flags`,`unit_flags2`,`dynamicflags`,`ScriptName`,`walk_mode`,`VerifiedBuild`) VALUES
+--   (293588,50084,1,616,4990,1,1,0,0,33382,0,4990.07,-2677.63,1426.61,2.61799,300,0,0,0,232470,0,0,0,0,0,0,0,'',0,0),
+--   (293640,54393,1,616,5019,1,1,0,0,38781,0,4394.14,-2107.48,1204.52,6.23082,300,0,0,0,232470,0,0,0,0,0,0,0,'',0,0),
+--   (293642,53779,1,616,4989,1,1,0,0,33335,0,5140.66,-1721.69,1336.1,4.66003,300,0,0,0,44679,0,0,0,0,0,0,0,'',0,0),
+--   (293729,50071,1,616,4990,1,1,0,0,33388,0,4924.59,-2740.14,1437.72,2.07694,300,0,0,0,37187,8162,0,0,0,0,0,0,'',0,0),
+--   (375463,53782,1,616,4989,1,1,0,0,33337,0,5180.91,-1716.01,1340.04,5.75959,300,0,0,0,44679,0,0,0,0,0,0,0,'',0,0),
+--   (375464,53783,1,616,4989,1,1,0,0,32611,0,5165.92,-1761.19,1338.95,2.94961,300,0,0,0,232470,0,0,0,0,0,0,0,'',0,0);
+--   INSERT INTO `creature_addon` (`guid`,`path_id`,`mount`,`MountCreatureID`,`StandState`,`AnimTier`,`VisFlags`,`SheathState`,`PvPFlags`,`emote`,`aiAnimKit`,`movementAnimKit`,`meleeAnimKit`,`visibilityDistanceType`,`auras`) VALUES
+--   (375463,0,0,0,0,0,0,1,0,0,0,0,0,0,NULL),
+--   (375464,0,0,0,0,0,0,1,0,0,0,0,0,0,NULL);
+DELETE FROM `creature_addon` WHERE `guid` IN (375463,375464);
+DELETE FROM `creature` WHERE `guid` IN (293588,293640,293642,293729,375463,375464) AND `id` IN (50084,54393,53779,50071,53782,53783);
