@@ -329,6 +329,15 @@ static std::map<uint32, std::set<uint32>> s_encounterBossMaps;
 // (boss-order) DungeonEncounter.dbc encounterIndex per (map, boss entry): the strict order in which the party takes the bosses of a dungeon
 static std::map<std::pair<uint32, uint32>, uint32> s_bossOrder;
 static std::set<uint32> s_eventSpawnIds;
+// (starter-order) trash whose death starts a boss encounter takes the place of that boss in the order: map, spawn id -> boss entry of the
+// encounter. Hellfire Ramparts: the two Hellfire Sentries below Vazruden the Herald bring Vazruden and Nazan down (npc_hellfire_sentry,
+// JustDied -> SentryDownBy), the last encounter of the dungeon, while Omor the Unscarred (index 1) was still standing on his ledge.
+struct BotLifeEncounterStarter { uint32 mapId; uint32 spawnId; uint32 bossEntry; };
+static BotLifeEncounterStarter const s_encounterStarters[] =
+{
+    { 543, 53822, 17537 },
+    { 543, 53823, 17537 },
+};
 // (p301f-hakkar-order) spawn ids of bosses that were seen hidden and pacified (they rise on a scripted trigger, e.g. the Avatar of Hakkar);
 // once such a boss is visible and attackable somebody triggered it on purpose and it is taken before the encounter order. Map threads: locked.
 static std::set<uint32> s_risenBosses;
@@ -2288,6 +2297,9 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
     if (wait)
     {
         t.dungeonEngageSince = 0;
+        // (wait-stall) the stall clock of the walk (Travel: no new best distance for 4 minutes) kept running while the lead stood still
+        // for its group, so the first step after a long wait gave the target up as "unreachable". The clock starts again after the wait.
+        t.lastProgressCheck = 0;
         return true;
     }
     t.dungeonTargetActive += tickDelta;
@@ -2470,7 +2482,16 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             auto orderOf = [&](BotLifeInstanceSpawn const* s) -> uint32
             {
                 if (!s->boss)
+                {
+                    // (starter-order) trash that starts an encounter waits for the bosses before that encounter
+                    for (BotLifeEncounterStarter const& st : s_encounterStarters)
+                        if (st.mapId == map->GetId() && st.spawnId == s->spawnId)
+                        {
+                            auto o = s_bossOrder.find(std::make_pair(st.mapId, st.bossEntry));
+                            return o != s_bossOrder.end() ? o->second : 0xFFFFFFFFu;
+                        }
                     return 0xFFFFFFFFu;
+                }
                 // (p301f-hakkar-order) a boss that rose after a trigger (a player used the Shrine of the Soulflayer: Avatar of Hakkar, encounter index 7)
                 // is not held back by the bosses with a lower index: the bots stood 4 minutes at the wardens (index 1-6) while the Avatar was up
                 {

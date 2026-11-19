@@ -394,6 +394,12 @@ class boss_vazruden_the_herald : public CreatureScript
                     damage = 0;
             }
 
+            // Once the chest has been handed out the herald must not come back in this instance.
+            bool CanRespawn() override
+            {
+                return !lootSpawned;
+            }
+
             void JustSummoned(Creature* summoned) override
             {
                 if (!summoned)
@@ -468,8 +474,12 @@ class boss_vazruden_the_herald : public CreatureScript
                             {
                                 me->SummonGameObject(DUNGEON_MODE(GO_FEL_IRON_CHEST_NORMAL, GO_FEL_IRON_CHECT_HEROIC), VazrudenMiddle[0], VazrudenMiddle[1], VazrudenMiddle[2], 0, { }, 0);
                                 me->SetLootRecipient(NULL); // don't think this is necessary..
-                                //me->Kill(me);
                                 lootSpawned = true;
+                                // The encounter is over: remove the hidden controller so it no longer
+                                // holds the party in combat. Sets JUST_DIED (combat and threat cleared)
+                                // and removes the corpse without kill credit or loot.
+                                me->DespawnOrUnsummon();
+                                return;
                             }
                             check = 2000;
                         }

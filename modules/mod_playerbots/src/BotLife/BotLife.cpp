@@ -2283,14 +2283,32 @@ static bool HealerResurrectsPlayer(Player* bot, BotLifeInfo& t, Group* group, ui
             if (other != bot && other->IsAlive() && !other->IsInCombat() && other->FindMap() == bot->FindMap() && other->GetSession() && other->GetSession()->IsBot()
                 && PlayerBotSpec::IsHeal(other, true) && other->GetExactDist(dead) + 0.5f < bot->GetExactDist(dead) && other->HasSpell(other->GetClass() == CLASS_PRIEST ? 2006 : other->GetClass() == CLASS_PALADIN ? 7328 : other->GetClass() == CLASS_SHAMAN ? 2008 : other->GetClass() == CLASS_DRUID ? 50769 : 115178))
                 return false;
+    // (rez-walk2) between two walk orders the tick stays with the walk. It used to go to the engine, whose follow strategy
+    // pulled the healer back to its lead on every tick in between, so the healer never left the group.
     if (now < t.nextRezOrder)
-        return false;
+        return t.rezWalk;
     t.nextRezOrder = now + 1500;
     if (bot->GetExactDist(dead) > 25.0f || !bot->IsWithinLOSInMap(dead))
     {
+        // only along the mmap path (a partial one still brings the healer closer); without a path the healer stays with its lead
+        PathGenerator path(bot);
+        path.CalculatePath(dead->GetPositionX(), dead->GetPositionY(), dead->GetPositionZ(), false);
+        if (path.GetPathType() & PATHFIND_NOPATH)
+        {
+            if (t.rezWalk)
+                TC_LOG_INFO("playerbots", "BotLife {}: no path to the dead player {} ({} yd), gives up the walk", bot->GetName(), dead->GetName(),
+                    uint32(bot->GetExactDist(dead)));
+            t.rezWalk = false;
+            return false;
+        }
+        if (!t.rezWalk)
+            TC_LOG_INFO("playerbots", "BotLife {}: walks to the dead player {} to resurrect ({} yd, path type {})", bot->GetName(), dead->GetName(),
+                uint32(bot->GetExactDist(dead)), uint32(path.GetPathType()));
+        t.rezWalk = true;
         bot->GetMotionMaster()->MovePoint(0, dead->GetPositionX(), dead->GetPositionY(), dead->GetPositionZ(), true);
         return true;
     }
+    t.rezWalk = false;
     bot->StopMoving();
     bot->SetFacingToObject(dead);
     bot->CastSpell(dead, spellId, false);

@@ -1,0 +1,12 @@
+-- Azsh'ir Infantry (41227, Vashj'ir, Abyssal Depths), to-do 405: Body Slam is almost never seen.
+-- What a player sees today: the Infantry walks up and hits in melee and only rarely charges with Body Slam (79449).
+-- Cause: smart script 41227/1 casts Body Slam from event RANGE 0-30 yd. Spell 79449 uses SpellRange 74 (0-30 yd, type 2 =
+--   ranged). Spell::CheckRange (Spell.cpp:7497) fails a ranged-type spell with SPELL_FAILED_TOO_CLOSE inside melee range, and
+--   SMART_EVENT_RANGE (SmartScript.cpp:3147) starts the 15-20 s repeat timer whether or not the cast succeeded, so every
+--   attempt at melee range burns the cooldown. The charge path (Spell.cpp:6744) is not involved. The reference has the same 0-30.
+-- Checked: spell_dbc has no row for 79449; SpellMisc 58491 rangeIndex 74; SpellRange 74 = min 0, max 30, type 2.
+-- Change: event RANGE of 41227 id 1 now starts at 8 yd (above melee range), so it only fires when the cast can succeed.
+-- Source: Spell.dbc/SpellMisc.dbc/SpellRange.dbc of the server, Cataclysm Preservation sniff database (script 41227/1), 18-11-2026.
+-- Rollback (the values before this update):
+--   UPDATE `smart_scripts` SET `event_param1`=0 WHERE `entryorguid`=41227 AND `source_type`=0 AND `id`=1;
+UPDATE `smart_scripts` SET `event_param1`=8 WHERE `entryorguid`=41227 AND `source_type`=0 AND `id`=1 AND `event_type`=9 AND `action_param1`=79449;

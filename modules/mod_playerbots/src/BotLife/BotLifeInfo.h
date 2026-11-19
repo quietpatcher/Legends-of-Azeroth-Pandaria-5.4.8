@@ -324,6 +324,7 @@ struct BotLifeInfo
     std::pair<uint32, uint32> noKill{0, 0};       // dungeon leader fighting without a kill: (kills seen, since)
     uint32 rezWaitSince = 0;                       // (rez-wait) the lead waits for a dead real player to be resurrected
     uint32 nextRezOrder = 0;                       // (rez-walk) next walk/cast order of a healer to a dead real player
+    bool rezWalk = false;                          // (rez-walk2) the healer is on its way to him: its ticks stay with the walk
     uint32 doorBlockedSince = 0;                   // (door-block) every target of the lead lies behind a closed door
     // (door-detour) the open door the lead walks to first because the path to doorDetourTX/TY runs through a held door
     uint32 doorDetourSpawn = 0;                    // spawn id of that open door, 0 = none
