@@ -214,6 +214,9 @@ struct BotLifeInfo
     std::set<uint32> gossipUsed;       // event NPCs (spawn ids) this run already talked to
     std::set<uint32> areaTriggersFired;   // (bot-areatrigger) scripted area triggers this run already set off
     uint32 areaTriggerCheck = 0;          // (bot-areatrigger) next check (ms, game time)
+    uint32 purifyCheck = 0;               // (spm-purify) next look for immortal Hatred adds
+    uint32 purifyInstance = 0;            // (spm-purify) instance id the counters below belong to (reset on a new run)
+    std::map<uint32, std::pair<uint32, uint32>> purifyTries; // (spm-purify) defender spawn id -> (attempts this run, next attempt allowed at, game ms)
     std::set<uint32> eventFarVisited;  // far event NPCs the leader already walked up to this run
     ObjectGuid escortNpc;              // event NPC we started and now stay with (escort)
     uint32 escortUntil = 0;

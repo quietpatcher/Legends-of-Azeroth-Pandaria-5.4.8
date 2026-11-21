@@ -22,6 +22,7 @@
 #include "QuestDef.h"
 #include "GossipDef.h"
 #include "ScriptMgr.h"
+#include "MoveSpline.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
@@ -1222,6 +1223,22 @@ namespace
     {
         return (instance && instance->IsHeldEncounterDoor(door->GetEntry())) || DoorOpener(door);
     }
+
+    // (door-click) a closed door that any player opens with a click: selectable, not locked by a flag, and one case of its lock
+    // (Lock.dbc) is the plain open action without a skill. Service Entrance Gate of Stratholme (175368): lock 1634 = quick open,
+    // no key since 4.0. A door without a lock entry is left to its script.
+    bool PlayerOpensDoor(GameObject* door)
+    {
+        if (door->HasFlag(GAMEOBJECT_FIELD_FLAGS, GO_FLAG_IN_USE | GO_FLAG_LOCKED | GO_FLAG_INTERACT_COND | GO_FLAG_NOT_SELECTABLE))
+            return false;
+        LockEntry const* lock = sLockStore.LookupEntry(door->GetGOInfo()->door.lockId);
+        if (!lock)
+            return false;
+        for (uint32 i = 0; i < MAX_LOCK_CASE; ++i)
+            if (lock->Type[i] == LOCK_KEY_SKILL && !lock->Skill[i] && (lock->Index[i] == LOCKTYPE_OPEN || lock->Index[i] == LOCKTYPE_QUICK_OPEN))
+                return true;
+        return false;
+    }
 }
 
 // closed doors near a stuck leader: the bots cannot run the encounter scripts that open them
@@ -1438,7 +1455,8 @@ static bool EncounterInProgress(Player const* bot)
 // height ray that hits the door model (the ray alone missed the Foundry Door on the way down from the balcony)
 // run3: anyDoor - every closed door of the door type counts, not only a held one (a real player behind a gate
 // that autocloses); then the instance script is not needed
-static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path, bool anyDoor = false)
+// (door-click) clickOnly (with anyDoor) - only the doors a player opens with a click, and that no encounter holds
+static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path, bool anyDoor = false, bool clickOnly = false)
 {
     InstanceScript* instance = bot->GetInstanceScript();
     if (!instance && !anyDoor)
@@ -1449,6 +1467,8 @@ static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path, bool
     bot->VisitNearbyGridObject(250.0f, searcher);
     if (!anyDoor)
         doors.remove_if([instance](GameObject* door) { return !DoorHeld(instance, door); });
+    else if (clickOnly)
+        doors.remove_if([instance](GameObject* door) { return DoorHeld(instance, door) || !PlayerOpensDoor(door); });
     if (doors.empty())
         return nullptr;
     Map* map = bot->GetMap();
@@ -1478,6 +1498,33 @@ static GameObject* ClosedDoorOnPath(Player* bot, PathGenerator const& path, bool
         prev = &p;
     }
     return nullptr;
+}
+
+// (door-click) The server does not collide with door objects and the mmap ignores them, so the lead walks through a closed door
+// without opening it; the client of a real player in the group does collide and he is left behind it (dev 19-11, Stratholme -
+// Service Entrance: the lead went through the closed Service Entrance Gate to Magistrate Barthilas and held 25 yd past it for
+// the player who stood at the gate, 15 minutes at a time). With a real player in the group in this map the lead opens the doors
+// on its route that a player opens with a click, as a player in front would; the door stays open (the autoclose of 3 s would shut
+// it again before the player, who follows up to 25 yd behind, is through). Other closed doors are handled as before.
+static bool OpenPlayerDoorOnPath(Player* bot, PathGenerator const& path)
+{
+    Group* group = bot->GetGroup();
+    if (!group || !bot->GetMap()->IsDungeon())
+        return false;
+    bool realPlayer = false;
+    for (GroupReference* ref = group->GetFirstMember(); ref && !realPlayer; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            realPlayer = member != bot && member->GetSession() && !member->GetSession()->IsBot() && member->IsInWorld()
+                && member->FindMap() == bot->GetMap();
+    if (!realPlayer)
+        return false;
+    GameObject* door = ClosedDoorOnPath(bot, path, true, true);
+    if (!door)
+        return false;
+    door->SetGoState(GO_STATE_ACTIVE);
+    TC_LOG_INFO("playerbots", "BotLife {}: map {} opened {} ({}, spawn {}) on its route for the real player of the group, door {:.0f} yd away",
+        bot->GetName(), bot->GetMapId(), door->GetName(), door->GetEntry(), door->GetDBTableGUIDLow(), bot->GetExactDist(door));
+    return true;
 }
 
 // ev_strat_service_alliance_run3.txt, point 1: a real player of a dungeon finder group is cut off from the lead:
@@ -1687,6 +1734,7 @@ static bool LeaderRouteBlocked(Player* bot, BotLifeInfo& t, float x, float y, fl
 {
     PathGenerator path(bot);
     path.CalculatePath(x, y, z, false);
+    OpenPlayerDoorOnPath(bot, path);   // (door-click)
     GameObject* door = ClosedDoorOnPath(bot, path);
     if (!door)
     {
@@ -1783,6 +1831,74 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 TC_LOG_INFO("playerbots", "BotLife {}: sets off area trigger {} on map {}", bot->GetName(), at->ID, bot->GetMapId());
                 sScriptMgr->OnAreaTrigger(bot, at, true);
             }
+    }
+    // (spm-purify) Shado-Pan Monastery: the Residual / Vestige / Fragment of Hatred carry Apparitions (damage taken is set to 0
+    // while it is up). A player clicks a Slain Shado-Pan Defender (spell click, Purification Ritual 111690) that takes it off all
+    // Hatred within 50 yards; bots never did, so the party hit immortal adds for the rest of the run.
+    // the ritual runs: no other order on any tick (a move or an attack order of the leader logic would cut the cast off)
+    if (bot->GetMapId() == 959)
+        if (Spell* cur = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+            if (cur->GetSpellInfo()->Id == 111690)
+                return true;
+    if (bot->GetMapId() == 959 && bot->IsAlive() && !bot->IsMounted() && now >= t.purifyCheck)
+    {
+        t.purifyCheck = now + 1500;
+        std::list<Creature*> hatred;
+        for (uint32 entry : { 58803u, 58807u, 58810u })
+            bot->GetCreatureListWithEntryInGrid(hatred, entry, 45.0f);
+        bool immortal = false;
+        for (Creature* h : hatred)
+            if (h->IsAlive() && h->HasAura(111698)) { immortal = true; break; }
+        if (immortal)
+        {
+            // Purification Ritual (111690) is a 4 s cast with interrupt flags 63 (movement, pushback, auto attack, direct damage).
+            // The old code clicked every 1.5 s while the bot kept fighting / moving and the adds kept hitting it, so every cast was
+            // cut off before it finished (982 clicks on one defender, 0 purified, dev 3-11). No re-click while the cast runs (checked
+            // above), stand still, and give each defender a cooldown and a maximum number of attempts per run.
+            if (t.purifyInstance != bot->GetInstanceId())
+            {
+                t.purifyInstance = bot->GetInstanceId();
+                t.purifyTries.clear();
+            }
+            constexpr uint32 PURIFY_MAX_TRIES = 6;       // per defender per run; the last ones go instant (see below)
+            constexpr uint32 PURIFY_NORMAL_TRIES = 3;    // real casts before the instant fallback
+            std::list<Creature*> defenders;
+            bot->GetCreatureListWithEntryInGrid(defenders, 58794, 70.0f);
+            Creature* best = nullptr;
+            for (Creature* d : defenders)
+            {
+                if (!d->IsAlive() || !d->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+                    continue;
+                auto it = t.purifyTries.find(d->GetSpawnId());
+                if (it != t.purifyTries.end() && (it->second.first >= PURIFY_MAX_TRIES || now < it->second.second))
+                    continue;
+                if (!best || bot->GetExactDist(d) < bot->GetExactDist(best))
+                    best = d;
+            }
+            if (best)
+            {
+                if (bot->GetExactDist(best) > 6.0f)
+                    bot->GetMotionMaster()->MovePoint(0, best->GetPositionX(), best->GetPositionY(), best->GetPositionZ(), true);
+                else
+                {
+                    std::pair<uint32, uint32>& tr = t.purifyTries[best->GetSpawnId()];
+                    ++tr.first;
+                    tr.second = now + 5500;     // cast time 4 s + margin; a finished cast removes the flag, so no retry happens
+                    bot->AttackStop();
+                    bot->StopMoving();
+                    bool instant = tr.first > PURIFY_NORMAL_TRIES;
+                    TC_LOG_INFO("playerbots", "BotLife {}: clicks Slain Shado-Pan Defender {} to purify the Hatred (try {}/{}{})", bot->GetName(),
+                        best->GetSpawnId(), tr.first, PURIFY_MAX_TRIES, instant ? ", instant: the casts were interrupted" : "");
+                    if (instant)
+                        bot->CastSpell(best, 111690, true);   // triggered = no cast time, cannot be interrupted by the adds
+                    else
+                        best->HandleSpellClick(bot);
+                    if (tr.first >= PURIFY_MAX_TRIES)
+                        TC_LOG_INFO("playerbots", "BotLife {}: gives up on Slain Shado-Pan Defender {} after {} tries", bot->GetName(), best->GetSpawnId(), tr.first);
+                }
+                return true;
+            }
+        }
     }
     // (escort-of-player) a player of the group started an escort (Muyoh in Wailing Caverns, started by the real player of a
     // dungeon finder group): the leader takes it on as if it had started it, so it stays with the NPC and the group with it (382). Checked before the combat handling: a leader that fights
@@ -2187,6 +2303,10 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
                 {
                     if (!bot->isMoving() || now - t.lastMoveOrder > 2500)
                     {
+                        // (door-click) Archmage Angela Dosantos stands past the Service Entrance Gate
+                        PathGenerator walk(bot);
+                        walk.CalculatePath(npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), false);
+                        OpenPlayerDoorOnPath(bot, walk);
                         bot->GetMotionMaster()->MovePoint(0, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), true);
                         t.lastMoveOrder = now;
                     }
@@ -2576,6 +2696,7 @@ bool BotLifeMgr::DungeonLeaderUpdate(PlayerbotAI* botAI, BotLifeInfo& t, uint32 
             }
             if (usable)
             {
+                OpenPlayerDoorOnPath(bot, path);   // (door-click)
                 // (door-block) behind a closed door: open what the bots may open, otherwise take the next candidate
                 if (GameObject* door = ClosedDoorOnPath(bot, path))
                 {
@@ -2804,6 +2925,10 @@ namespace
                 || t.dungeonDynSkip.count(c->GetGUID()))
                 return false;
             if (IsHorsemanOutsideHisDungeon(bot, c->GetEntry()))   // (344-horseman)
+                return false;
+            // (spm-flight) an add on a scripted flight path (Gu Cloudstrike's Azure Serpent over the abyss east of his platform) is
+            // no target yet: chasing it walked the party off the platform into the hall of Hatred, past Snowdrift and Sha
+            if (c->IsFlying() && c->movespline && !c->movespline->Finalized())
                 return false;
             if (c->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC))
                 return false;

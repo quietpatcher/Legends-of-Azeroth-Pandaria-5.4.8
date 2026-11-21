@@ -18,7 +18,7 @@
 #ifndef DEF_SHATTERED_H
 #define DEF_SHATTERED_H
 
-uint32 const EncounterCount          = 3;
+uint32 const EncounterCount          = 4;   // boss ids are 1-based (slot 0 unused), Kargath is 3
 
 enum DataTypes
 {
