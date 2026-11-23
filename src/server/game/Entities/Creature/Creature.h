@@ -46,6 +46,11 @@ class WorldSession;
 // Benchmarked: Faster than std::map (insert/find)
 typedef std::unordered_map<uint32, CreatureTemplate> CreatureTemplateContainer;
 
+struct PointOfInterestLocale
+{
+    std::vector<std::string> Name;
+};
+
 // GCC have alternative #pragma pack(N) syntax and old gcc version not support pack(push, N), also any gcc version not support it at some platform
 #if defined(__GNUC__)
 #pragma pack(1)
@@ -56,11 +61,6 @@ typedef std::unordered_map<uint32, CreatureTemplate> CreatureTemplateContainer;
 
 
 typedef std::unordered_map<uint16, CreatureBaseStats> CreatureBaseStatsContainer;
-
-struct PointOfInterestLocale
-{
-    std::vector<std::string> Name;
-};
 
 struct EquipmentInfo
 {

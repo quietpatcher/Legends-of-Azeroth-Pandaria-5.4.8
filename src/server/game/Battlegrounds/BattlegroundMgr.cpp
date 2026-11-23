@@ -1381,7 +1381,7 @@ void BattlegroundMgr::SetHolidayWeekends(uint32 mask)
     {
         if (Battleground* bg = GetBattlegroundTemplate(BattlegroundTypeId(bgtype)))
         {
-            bg->SetHoliday(mask & (1 << bgtype));
+            bg->SetHoliday(mask & MakeOneBasedMask32(bgtype + 1));
         }
     }
 }

@@ -346,7 +346,8 @@ struct SpellBonusEntry
 
 typedef std::unordered_map<uint32, SpellBonusEntry>     SpellBonusMap;
 
-enum SpellGroup
+// Database-defined groups extend beyond the named core values.
+enum SpellGroup : uint32
 {
     SPELL_GROUP_NONE             = 0,
     SPELL_GROUP_ELIXIR_BATTLE    = 1,

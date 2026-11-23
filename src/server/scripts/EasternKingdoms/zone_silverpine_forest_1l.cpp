@@ -36,6 +36,7 @@ EndContentData */
 #include "CombatAI.h"
 #include "GameObjectAI.h"
 #include "ObjectMgr.h"
+#include "MoveSpline.h"
 
 /*######
 ## npc_deathstalker_erland
@@ -1747,46 +1748,45 @@ enum Lordaeron
     QUEST_LORDAERON                             = 27098,
 
     NPC_SYLVANAS_LORDAERON                      = 45051,
-    NPC_FORSAKEN_WARHORSE_LORDAERON             = 45057,
+    NPC_FORSAKEN_WARHORSE_LORDAERON             = 45057, // Sylvanas' horse (vehicle 1077: seat 0 Sylvanas, seat 1 the player's horse)
+    NPC_FORSAKEN_WARHORSE_PLAYER_LORDAERON      = 45041, // the player's horse (vehicle 1076)
 
     SPELL_SUMMON_SYLVANAS_AND_HORSE             = 84128,
     SPELL_RIDE_VEHICLE_HARDCODED_LORDAERON      = 46598,
 
     EVENT_LORDAERON_WAIT_FOR_RIDER              = 1,
+    EVENT_LORDAERON_MOUNT_UP                    = 2,
     EVENT_LORDAERON_TALK                        = 3,
     EVENT_LORDAERON_TALK_DONE                   = 4,
     EVENT_LORDAERON_FINISH                      = 5,
-    EVENT_LORDAERON_BOARD                       = 6,
 
-    // Point ids of the ride are this plus the index in the route
-    POINT_LORDAERON_ROUTE                       = 100
+    SEAT_LORDAERON_SYLVANAS                     = 0,
+    SEAT_LORDAERON_PLAYER_HORSE                 = 1,
+
+    POINT_LORDAERON_RIDE                        = 1
 };
 
 // Where Summon Sylvanas + Horse brings them (spell_target_position): Sylvanas at Forsaken High Command
 Position const LordaeronStartPos = { 1381.35f, 1040.73f, 54.4004f };
 
-// The ride to the Sepulcher. Nothing was sniffed: the nodes follow the flight path from Forsaken High Command to the Sepulcher (TaxiPath
-// 2436) at its flight height, and the ground height under them is taken when the ride starts
+// The ride to the Sepulcher: the road over the bridge, as Sylvanas' horse ran it (waypoint path 450570 of TrinityCore PR #28340,
+// nodes 1-44, then its last move to the Sepulcher). The first entry is the place the horse is summoned (a spline starts from the
+// current position of the mover)
 Position const LordaeronRoute[] =
 {
-    { 1364.59f, 1018.76f,  63.5146f },
-    { 1339.20f, 1014.64f,  65.9663f },
-    { 1322.84f, 1013.92f,  67.7506f },
-    { 1305.81f, 1031.70f,  69.7352f },
-    { 1278.24f, 1066.53f,  72.4136f },
-    { 1199.84f, 1156.39f,  72.4136f },
-    { 1097.92f, 1229.40f,  71.4961f },
-    {  994.83f, 1303.97f,  61.7403f },
-    {  898.08f, 1349.14f,  78.4122f },
-    {  844.41f, 1370.97f,  81.4349f },
-    {  796.46f, 1357.22f,  81.4349f },
-    {  739.80f, 1358.21f,  83.0237f },
-    {  649.94f, 1359.79f,  97.9831f },
-    {  594.89f, 1391.85f, 117.8470f },
-    {  556.30f, 1449.92f, 122.5310f },
-    {  517.38f, 1496.27f, 134.1770f },
-    {  493.86f, 1521.97f, 137.7760f },
-    {  505.00f, 1558.00f, 135.0000f }
+    { 1381.35f, 1040.73f, 54.4004f },
+    { 1361.34f, 1026.57f, 52.7564f }, { 1341.41f, 1015.48f, 54.5546f }, { 1326.32f, 1011.06f, 54.5992f }, { 1310.18f, 1039.85f, 54.5992f },
+    { 1284.02f, 1074.41f, 53.3174f }, { 1271.46f, 1090.13f, 52.2455f }, { 1252.99f, 1106.65f, 51.4217f }, { 1222.99f, 1130.19f, 50.4758f },
+    { 1212.30f, 1138.05f, 50.4684f }, { 1202.34f, 1144.84f, 49.5920f }, { 1177.26f, 1162.18f, 48.9129f }, { 1147.52f, 1182.80f, 48.2925f },
+    { 1113.01f, 1204.53f, 46.7171f }, { 1090.95f, 1220.55f, 46.3405f }, { 1069.73f, 1242.65f, 46.2058f }, { 1049.10f, 1263.08f, 46.0836f },
+    { 1020.50f, 1286.14f, 45.9548f }, {  998.104f, 1299.97f, 45.8613f }, {  962.071f, 1322.14f, 46.1340f }, {  932.884f, 1340.81f, 47.1454f },
+    {  912.49f, 1349.20f, 48.3521f }, {  883.944f, 1356.02f, 51.5032f }, {  864.58f, 1361.52f, 54.6625f }, {  816.589f, 1361.97f, 56.8560f },
+    {  796.295f, 1362.45f, 60.7326f }, {  768.406f, 1362.56f, 65.9252f }, {  738.898f, 1360.21f, 70.7869f }, {  719.656f, 1352.28f, 73.8382f },
+    {  711.545f, 1347.76f, 75.2224f }, {  699.997f, 1335.61f, 77.6982f }, {  685.394f, 1323.57f, 79.4473f }, {  667.123f, 1311.57f, 81.7130f },
+    {  645.257f, 1302.21f, 84.9805f }, {  637.26f, 1308.36f, 84.6332f }, {  624.309f, 1330.15f, 84.6460f }, {  610.80f, 1356.02f, 87.0058f },
+    {  596.417f, 1387.09f, 90.5174f }, {  583.141f, 1415.35f, 95.7118f }, {  572.297f, 1434.98f, 100.203f }, {  550.889f, 1457.77f, 106.652f },
+    {  532.182f, 1475.22f, 114.478f }, {  516.007f, 1488.57f, 121.406f }, {  505.278f, 1507.11f, 126.695f }, {  501.087f, 1524.91f, 128.901f },
+    {  499.185f, 1549.9855f, 129.094f }
 };
 
 // How long each of Sylvanas' 22 lines lasts before the next one
@@ -1795,11 +1795,9 @@ Milliseconds const LordaeronTextDelays[] =
     6s, 6s, 9s, 5s, 7s, 8s, 10s, 11s, 11s, 7s, 6s, 11s, 6s, 12s, 14s, 10s, 12s, 6s, 8s, 14s, 5s, 6s
 };
 
-float const LordaeronMaxStep            = 30.0f;
-// The horse goes on to the next step this close to the current one, so that it never stops on the way
-float const LordaeronStepLead           = 8.0f;
-float const WarhorseLordaeronSpeedRate  = 1.0f;
-float const SylvanasLordaeronSpeedRate  = 1.1f;
+// 6.3564 yards a second (TrinityCore PR #28340), as a rate of the base run speed of 7: the 1186 yards take about 187 s, as long as
+// Sylvanas' story
+float const WarhorseLordaeronSpeedRate  = 6.3564f / 7.0f;
 
 // Sylvanas and the warhorse of the ride are the player's personal summons, so they are found from the player's side
 static Creature* FindLordaeronSummonOf(Player* player, uint32 entry)
@@ -1899,13 +1897,13 @@ private:
 };
 
 // 45051 - Lady Sylvanas Windrunner
-// Summoned with the warhorse by Summon Sylvanas + Horse on accepting Lordaeron: once the player sits on the horse, it carries them to
-// the Sepulcher with Sylvanas riding at its side, telling the story of the Forsaken, and when they have arrived and she has finished,
-// the player is credited and set down. The horse leads, as the player's camera is on it.
+// Summoned with her warhorse by Summon Sylvanas + Horse on accepting Lordaeron. She rides her horse (seat 0), the player's horse is
+// carried in its side seat (seat 1) and the player sits on that one, so the three move as one along the road to the Sepulcher while
+// she tells the story of the Forsaken. When they have arrived and she has finished, the player is credited and set down.
 struct npc_silverpine_sylvanas_windrunner_lordaeron : public ScriptedAI
 {
-    npc_silverpine_sylvanas_windrunner_lordaeron(Creature* creature) : ScriptedAI(creature), _routePoint(0), _textId(0), _boardTries(0),
-        _started(false), _arrived(false), _talkDone(false), _finished(false) { }
+    npc_silverpine_sylvanas_windrunner_lordaeron(Creature* creature) : ScriptedAI(creature), _textId(0), _boardTries(0), _started(false),
+        _arrived(false), _talkDone(false), _finished(false) { }
 
     void IsSummonedBy(Unit* summoner) override
     {
@@ -1914,11 +1912,8 @@ struct npc_silverpine_sylvanas_windrunner_lordaeron : public ScriptedAI
 
         me->SetReactState(REACT_PASSIVE);
         me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
-        me->SetWalk(false);
-        me->SetSpeed(MOVE_RUN, SylvanasLordaeronSpeedRate);
 
-        BuildRoute();
-        _events.ScheduleEvent(EVENT_LORDAERON_WAIT_FOR_RIDER, 1s);
+        _events.ScheduleEvent(EVENT_LORDAERON_MOUNT_UP, 500ms);
     }
 
     void UpdateAI(uint32 diff) override
@@ -1928,30 +1923,64 @@ struct npc_silverpine_sylvanas_windrunner_lordaeron : public ScriptedAI
 
         Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
         Creature* horse = ObjectAccessor::GetCreature(*me, _horseGUID);
-        if (!player || !player->IsInWorld() || !player->IsAlive() || (_started && (!horse || player->GetVehicleBase() != horse)))
+        Creature* playerHorse = ObjectAccessor::GetCreature(*me, _playerHorseGUID);
+        if (!player || !player->IsInWorld() || !player->IsAlive()
+            || (_started && (!horse || !playerHorse || player->GetVehicleBase() != playerHorse || playerHorse->GetVehicleBase() != horse)))
         {
-            EndRide(player, horse, false);
+            EndRide(player, horse, playerHorse, false);
             return;
         }
 
         _events.Update(diff);
 
-        if (_started && !_arrived)
-            UpdateRoute(horse);
+        // The horse stops at the end of its spline
+        if (_started && !_arrived && horse->movespline->Finalized())
+        {
+            _arrived = true;
+            TryFinish();
+        }
 
         while (uint32 eventId = _events.ExecuteEvent())
         {
             switch (eventId)
             {
-                case EVENT_LORDAERON_WAIT_FOR_RIDER:
+                case EVENT_LORDAERON_MOUNT_UP:
+                    // Sylvanas takes her seat, the player's horse is summoned and put in the side seat
                     horse = FindLordaeronSummonOf(player, NPC_FORSAKEN_WARHORSE_LORDAERON);
-                    if (horse && player->GetVehicleBase() == horse)
+                    if (!horse || player->GetVehicle())
+                    {
+                        EndRide(player, horse, playerHorse, false);
+                        return;
+                    }
+                    _horseGUID = horse->GetGUID();
+                    me->EnterVehicle(horse, SEAT_LORDAERON_SYLVANAS);
+
+                    // A personal summon like Sylvanas and her horse (Summon Sylvanas + Horse): a public horse cannot see the private
+                    // warhorse, its Ride Vehicle cast failed with Bad Targets and the ride never started (dev 22-11)
+                    playerHorse = player->SummonCreature(NPC_FORSAKEN_WARHORSE_PLAYER_LORDAERON, player->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN, 0ms, 0, player->GetGUID());
+                    if (!playerHorse)
+                    {
+                        EndRide(player, horse, playerHorse, false);
+                        return;
+                    }
+                    _playerHorseGUID = playerHorse->GetGUID();
+                    playerHorse->EnterVehicle(horse, SEAT_LORDAERON_PLAYER_HORSE);
+
+                    _events.ScheduleEvent(EVENT_LORDAERON_WAIT_FOR_RIDER, 500ms);
+                    break;
+                case EVENT_LORDAERON_WAIT_FOR_RIDER:
+                    if (playerHorse && player->GetVehicleBase() == playerHorse && playerHorse->GetVehicleBase() == horse)
                         StartRide(horse);
-                    else if (++_boardTries < 10)
+                    else if (playerHorse && ++_boardTries < 10)
+                    {
+                        // The player is set on their horse once it sits in the side seat
+                        if (!player->GetVehicle() && playerHorse->GetVehicleBase() == horse)
+                            player->CastSpell(playerHorse, SPELL_RIDE_VEHICLE_HARDCODED_LORDAERON, true);
                         _events.ScheduleEvent(EVENT_LORDAERON_WAIT_FOR_RIDER, 500ms);
+                    }
                     else
                     {
-                        EndRide(player, horse, false);
+                        EndRide(player, horse, playerHorse, false);
                         return;
                     }
                     break;
@@ -1968,7 +1997,7 @@ struct npc_silverpine_sylvanas_windrunner_lordaeron : public ScriptedAI
                     TryFinish();
                     break;
                 case EVENT_LORDAERON_FINISH:
-                    EndRide(player, horse, true);
+                    EndRide(player, horse, playerHorse, true);
                     return;
                 default:
                     break;
@@ -1977,76 +2006,21 @@ struct npc_silverpine_sylvanas_windrunner_lordaeron : public ScriptedAI
     }
 
 private:
-    // Splits the route into short steps, so that each one finds a ground path, at the ground height under the flight path
-    void BuildRoute()
-    {
-        _route.clear();
-
-        Position from = me->GetPosition();
-        for (Position const& node : LordaeronRoute)
-        {
-            float dist = from.GetExactDist2d(node.GetPositionX(), node.GetPositionY());
-            uint32 steps = std::max<uint32>(1, uint32(std::ceil(dist / LordaeronMaxStep)));
-            for (uint32 i = 1; i <= steps; ++i)
-            {
-                float t = float(i) / float(steps);
-                float x = from.GetPositionX() + (node.GetPositionX() - from.GetPositionX()) * t;
-                float y = from.GetPositionY() + (node.GetPositionY() - from.GetPositionY()) * t;
-                float z = from.GetPositionZ() + (node.GetPositionZ() - from.GetPositionZ()) * t;
-
-                float ground = me->GetMap()->GetHeight(x, y, z + 20.0f, false);
-                if (ground > INVALID_HEIGHT)
-                    z = ground;
-
-                _route.push_back({ x, y, z });
-            }
-            from = node;
-        }
-    }
-
     void StartRide(Creature* horse)
     {
         _started = true;
-        _horseGUID = horse->GetGUID();
 
         // The ride is a story: nothing on the way picks a fight with the rider
         if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
             player->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
 
+        // One spline over the road: no path search, which took the shortest way through the river instead of over the bridge
         horse->SetWalk(false);
         horse->SetSpeed(MOVE_RUN, WarhorseLordaeronSpeedRate);
         horse->GetMotionMaster()->Clear();
-        MoveHorseTo(horse, 0);
-
-        me->GetMotionMaster()->Clear();
-        me->GetMotionMaster()->MoveFollow(horse, 3.0f, float(M_PI / 2.0f));
+        horse->GetMotionMaster()->MoveSmoothPath(POINT_LORDAERON_RIDE, LordaeronRoute, std::size(LordaeronRoute), false, false);
 
         _events.ScheduleEvent(EVENT_LORDAERON_TALK, 3s);
-    }
-
-    // Each step is a pathed move of the horse, started before the previous one ends; one that ended early (no path) is started again
-    void UpdateRoute(Creature* horse)
-    {
-        bool const lastPoint = _routePoint + 1 >= _route.size();
-        float const dist = horse->GetExactDist2d(_route[_routePoint].GetPositionX(), _route[_routePoint].GetPositionY());
-        bool const moving = horse->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
-
-        if (lastPoint)
-        {
-            if (!moving)
-            {
-                _arrived = true;
-                TryFinish();
-            }
-        }
-        else if (dist < LordaeronStepLead || !moving)
-            MoveHorseTo(horse, _routePoint + 1);
-    }
-
-    void MoveHorseTo(Creature* horse, uint32 routePoint)
-    {
-        _routePoint = routePoint;
-        horse->GetMotionMaster()->MovePoint(POINT_LORDAERON_ROUTE + _routePoint, _route[_routePoint], true);
     }
 
     void TryFinish()
@@ -2056,7 +2030,7 @@ private:
     }
 
     // Lordaeron Complete, done directly: the credit, then the player is set down and the ride leaves
-    void EndRide(Player* player, Creature* horse, bool completed)
+    void EndRide(Player* player, Creature* horse, Creature* playerHorse, bool completed)
     {
         _finished = true;
         _events.Reset();
@@ -2066,22 +2040,22 @@ private:
             player->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC);
             if (completed)
                 player->KilledMonsterCredit(NPC_SYLVANAS_LORDAERON);
+
+            if (playerHorse && player->GetVehicleBase() == playerHorse)
+                player->ExitVehicle();
         }
 
-        // The horse leaves as soon as the player gets off
-        if (player && horse && player->GetVehicleBase() == horse)
-            player->ExitVehicle();
-        else if (horse)
-            horse->DespawnOrUnsummon(0);
-
+        if (playerHorse)
+            playerHorse->DespawnOrUnsummon(completed ? 500 : 0);
+        if (horse)
+            horse->DespawnOrUnsummon(completed ? 3000 : 0);
         me->DespawnOrUnsummon(completed ? 3000 : 0);
     }
 
     EventMap _events;
     ObjectGuid _playerGUID;
     ObjectGuid _horseGUID;
-    std::vector<Position> _route;
-    uint32 _routePoint;
+    ObjectGuid _playerHorseGUID;
     uint32 _textId;
     uint32 _boardTries;
     bool _started;
@@ -2091,45 +2065,39 @@ private:
 };
 
 // 45057 - Forsaken Warhorse
-// Summoned with Sylvanas for Lordaeron: seats the player and carries them along her route; leaves when the player gets off
+// Sylvanas' horse for Lordaeron: carries her and the player's horse; her AI moves it and sends it away
 struct npc_silverpine_forsaken_warhorse_lordaeron : public ScriptedAI
 {
     npc_silverpine_forsaken_warhorse_lordaeron(Creature* creature) : ScriptedAI(creature) { }
 
-    void IsSummonedBy(Unit* summoner) override
+    void IsSummonedBy(Unit* /*summoner*/) override
     {
-        if (Player* player = summoner->ToPlayer())
-            _playerGUID = player->GetGUID();
-
         me->SetReactState(REACT_PASSIVE);
         me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
-        _events.ScheduleEvent(EVENT_LORDAERON_BOARD, 500ms);
     }
 
-    void PassengerBoarded(Unit* /*passenger*/, int8 /*seatId*/, bool apply) override
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
+// 45041 - Forsaken Warhorse
+// The player's horse for Lordaeron, carried beside Sylvanas; leaves when the player gets off
+struct npc_silverpine_forsaken_warhorse_player_lordaeron : public ScriptedAI
+{
+    npc_silverpine_forsaken_warhorse_player_lordaeron(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
     {
-        if (!apply)
+        me->SetReactState(REACT_PASSIVE);
+        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+    }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (!apply && passenger->GetTypeId() == TYPEID_PLAYER)
             me->DespawnOrUnsummon(500);
     }
 
-    void UpdateAI(uint32 diff) override
-    {
-        _events.Update(diff);
-
-        if (_events.ExecuteEvent() == EVENT_LORDAERON_BOARD)
-        {
-            // Ride Sylvanas Horse picks any warhorse nearby; the player's own one is boarded directly
-            Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
-            if (player && player->IsAlive() && !player->GetVehicle())
-                player->CastSpell(me, SPELL_RIDE_VEHICLE_HARDCODED_LORDAERON, true);
-            else
-                me->DespawnOrUnsummon(0);
-        }
-    }
-
-private:
-    EventMap _events;
-    ObjectGuid _playerGUID;
+    void UpdateAI(uint32 /*diff*/) override { }
 };
 
 Position const AgathaBackFrontyardPos = { 982.57f, 671.04f, 77.298f };
@@ -5696,6 +5664,7 @@ void AddSC_silverpine_forest_1l()
     new creature_script<npc_silverpine_sylvanas_windrunner_high_command>("npc_silverpine_sylvanas_windrunner_high_command");
     new creature_script<npc_silverpine_sylvanas_windrunner_lordaeron>("npc_silverpine_sylvanas_windrunner_lordaeron");
     new creature_script<npc_silverpine_forsaken_warhorse_lordaeron>("npc_silverpine_forsaken_warhorse_lordaeron");
+    new creature_script<npc_silverpine_forsaken_warhorse_player_lordaeron>("npc_silverpine_forsaken_warhorse_player_lordaeron");
     new creature_script<npc_silverpine_agatha_fenris_isle>("npc_silverpine_agatha_fenris_isle");
     new spell_script<spell_silverpine_forsaken_trooper_masterscript_fenris_isle>("spell_silverpine_forsaken_trooper_masterscript_fenris_isle");
     new creature_script<npc_silverpine_hillsbrad_refugee>("npc_silverpine_hillsbrad_refugee");

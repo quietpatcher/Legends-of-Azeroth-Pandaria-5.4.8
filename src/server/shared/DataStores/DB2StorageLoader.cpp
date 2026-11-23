@@ -21,6 +21,7 @@
 #include "Database/DatabaseEnv.h"
 #include "Errors.h"
 #include "Log.h"
+#include "Unaligned.h"
 #include <cstring>
 
 DB2FileLoader::DB2FileLoader()
@@ -295,12 +296,12 @@ char* DB2FileLoader::AutoProduceData(char const* format, uint32& records, char**
             switch (format[x])
             {
                 case FT_FLOAT:
-                    *((float*)(&dataTable[offset])) = getRecord(y).getFloat(x);
+                    WriteUnaligned(&dataTable[offset], getRecord(y).getFloat(x));
                     offset += sizeof(float);;
                     break;
                 case FT_IND:
                 case FT_INT:
-                    *((uint32*)(&dataTable[offset])) = getRecord(y).getUInt(x);
+                    WriteUnaligned(&dataTable[offset], getRecord(y).getUInt(x));
                     offset += 4;
                     break;
                 case FT_BYTE:
@@ -308,7 +309,7 @@ char* DB2FileLoader::AutoProduceData(char const* format, uint32& records, char**
                     offset += 1;
                     break;
                 case FT_STRING:
-                    *((char**)(&dataTable[offset])) = nullptr;   // will be replaces non-empty or "" strings in AutoProduceStrings
+                    WriteUnaligned<char*>(&dataTable[offset], nullptr);
                     offset += sizeof(char*);
                     break;
                 case FT_NA:
@@ -370,8 +371,8 @@ char* DB2FileLoader::AutoProduceStringsArrayHolders(char const* format, char* da
                 case FT_STRING:
                 {
                     // init db2 string field slots by pointers to string holders
-                    char const*** slot = (char const***)(&dataTable[offset]);
-                    *slot = (char const**)(&stringHoldersPool[stringHoldersRecordPoolSize * y + stringFieldOffset]);
+                    char const** slot = (char const**)(&stringHoldersPool[stringHoldersRecordPoolSize * y + stringFieldOffset]);
+                    WriteUnaligned(&dataTable[offset], slot);
                     stringFieldOffset += stringHolderSize;
                     offset += sizeof(char*);
                     break;
@@ -417,7 +418,7 @@ char* DB2FileLoader::AutoProduceStrings(char const* format, char* dataTable, uin
                 case FT_STRING:
                 {
                     // fill only not filled entries
-                    LocalizedString* db2str = *(LocalizedString**)(&dataTable[offset]);
+                    LocalizedString* db2str = ReadUnaligned<LocalizedString*>(&dataTable[offset]);
                     if (db2str->Str[locale] == nullStr)
                     {
                         const char* st = getRecord(y).getString(x);
@@ -519,12 +520,12 @@ char* DB2DatabaseLoader::Load(const char* format, int32 preparedStatement, uint3
             switch (format[f])
             {
                 case FT_FLOAT:
-                    *((float*)(&dataValue[offset])) = fields[f].GetFloat();
+                    WriteUnaligned(&dataValue[offset], fields[f].GetFloat());
                     offset += 4;
                     break;
                 case FT_IND:
                 case FT_INT:
-                    *((int32*)(&dataValue[offset])) = fields[f].GetInt32();
+                    WriteUnaligned(&dataValue[offset], fields[f].GetInt32());
                     offset += 4;
                     break;
                 case FT_BYTE:
@@ -617,7 +618,7 @@ void DB2DatabaseLoader::LoadStrings(const char* format, int32 preparedStatement,
                     case FT_STRING:
                     {
                         // fill only not filled entries
-                        LocalizedString* db2str = *(LocalizedString**)(&dataValue[offset]);
+                        LocalizedString* db2str = ReadUnaligned<LocalizedString*>(&dataValue[offset]);
                         if (db2str->Str[locale] == nullStr)
                             if (char* str = AddLocaleString(db2str, locale, fields[1 + stringFieldNumInRecord].GetString()))
                                 stringPool.push_back(str);

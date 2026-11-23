@@ -20,6 +20,7 @@
 #include "DatabaseEnv.h"
 #include "Errors.h"
 #include "Log.h"
+#include "Unaligned.h"
 #include <sstream>
 
 DBCDatabaseLoader::DBCDatabaseLoader(std::string const& storageName, std::string const& dbFormatString, std::string const& primaryKey, char const* dbcFormatString)
@@ -117,12 +118,12 @@ char* DBCDatabaseLoader::Load(uint32& records, char**& indexTable)
                 switch (_dbcFormat[columnNumber])
                 {
                     case FT_FLOAT:
-                        *reinterpret_cast<float*>(&dataValue[offset]) = 0.0f;
+                        WriteUnaligned(&dataValue[offset], 0.0f);
                         offset += 4;
                         break;
                     case FT_IND:
                     case FT_INT:
-                        *reinterpret_cast<uint32*>(&dataValue[offset]) = uint32(0);
+                        WriteUnaligned(&dataValue[offset], uint32(0));
                         offset += 4;
                         break;
                     case FT_BYTE:
@@ -130,7 +131,7 @@ char* DBCDatabaseLoader::Load(uint32& records, char**& indexTable)
                         offset += 1;
                         break;
                     case FT_STRING:
-                        *reinterpret_cast<char**>(&dataValue[offset]) = const_cast<char*>(dbcNullStr);
+                        WriteUnaligned(&dataValue[offset], const_cast<char*>(dbcNullStr));
                         offset += sizeof(char*);
                         break;
                 }
@@ -141,12 +142,12 @@ char* DBCDatabaseLoader::Load(uint32& records, char**& indexTable)
                 switch (_dbcFormat[columnNumber])
                 {
                     case FT_FLOAT:
-                        *reinterpret_cast<float*>(&dataValue[offset]) = fields[sqlColumnNumber].GetFloat();
+                        WriteUnaligned(&dataValue[offset], fields[sqlColumnNumber].GetFloat());
                         offset += 4;
                         break;
                     case FT_IND:
                     case FT_INT:
-                        *reinterpret_cast<uint32*>(&dataValue[offset]) = fields[sqlColumnNumber].GetUInt32();
+                        WriteUnaligned(&dataValue[offset], fields[sqlColumnNumber].GetUInt32());
                         offset += 4;
                         break;
                     case FT_BYTE:

@@ -19,6 +19,8 @@
 #define SF_OBJECT_H
 
 #include "Common.h"
+#include "BitMask.h"
+#include "FlaggedValues.h"
 #include "Map.h"
 #include "ModelIgnoreFlags.h"
 #include "MovementInfo.h"
@@ -310,30 +312,6 @@ class TC_GAME_API Object
 
 };
 
-template <class T_VALUES, class T_FLAGS, class FLAG_TYPE, size_t ARRAY_SIZE>
-class FlaggedValuesArray32
-{
-    public:
-        FlaggedValuesArray32()
-        {
-            memset(&m_values, 0x00, sizeof(T_VALUES) * ARRAY_SIZE);
-            m_flags = 0;
-        }
-
-        T_FLAGS  GetFlags() const { return m_flags; }
-        bool     HasFlag(FLAG_TYPE flag) const { return m_flags & (1 << flag); }
-        void     AddFlag(FLAG_TYPE flag) { m_flags |= (1 << flag); }
-        void     DelFlag(FLAG_TYPE flag) { m_flags &= ~(1 << flag); }
-
-        T_VALUES GetValue(FLAG_TYPE flag) const { return m_values[flag]; }
-        void     SetValue(FLAG_TYPE flag, T_VALUES value) { m_values[flag] = value; }
-        void     AddValue(FLAG_TYPE flag, T_VALUES value) { m_values[flag] += value; }
-
-    private:
-        T_VALUES m_values[ARRAY_SIZE];
-        T_FLAGS m_flags;
-};
-
 enum MapObjectCellMoveState
 {
     MAP_OBJECT_CELL_MOVE_NONE, //not in move list
@@ -534,8 +512,8 @@ class TC_GAME_API WorldObject : public Object, public WorldLocation
         FlaggedValuesArray32<int32, uint32, StealthType, TOTAL_STEALTH_TYPES> m_stealth;
         FlaggedValuesArray32<int32, uint32, StealthType, TOTAL_STEALTH_TYPES> m_stealthDetect;
 
-        FlaggedValuesArray32<int32, uint32, InvisibilityType, TOTAL_INVISIBILITY_TYPES> m_invisibility;
-        FlaggedValuesArray32<int32, uint32, InvisibilityType, TOTAL_INVISIBILITY_TYPES> m_invisibilityDetect;
+        FlaggedValuesArray32<int32, uint64, InvisibilityType, TOTAL_INVISIBILITY_TYPES> m_invisibility;
+        FlaggedValuesArray32<int32, uint64, InvisibilityType, TOTAL_INVISIBILITY_TYPES> m_invisibilityDetect;
 
         FlaggedValuesArray32<int32, uint32, ServerSideVisibilityType, TOTAL_SERVERSIDE_VISIBILITY_TYPES> m_serverSideVisibility;
         FlaggedValuesArray32<int32, uint32, ServerSideVisibilityType, TOTAL_SERVERSIDE_VISIBILITY_TYPES> m_serverSideVisibilityDetect;

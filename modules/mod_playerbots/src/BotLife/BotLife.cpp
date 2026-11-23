@@ -10609,6 +10609,8 @@ void BotLifeMgr::BalanceLevels(uint32 /*now*/)
     // bands: 0 = 1-9, 1 = 10-19, ..., 8 = 80-89, 9 = 90
     std::array<std::vector<Player*>, 10> free;
     std::array<uint32, 10> count = {};
+    // (to-do 265, 22-11) bots per class in every band: the balance takes the most numerous class of a full band first
+    std::array<std::array<uint32, MAX_CLASSES>, 10> classCount = {};
     uint32 total = 0;
     for (auto const& pair : sRandomPlayerbotMgr->GetAllBots())
     {
@@ -10618,6 +10620,8 @@ void BotLifeMgr::BalanceLevels(uint32 /*now*/)
         uint32 const level = bot->GetLevel();
         uint32 const band = level >= 90 ? 9u : std::min<uint32>(8u, level / 10);
         ++count[band];
+        if (bot->GetClass() < MAX_CLASSES)
+            ++classCount[band][bot->GetClass()];
         ++total;
         PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
         if (!ai || ai->HasRealPlayerMaster() || ai->life.party || ai->life.banker || ai->life.relevelTo || IsWalker(bot) || IsLfgBot(bot->GetGUID())
@@ -10664,6 +10668,7 @@ void BotLifeMgr::BalanceLevels(uint32 /*now*/)
             inWorld[8],inDungeon[8],inBG[8], inWorld[9],inDungeon[9],inBG[9]);
     }
     uint32 moved = 0;
+    std::array<bool, 10> noCandidate = {};   // (to-do 265) an over-full band without a bot that may move this round
     for (uint32 i = 0; i < _levelBalanceMoves; ++i)
     {
         int32 over = -1, under = -1;
@@ -10673,7 +10678,7 @@ void BotLifeMgr::BalanceLevels(uint32 /*now*/)
             if (target[b] <= 0.0f)
                 continue;
             float const ratio = float(count[b]) / target[b];
-            if (ratio > overRatio && !free[b].empty())
+            if (ratio > overRatio && !free[b].empty() && !noCandidate[b])
             {
                 overRatio = ratio;
                 over = int32(b);
@@ -10687,24 +10692,72 @@ void BotLifeMgr::BalanceLevels(uint32 /*now*/)
         if (over < 0 || under < 0)
             break;
         uint32 const to = under == 9 ? 90u : under == 0 ? urand(2, 9) : urand(uint32(under) * 10, uint32(under) * 10 + 9);
-        std::vector<Player*>& from = free[over];
-        Player* bot = nullptr;
-        for (size_t tries = 0; tries < 8 && !from.empty() && !bot; ++tries)
+        // (to-do 265, 22-11) a death knight starts at 55 and could never be sent to a band below that, so it was skipped and only
+        // the other classes left a full band. Prod 22-11: 377 of the 385 bots at 80-89 were death knights (0 healers), 5 of 864
+        // moves in a week were death knights. Now a death knight goes to the emptiest band it can live in (55-90, below its
+        // target), and the band hands over a bot of its most numerous class first, so a band drifts back to a mix of classes.
+        int32 dkBand = -1;
         {
-            size_t const k = urand(0, uint32(from.size() - 1));
-            Player* candidate = from[k];
-            from.erase(from.begin() + k);
-            if (candidate->GetClass() == CLASS_DEATH_KNIGHT && to < 55)
-                continue;   // a death knight starts at 55
-            bot = candidate;
+            float best = 1.0f;
+            for (uint32 b = 5; b < 10; ++b)
+            {
+                if (int32(b) == over || target[b] <= 0.0f)
+                    continue;
+                float const ratio = float(count[b]) / target[b];
+                if (ratio < best)
+                {
+                    best = ratio;
+                    dkBand = int32(b);
+                }
+            }
+            if (under >= 5)
+                dkBand = under;   // the band asked for is open to a death knight anyway (50-59: at 55-59)
         }
-        if (!bot)
-            break;
-        GET_PLAYERBOT_AI(bot)->life.relevelTo = uint8(to);
+        // the most numerous class of the band goes first; when that is the death knight and no band of 55+ has room, nobody
+        // moves out of this band now, so the other classes are no longer drained around a block of death knights
+        std::vector<Player*>& from = free[over];
+        std::vector<size_t> picks;
+        uint32 most = 0;
+        for (size_t k = 0; k < from.size(); ++k)
+        {
+            uint8 const cls = from[k]->GetClass();
+            uint32 const n = cls < MAX_CLASSES ? classCount[over][cls] : 0;
+            if (n > most)
+            {
+                most = n;
+                picks.clear();
+            }
+            if (n == most)
+                picks.push_back(k);
+        }
+        if (dkBand < 0)
+            picks.erase(std::remove_if(picks.begin(), picks.end(),
+                [&from](size_t k) { return from[k]->GetClass() == CLASS_DEATH_KNIGHT; }), picks.end());
+        if (picks.empty())
+        {
+            noCandidate[over] = true;   // try the next over-full band
+            continue;
+        }
+        size_t const k = picks[urand(0, uint32(picks.size() - 1))];
+        Player* bot = from[k];
+        from.erase(from.begin() + k);
+        int32 band = under;
+        uint32 level = to;
+        if (bot->GetClass() == CLASS_DEATH_KNIGHT && (to < 55 || under < 5))
+        {
+            band = dkBand;
+            level = band == 9 ? 90u : band == 5 ? urand(55, 59) : urand(uint32(band) * 10, uint32(band) * 10 + 9);
+        }
+        GET_PLAYERBOT_AI(bot)->life.relevelTo = uint8(level);
         TC_LOG_INFO("playerbots", "LEVELBAL {} level {} -> {} (band {}: {} of {:.0f}, band {}: {} of {:.0f}, {} bots)", bot->GetName(),
-            uint32(bot->GetLevel()), to, over, count[over], target[over], under, count[under], target[under], total);
+            uint32(bot->GetLevel()), level, over, count[over], target[over], band, count[band], target[band], total);
         --count[over];
-        ++count[under];
+        ++count[band];
+        if (bot->GetClass() < MAX_CLASSES)
+        {
+            --classCount[over][bot->GetClass()];
+            ++classCount[band][bot->GetClass()];
+        }
         ++moved;
     }
     if (moved)

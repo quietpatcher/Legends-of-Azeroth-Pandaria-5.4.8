@@ -225,12 +225,12 @@ char* DBCFileLoader::AutoProduceData(char const* format, uint32& records, char**
             switch (format[x])
             {
                 case FT_FLOAT:
-                    *((float*)(&dataTable[offset])) = getRecord(y).getFloat(x);
+                    WriteUnaligned(&dataTable[offset], getRecord(y).getFloat(x));
                     offset += sizeof(float);
                     break;
                 case FT_IND:
                 case FT_INT:
-                    *((uint32*)(&dataTable[offset])) = getRecord(y).getUInt(x);
+                    WriteUnaligned(&dataTable[offset], getRecord(y).getUInt(x));
                     offset += sizeof(uint32);
                     break;
                 case FT_BYTE:
@@ -238,11 +238,11 @@ char* DBCFileLoader::AutoProduceData(char const* format, uint32& records, char**
                     offset += sizeof(uint8);
                     break;
                 case FT_STRING:
-                    *((char**)(&dataTable[offset])) = nullptr;   // will replace non-empty or "" strings in AutoProduceStrings
+                    WriteUnaligned<char*>(&dataTable[offset], nullptr); // filled in AutoProduceStrings
                     offset += sizeof(char*);
                     break;
                 case FT_LONG:
-                    *((uint64*)(&dataTable[offset])) = getRecord(y).getUInt64(x);
+                    WriteUnaligned(&dataTable[offset], getRecord(y).getUInt64(x));
                     offset += sizeof(uint64);
                     break;                    
                 case FT_NA:
@@ -288,11 +288,11 @@ char* DBCFileLoader::AutoProduceStrings(char const* format, char* dataTable)
                 case FT_STRING:
                 {
                     // fill only not filled entries
-                    char** slot = (char**)(&dataTable[offset]);
-                    if (!*slot || !**slot)
+                    char* slot = ReadUnaligned<char*>(&dataTable[offset]);
+                    if (!slot || !*slot)
                     {
                         const char * st = getRecord(y).getString(x);
-                        *slot = stringPool + (st - (char const*)stringTable);
+                        WriteUnaligned(&dataTable[offset], stringPool + (st - (char const*)stringTable));
                     }
                     offset += sizeof(char*);
                     break;

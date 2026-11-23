@@ -86,16 +86,19 @@ Object::Object()
 
 WorldObject::~WorldObject()
 {
-    // this may happen because there are many !create/delete
-    if (IsWorldObject() && m_currMap)
+    // Derived parts have already been destroyed: IsWorldObject/ResetMap may
+    // access Creature state through ToCreature(), so do not call them here.
+    // Erasing a non-world object from the set is harmless.
+    if (m_currMap)
     {
-        if (GetTypeId() == TYPEID_CORPSE)
+        if (m_isWorldObject && GetTypeId() == TYPEID_CORPSE)
         {
-            TC_LOG_FATAL("misc", "Object::~Object Corpse guid=" "{}" ", type={}, entry={} deleted but still in map!!",
-                GetGUID().GetRawValue(), ((Corpse*)this)->GetType(), GetEntry());
+            TC_LOG_FATAL("misc", "Object::~Object Corpse guid={} entry={} deleted but still in map!!",
+                GetGUID().GetRawValue(), GetEntry());
             ASSERT(false);
         }
-        ResetMap();
+        m_currMap->RemoveWorldObject(this);
+        m_currMap = nullptr;
     }
 }
 
@@ -383,7 +386,7 @@ uint32 Object::GetUInt32Value(uint16 index) const
 uint64 Object::GetUInt64Value(uint16 index) const
 {
     ASSERT(index + 1 < m_valuesCount || PrintIndexError(index, false));
-    return *((uint64*)&(m_uint32Values[index]));
+    return uint64(m_uint32Values[index]) | (uint64(m_uint32Values[index + 1]) << 32);
 }
 
 float Object::GetFloatValue(uint16 index) const
@@ -409,7 +412,7 @@ uint16 Object::GetUInt16Value(uint16 index, uint8 offset) const
 ObjectGuid Object::GetGuidValue(uint16 index) const
 {
     ASSERT(index + 1 < m_valuesCount || PrintIndexError(index, false));
-    return *((ObjectGuid*)&(m_uint32Values[index]));
+    return ObjectGuid(GetUInt64Value(index));
 }
 
 uint32 Object::GetDynamicUInt32Value(uint32 tab, uint16 index) const
@@ -1037,7 +1040,7 @@ void Object::UpdateUInt32Value(uint16 index, uint32 value)
 void Object::SetUInt64Value(uint16 index, uint64 value)
 {
     ASSERT(index + 1 < m_valuesCount || PrintIndexError(index, true));
-    if (*((uint64*)&(m_uint32Values[index])) != value)
+    if (GetUInt64Value(index) != value)
     {
         m_uint32Values[index] = PAIR64_LOPART(value);
         m_uint32Values[index + 1] = PAIR64_HIPART(value);
@@ -1052,9 +1055,10 @@ void Object::SetUInt64Value(uint16 index, uint64 value)
 bool Object::AddGuidValue(uint16 index, ObjectGuid value)
 {
     ASSERT(index + 1 < m_valuesCount || PrintIndexError(index, true));
-    if (value && !*((ObjectGuid*)&(m_uint32Values[index])))
+    if (value && !GetGuidValue(index))
     {
-        *((ObjectGuid*)&(m_uint32Values[index])) = value;
+        m_uint32Values[index] = PAIR64_LOPART(value.GetRawValue());
+        m_uint32Values[index + 1] = PAIR64_HIPART(value.GetRawValue());
         _changesMask.SetBit(index);
         _changesMask.SetBit(index + 1);
 
@@ -1070,7 +1074,7 @@ bool Object::AddGuidValue(uint16 index, ObjectGuid value)
 bool Object::RemoveGuidValue(uint16 index, ObjectGuid value)
 {
     ASSERT(index + 1 < m_valuesCount || PrintIndexError(index, true));
-    if (value && *((ObjectGuid*)&(m_uint32Values[index])) == value)
+    if (value && GetGuidValue(index) == value)
     {
         m_uint32Values[index] = 0;
         m_uint32Values[index + 1] = 0;
@@ -1145,9 +1149,10 @@ void Object::SetUInt16Value(uint16 index, uint8 offset, uint16 value)
 void Object::SetGuidValue(uint16 index, ObjectGuid value)
 {
     ASSERT(index + 1 < m_valuesCount || PrintIndexError(index, true));
-    if (*((ObjectGuid*)&(m_uint32Values[index])) != value)
+    if (GetGuidValue(index) != value)
     {
-        *((ObjectGuid*)&(m_uint32Values[index])) = value;
+        m_uint32Values[index] = PAIR64_LOPART(value.GetRawValue());
+        m_uint32Values[index + 1] = PAIR64_HIPART(value.GetRawValue());
         _changesMask.SetBit(index);
         _changesMask.SetBit(index + 1);
 
@@ -2402,7 +2407,7 @@ bool WorldObject::CanDetectInvisibilityOf(WorldObject const* obj) const
         if ((m_invisibility.GetFlags() & obj->m_invisibilityDetect.GetFlags()) != m_invisibility.GetFlags())
             return false;
 
-    uint32 mask = obj->m_invisibility.GetFlags() & m_invisibilityDetect.GetFlags();
+    uint64 mask = obj->m_invisibility.GetFlags() & m_invisibilityDetect.GetFlags();
 
     // Check for not detected types
     if (mask != obj->m_invisibility.GetFlags())
@@ -2410,7 +2415,7 @@ bool WorldObject::CanDetectInvisibilityOf(WorldObject const* obj) const
 
     for (uint32 i = 0; i < TOTAL_INVISIBILITY_TYPES; ++i)
     {
-        if (!(mask & (1 << i)))
+        if (!(mask & (uint64(1) << i)))
             continue;
 
         int32 objInvisibilityValue = obj->m_invisibility.GetValue(InvisibilityType(i));

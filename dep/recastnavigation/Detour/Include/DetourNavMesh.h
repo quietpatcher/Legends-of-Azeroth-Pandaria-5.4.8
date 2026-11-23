@@ -211,6 +211,9 @@ struct dtPolyDetail
 /// Defines a link between polygons.
 /// @note This structure is rarely if ever used by the end user.
 /// @see dtMeshTile
+// Existing mmap tiles align their sections to four bytes, also with 64-bit refs.
+// Keep the serialized byte layout and declare its actual supported alignment.
+#pragma pack(push, 4)
 struct dtLink
 {
 	dtPolyRef ref;					///< Neighbour reference. (The neighbor that is linked to.)
@@ -220,6 +223,11 @@ struct dtLink
 	unsigned char bmin;				///< If a boundary link, defines the minimum sub-edge area.
 	unsigned char bmax;				///< If a boundary link, defines the maximum sub-edge area.
 };
+
+#pragma pack(pop)
+#ifdef DT_POLYREF64
+static_assert(sizeof(dtLink) == 16, "Keep the existing mmap link layout");
+#endif
 
 /// Bounding volume node.
 /// @note This structure is rarely if ever used by the end user.

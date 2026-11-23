@@ -19,6 +19,7 @@
 #include "Errors.h"
 #include "Log.h"
 #include "MySQLHacks.h"
+#include "Unaligned.h"
 
 Field::Field()
 {
@@ -80,7 +81,7 @@ uint16 Field::GetUInt16() const
 #endif
 
     if (data.raw)
-        return *reinterpret_cast<uint16 const*>(data.value);
+        return ReadUnaligned<uint16>(data.value);
     return static_cast<uint16>(strtoul(data.value, nullptr, 10));
 }
 
@@ -98,7 +99,7 @@ int16 Field::GetInt16() const
 #endif
 
     if (data.raw)
-        return *reinterpret_cast<int16 const*>(data.value);
+        return ReadUnaligned<int16>(data.value);
     return static_cast<int16>(strtol(data.value, nullptr, 10));
 }
 
@@ -116,7 +117,7 @@ uint32 Field::GetUInt32() const
 #endif
 
     if (data.raw)
-        return *reinterpret_cast<uint32 const*>(data.value);
+        return ReadUnaligned<uint32>(data.value);
     return static_cast<uint32>(strtoul(data.value, nullptr, 10));
 }
 
@@ -134,7 +135,7 @@ int32 Field::GetInt32() const
 #endif
 
     if (data.raw)
-        return *reinterpret_cast<int32 const*>(data.value);
+        return ReadUnaligned<int32>(data.value);
     return static_cast<int32>(strtol(data.value, nullptr, 10));
 }
 
@@ -152,7 +153,7 @@ uint64 Field::GetUInt64() const
 #endif
 
     if (data.raw)
-        return *reinterpret_cast<uint64 const*>(data.value);
+        return ReadUnaligned<uint64>(data.value);
     return static_cast<uint64>(strtoull(data.value, nullptr, 10));
 }
 
@@ -170,7 +171,7 @@ int64 Field::GetInt64() const
 #endif
 
     if (data.raw)
-        return *reinterpret_cast<int64 const*>(data.value);
+        return ReadUnaligned<int64>(data.value);
     return static_cast<int64>(strtoll(data.value, nullptr, 10));
 }
 
@@ -188,7 +189,7 @@ float Field::GetFloat() const
 #endif
 
     if (data.raw)
-        return *reinterpret_cast<float const*>(data.value);
+        return ReadUnaligned<float>(data.value);
     return static_cast<float>(atof(data.value));
 }
 
@@ -206,7 +207,7 @@ double Field::GetDouble() const
 #endif
 
     if (data.raw && !IsType(DatabaseFieldTypes::Decimal))
-        return *reinterpret_cast<double const*>(data.value);
+        return ReadUnaligned<double>(data.value);
     return static_cast<double>(atof(data.value));
 }
 

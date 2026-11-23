@@ -77,7 +77,7 @@ class BattlegroundQueue
 {
     public:
         BattlegroundQueue();
-        ~BattlegroundQueue();
+        virtual ~BattlegroundQueue();
 
         void BattlegroundQueueUpdate(uint32 diff, BattlegroundTypeId bgTypeId, BattlegroundBracketId bracket_id, uint8 arenaType = 0, bool isRated = false, uint32 minRating = 0);
         void UpdateEvents(uint32 diff);

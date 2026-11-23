@@ -292,13 +292,6 @@ struct CreatureBaseStats
     static CreatureBaseStats const* GetBaseStats(uint8 level, uint8 unitClass);
 };
 
-struct CreatureLocale
-{
-    std::vector<std::string> Name;
-    std::vector<std::string> FemaleName;
-    std::vector<std::string> Title;
-};
-
 struct CreatureModelInfo
 {
     float bounding_radius;
@@ -309,6 +302,13 @@ struct CreatureModelInfo
 };
 
 #pragma pack(pop)
+
+struct CreatureLocale
+{
+    std::vector<std::string> Name;
+    std::vector<std::string> FemaleName;
+    std::vector<std::string> Title;
+};
 
 // `creature_addon` table
 struct CreatureAddon

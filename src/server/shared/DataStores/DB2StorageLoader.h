@@ -20,6 +20,7 @@
 
 #include "Define.h"
 #include "Utilities/ByteConverter.h"
+#include "Utilities/Unaligned.h"
 #include <cassert>
 #include <list>
 #include <string>
@@ -38,14 +39,14 @@ class TC_SHARED_API DB2FileLoader
         float getFloat(size_t field) const
         {
             assert(field < file.fieldCount);
-            float val = *reinterpret_cast<float*>(offset+file.GetOffset(field));
+            float val = ReadUnaligned<float>(offset+file.GetOffset(field));
             EndianConvert(val);
             return val;
         }
         uint32 getUInt(size_t field) const
         {
             assert(field < file.fieldCount);
-            uint32 val = *reinterpret_cast<uint32*>(offset+file.GetOffset(field));
+            uint32 val = ReadUnaligned<uint32>(offset+file.GetOffset(field));
             EndianConvert(val);
             return val;
         }

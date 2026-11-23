@@ -214,7 +214,7 @@ class Group
             uint8       group;
             uint8       flags;
             uint8       roles;
-            bool        readyCheckHasResponded;
+            bool        readyCheckHasResponded = false;
         };
         typedef std::list<MemberSlot> MemberSlotList;
         typedef MemberSlotList::const_iterator member_citerator;

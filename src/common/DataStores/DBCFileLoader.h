@@ -21,6 +21,7 @@
 #include "Define.h"
 #include "Errors.h"
 #include "Utilities/ByteConverter.h"
+#include "Utilities/Unaligned.h"
 
 class TC_COMMON_API DBCFileLoader
 {
@@ -36,14 +37,14 @@ class TC_COMMON_API DBCFileLoader
                 float getFloat(size_t field) const
                 {
                     ASSERT(field < file.fieldCount);
-                    float val = *reinterpret_cast<float*>(offset+file.GetOffset(field));
+                    float val = ReadUnaligned<float>(offset+file.GetOffset(field));
                     EndianConvert(val);
                     return val;
                 }
                 uint32 getUInt(size_t field) const
                 {
                     ASSERT(field < file.fieldCount);
-                    uint32 val = *reinterpret_cast<uint32*>(offset+file.GetOffset(field));
+                    uint32 val = ReadUnaligned<uint32>(offset+file.GetOffset(field));
                     EndianConvert(val);
                     return val;
                 }
@@ -55,7 +56,7 @@ class TC_COMMON_API DBCFileLoader
                 uint64 getUInt64(size_t field) const
                 {
                     ASSERT(field < file.fieldCount);
-                    return *reinterpret_cast<uint64*>(offset + file.GetOffset(field));
+                    return ReadUnaligned<uint64>(offset + file.GetOffset(field));
                 }
                 
                 const char *getString(size_t field) const
